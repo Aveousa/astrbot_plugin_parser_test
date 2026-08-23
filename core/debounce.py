@@ -17,11 +17,29 @@ class Debouncer:
         self.interval = self.cfg.debounce_interval
         self._cache: dict[str, dict[str, float]] = {}  # {session: {key: ts}}
 
+    @staticmethod
+    def _normalize_session(session: str) -> str:
+        """将群成员隔离 UMO 归一化为群聊 UMO。"""
+        prefix, separator, session_id = session.rpartition(":")
+        if not separator or not prefix.endswith(":GroupMessage"):
+            return session
+
+        member_id, separator, group_id = session_id.partition("_")
+        if (
+            separator
+            and "_" not in group_id
+            and member_id.isdigit()
+            and group_id.isdigit()
+        ):
+            return f"{prefix}:{group_id}"
+        return session
+
     def _hit(self, session: str, key: str) -> bool:
         # 禁用
         if self.interval <= 0:
             return False
 
+        session = self._normalize_session(session)
         now = time.time()
         bucket = self._cache.setdefault(session, {})
 
