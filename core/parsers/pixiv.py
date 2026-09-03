@@ -620,11 +620,15 @@ class PixivParser(BaseParser):
                 img_urls = [u for u in img_urls if u]
                 if not img_urls:
                     raise ParseException("未找到插画图片")
-                content_contents.extend(
-                    self.create_image_contents(
-                        img_urls, headers=PIXIV_IMG_HEADERS
-                    )
+                page_contents = self.create_image_contents(
+                    img_urls, headers=PIXIV_IMG_HEADERS
                 )
+                content_contents.extend(page_contents)
+                if not cover_contents:
+                    # 部分作品的详情接口会把 urls.regular 返回为 null，
+                    # 但 /pages 仍有完整图片地址。复用首图下载任务作为卡片
+                    # 预览；任务失败时 Renderer 会显示 error_preview.png。
+                    cover_contents.append(page_contents[0])
             send_groups.append(
                 SendGroup(
                     contents=content_contents,
