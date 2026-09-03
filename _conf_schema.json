@@ -193,6 +193,12 @@
             "labels": ["正常发送", "封面模糊", "忽略"],
             "default": "send"
           },
+          "multi_image_forward": {
+            "description": "多图使用合并转发",
+            "hint": "仅对普通插画多图作品生效；关闭时在单条消息中发送多张图片",
+            "type": "bool",
+            "default": false
+          },
           "max_page": {"description": "漫画最大页数", "type": "int", "default": 0}
         }
       }

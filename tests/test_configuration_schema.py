@@ -1,14 +1,13 @@
 import importlib
 import json
-from pathlib import Path
 import sys
 import tempfile
 import tomllib
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -202,6 +201,30 @@ def test_douyin_exposes_dedicated_worker_proxy_settings():
     assert douyin_defaults["worker_proxy_url"] == ""
 
 
+def test_pixiv_exposes_multi_image_forward_setting():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    templates = schema["parsers_template"]["templates"]
+    pixiv_items = templates["pixiv"]["items"]
+    assert pixiv_items["multi_image_forward"] == {
+        "description": "多图使用合并转发",
+        "hint": "仅对普通插画多图作品生效；关闭时在单条消息中发送多张图片",
+        "type": "bool",
+        "default": False,
+    }
+    assert all(
+        "multi_image_forward" not in template["items"]
+        for name, template in templates.items()
+        if name != "pixiv"
+    )
+
+    pixiv_defaults = next(
+        item for item in defaults if item["__template_key"] == "pixiv"
+    )
+    assert pixiv_defaults["multi_image_forward"] is False
+
+
 def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module):
     raw = config_module.AstrBotConfig(
         {
@@ -237,4 +260,6 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     douyin = raw["parsers_template"][1]
     assert douyin["worker_proxy_enabled"] is False
     assert douyin["worker_proxy_url"] == ""
+    pixiv = raw["parsers_template"][3]
+    assert pixiv["multi_image_forward"] is False
     assert raw.save_calls == 1

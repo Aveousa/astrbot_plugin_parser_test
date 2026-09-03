@@ -313,6 +313,15 @@ class PixivParser(BaseParser):
         await self.api.close()
         await super().close_session()
 
+    @staticmethod
+    def _should_forward_multi_image(
+        page_count: int,
+        illust_type: int,
+        enabled: bool | None,
+    ) -> bool:
+        """仅让普通多图插画使用合并转发。"""
+        return bool(enabled) and illust_type == 0 and page_count > 1
+
 
     async def _build_pdf(
         self, img_paths_task: asyncio.Task[list[Path]], pid: str
@@ -440,7 +449,14 @@ class PixivParser(BaseParser):
         )
 
 
-    @handle("pixiv.net/artworks", r"pixiv\.net/artworks/(?P<pid>\d+)")
+    @handle(
+        "pixiv.net/en/artworks",
+        r"pixiv\.net/(?:en/)?artworks/(?P<pid>\d+)",
+    )
+    @handle(
+        "pixiv.net/artworks",
+        r"pixiv\.net/(?:en/)?artworks/(?P<pid>\d+)",
+    )
     async def _handle_artworks(self, searched: Match[str]) -> ParseResult:
         pid = searched.group("pid")
         body = await self.api.get_illust_detail(pid)
@@ -612,7 +628,11 @@ class PixivParser(BaseParser):
             send_groups.append(
                 SendGroup(
                     contents=content_contents,
-                    force_merge=False,
+                    force_merge=self._should_forward_multi_image(
+                        page_count,
+                        int(body.get("illustType", 0)),
+                        self.mycfg.multi_image_forward,
+                    ),
                 )
             )
 

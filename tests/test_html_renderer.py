@@ -267,6 +267,36 @@ def test_result_context_splits_topic_tags_from_description(renderer_module, tmp_
     assert card["topic_tags"] == ["# 鸣潮", "# 清宵"]
 
 
+def test_pixiv_labeled_tags_split_on_commas_and_preserve_spaces(
+    renderer_module, tmp_path: Path
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        title="Denia（Wuthering Waves）11",
+        text=(
+            "简介: create by anima-base\n"
+            "标签: #AI, #Denia, #WutheringWaves, #达妮娅, "
+            "#鸣潮(Wuthering Waves), #女の子(女孩子), #kawaii"
+        ),
+    )
+
+    card = asyncio.run(renderer._result_context(result))["card"]
+
+    assert card["text"] == "简介: create by anima-base"
+    assert card["topic_tags"] == [
+        "# AI",
+        "# Denia",
+        "# WutheringWaves",
+        "# 达妮娅",
+        "# 鸣潮(Wuthering Waves)",
+        "# 女の子(女孩子)",
+        "# kawaii",
+    ]
+
+
 def test_topic_split_supports_attached_tags_without_splitting_csharp(
     renderer_module, tmp_path: Path
 ):

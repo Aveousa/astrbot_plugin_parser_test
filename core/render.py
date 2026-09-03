@@ -78,6 +78,10 @@ _EMOJI_RE = re.compile(
 _EMPTY_DESCRIPTION_RE = re.compile(r"^(?:简介\s*[:：]\s*)?[-—–]+$")
 _TOPIC_TAG_RE = re.compile(r"(?<![A-Za-z0-9_#])#\s*([^#\s,，;；、。.!！?？|｜/\\]+)")
 _TOPIC_TRAILING_RE = re.compile(r"[\s,，;；、。.!！?？|｜/\\]+$")
+_LABELED_TOPIC_LINE_RE = re.compile(
+    r"(?m)^[ \t]*标签\s*[:：][ \t]*(?P<topics>#[^\r\n]*?)[ \t]*(?:\r?\n|$)"
+)
+_LABELED_TOPIC_SEPARATOR_RE = re.compile(r"[,，]\s*(?=#)")
 
 
 class Renderer:
@@ -496,8 +500,26 @@ class Renderer:
         if not text:
             return None, []
 
-        spans: list[tuple[int, int]] = []
         tags: list[str] = []
+
+        def remove_labeled_topic_line(matched: re.Match[str]) -> str:
+            """按逗号拆分“标签:”行，并将完整标签从详情文字中移除。"""
+            topics: list[str] = []
+            for item in _LABELED_TOPIC_SEPARATOR_RE.split(matched.group("topics")):
+                item = item.strip()
+                if not item.startswith("#"):
+                    return matched.group(0)
+                topic = _TOPIC_TRAILING_RE.sub("", item[1:].strip())
+                if topic:
+                    topics.append(f"# {topic}")
+            if not topics:
+                return matched.group(0)
+            tags.extend(topics)
+            return ""
+
+        text = _LABELED_TOPIC_LINE_RE.sub(remove_labeled_topic_line, text)
+
+        spans: list[tuple[int, int]] = []
         for matched in _TOPIC_TAG_RE.finditer(text):
             topic = _TOPIC_TRAILING_RE.sub("", matched.group(1).strip())
             if not topic:
@@ -505,17 +527,17 @@ class Renderer:
             spans.append(matched.span())
             tags.append(f"# {topic}")
 
-        if not spans:
-            return text, []
+        if spans:
+            pieces: list[str] = []
+            cursor = 0
+            for start, end in spans:
+                pieces.append(text[cursor:start])
+                cursor = end
+            pieces.append(text[cursor:])
+            cleaned = "".join(pieces)
+        else:
+            cleaned = text
 
-        pieces: list[str] = []
-        cursor = 0
-        for start, end in spans:
-            pieces.append(text[cursor:start])
-            cursor = end
-        pieces.append(text[cursor:])
-
-        cleaned = "".join(pieces)
         cleaned = re.sub(r"[ \t]+", " ", cleaned)
         cleaned = re.sub(r" *\n *", "\n", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)

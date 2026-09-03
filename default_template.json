@@ -27,6 +27,7 @@
     "use_proxy": false,
     "cookies": "",
     "nsfw": "send",
+    "multi_image_forward": false,
     "max_page": 0
   }
 ]
