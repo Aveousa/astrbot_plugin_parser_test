@@ -48,6 +48,9 @@ class ParserPlugin(Star):
 
     async def initialize(self):
         """加载、重载插件时触发"""
+        # 插件启动/重载时回收超过 24 小时且未被浏览器使用的 Playwright
+        # 临时目录；清理失败不会阻断后续解析器和渲染器启动。
+        await self.cleaner.clean_stale_playwright_profiles()
         # 加载渲染器资源
         await asyncio.to_thread(Renderer.load_resources)
         # 预热并复用 Playwright 的 Chrome Headless Shell。启动失败仅会让
