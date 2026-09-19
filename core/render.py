@@ -839,7 +839,7 @@ class Renderer:
             if platform_logo_name
             else None
         )
-        has_live_photo = platform_name == "douyin" and result.has_motion_photo
+        has_live_photo = platform_name in {"douyin", "xhs"} and result.has_motion_photo
         stats = result.engagement.as_dict()
         stat_items = [
             {

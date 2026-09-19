@@ -406,18 +406,27 @@ def test_douyin_motion_photo_renders_badge_and_save_hint(
     assert renderer_module.Renderer._LIVE_PHOTO_HINT in html
 
 
-def test_live_photo_badge_is_limited_to_douyin(renderer_module, tmp_path: Path):
+def test_live_photo_badge_supports_xhs(renderer_module, tmp_path: Path):
     config = _Config(tmp_path)
+    config.card_template = "default"
     renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
     result = ParseResult(
         platform=Platform("xhs", "小红书"),
         extra={"has_motion_photo": True},
     )
 
-    card = asyncio.run(renderer._result_context(result))["card"]
-    assert card["has_live_photo"] is False
-    assert card["live_photo_uri"] is None
-    assert card["live_photo_hint"] is None
+    context = asyncio.run(renderer._result_context(result))
+    card = context["card"]
+    assert card["has_live_photo"] is True
+    livep_uri = (renderer_module.Renderer._RESOURCES_DIR / "livep.png").resolve().as_uri()
+    assert card["live_photo_uri"] == livep_uri
+    assert card["live_photo_hint"] == renderer_module.Renderer._LIVE_PHOTO_HINT
+
+    html = renderer.render_html(result, context)
+    assert livep_uri in html
+    assert 'class="card-badge__live"' in html
+    assert renderer_module.Renderer._LIVE_PHOTO_HINT in html
 
 
 class _FakePage:
