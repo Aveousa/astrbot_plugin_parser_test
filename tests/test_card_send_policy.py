@@ -242,6 +242,34 @@ def test_douyin_gallery_card_precedes_folded_media(sender_module):
     assert [node.content[0].path for node in folded.nodes] == ["one.png", "two.png"]
 
 
+@pytest.mark.parametrize("platform_name", ["douyin", "xhs"])
+def test_motion_photo_adds_info_image_to_folded_media(
+    sender_module, platform_name: str
+):
+    images = [ImageContent(Path("one.png")), ImageContent(Path("two.png"))]
+    result = ParseResult(
+        platform=Platform(platform_name, platform_name),
+        contents=images,
+        extra={"has_motion_photo": True},
+    )
+    sender = sender_module.MessageSender(
+        _card_config(forward_threshold=100), _Renderer()
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[0][0].path == "card.png"
+    folded = event.sent[1][0]
+    assert folded.__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in folded.nodes] == [
+        "one.png",
+        "two.png",
+        str(sender_module.MessageSender._LIVE_PHOTO_INFO_PATH),
+    ]
+
+
 def test_legacy_card_group_does_not_duplicate_result_card(sender_module):
     image = ImageContent(Path("image.png"))
     result = ParseResult(

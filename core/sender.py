@@ -53,6 +53,8 @@ class MessageSender:
     """
 
     _ERROR_MEDIA_PATH = Path(__file__).with_name("resources") / "error_media.png"
+    _LIVE_PHOTO_INFO_PATH = Path(__file__).with_name("resources") / "livep_info.png"
+    _LIVE_PHOTO_PLATFORMS = frozenset({"douyin", "xhs"})
 
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
@@ -306,6 +308,30 @@ class MessageSender:
             return result.send_groups
         return [SendGroup(contents=list(MessageSender._iter_contents(result)))]
 
+    def _prepare_motion_photo_group(
+        self,
+        result: ParseResult,
+        groups: list[SendGroup],
+    ) -> list[SendGroup]:
+        """为抖音/小红书实况图追加说明图并强制折叠转发。"""
+        if (
+            result.platform.name.lower() not in self._LIVE_PHOTO_PLATFORMS
+            or not result.has_motion_photo
+            or not self._LIVE_PHOTO_INFO_PATH.is_file()
+        ):
+            return groups
+
+        contents = [content for group in groups for content in group.contents]
+        if not contents:
+            return groups
+
+        return [
+            SendGroup(
+                contents=[*contents, ImageContent(self._LIVE_PHOTO_INFO_PATH)],
+                force_merge=True,
+            )
+        ]
+
     async def _send_group(
         self,
         event: AstrMessageEvent,
@@ -362,7 +388,10 @@ class MessageSender:
         3. 必要时合并转发
         4. 发送媒体；没有可发送媒体时保留原有文本兜底
         """
-        groups = self._resolve_groups(result)
+        groups = self._prepare_motion_photo_group(
+            result,
+            self._resolve_groups(result),
+        )
 
         # 全局卡片开关开启时，每个解析结果固定先发送一张信息卡片。媒体分组
         # 只决定媒体本身是否折叠，避免图集因卡片计数而改变发送结构。
