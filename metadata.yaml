@@ -2,7 +2,7 @@ name: astrbot_plugin_parser_test
 display_name: （测试）万能解析器
 desc: 高性能低耦合的链接解析器，支持 Bilibili、抖音、小红书和 Pixiv，并提供可配置 HTML 卡片渲染。
 help: 略
-version: v1.5.6
-author: Zhalslar
+version: v1.5.7_beta
+author: Zhalslar & Aveousa
 repo: https://github.com/Aveousa/astrbot_plugin_parser_test
 
