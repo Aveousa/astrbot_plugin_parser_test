@@ -84,6 +84,35 @@ class _Config:
         self.plugin_dir.mkdir()
 
 
+def test_topic_split_handles_adjacent_xhs_topics_and_preserves_punctuation(
+    renderer_module, tmp_path: Path
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(
+        platform=Platform("xhs", "小红书"),
+        title="HDR测试，亮了吗？",
+        text=(
+            "说明文字。#HDR[话题]# #AI修图[话题]##小红书HDR测试[话题]# "
+            "#富士直出[话题]##无限暖暖[话题]##HDRfy[话题]#"
+        ),
+    )
+
+    card = asyncio.run(renderer._result_context(result))["card"]
+
+    assert card["title"] == "HDR测试，亮了吗？"
+    assert card["text"] == "说明文字。"
+    assert card["topic_tags"] == [
+        "# HDR",
+        "# AI修图",
+        "# 小红书HDR测试",
+        "# 富士直出",
+        "# 无限暖暖",
+        "# HDRfy",
+    ]
+
+
 @pytest.mark.parametrize("template", ["default", "compact", "apple"])
 def test_builtin_templates_use_bundled_douyin_sans(
     renderer_module, tmp_path: Path, template: str

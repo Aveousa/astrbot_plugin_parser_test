@@ -76,12 +76,21 @@ _EMOJI_RE = re.compile(
     rf"(?:[\U0001F1E6-\U0001F1FF]{{2}}|{_EMOJI_CHARACTER}(?:\u200d{_EMOJI_CHARACTER})*)"
 )
 _EMPTY_DESCRIPTION_RE = re.compile(r"^(?:简介\s*[:：]\s*)?[-—–]+$")
-_TOPIC_TAG_RE = re.compile(r"(?<![A-Za-z0-9_#])#\s*([^#\s,，;；、。.!！?？|｜/\\]+)")
-_TOPIC_TRAILING_RE = re.compile(r"[\s,，;；、。.!！?？|｜/\\]+$")
+# Some platforms (notably Xiaohongshu) serialize adjacent topics as
+# ``#topic[话题]##next-topic[话题]#``.  Keep the generic extractor permissive
+# enough to recognize the second ``#`` while consuming the optional closing
+# delimiter so it does not leak into the card description.
+_TOPIC_TAG_RE = re.compile(
+    r"(?<![A-Za-z0-9_])#\s*([^#\s,\uFF0C;\uFF1B\u3001\u3002.!\uFF01?\uFF1F|\uFF5C/\\]+)"
+)
+_TOPIC_TRAILING_RE = re.compile(
+    r"[\s,\uFF0C;\uFF1B\u3001\u3002.!\uFF01?\uFF1F|\uFF5C/\\]+$"
+)
 _LABELED_TOPIC_LINE_RE = re.compile(
     r"(?m)^[ \t]*标签\s*[:：][ \t]*(?P<topics>#[^\r\n]*?)[ \t]*(?:\r?\n|$)"
 )
 _LABELED_TOPIC_SEPARATOR_RE = re.compile(r"[,，]\s*(?=#)")
+_TOPIC_PLATFORM_SUFFIX_RE = re.compile(r"\[话题\]\s*$")
 
 
 class Renderer:
@@ -502,6 +511,10 @@ class Renderer:
 
         tags: list[str] = []
 
+        def normalize_topic(value: str) -> str:
+            value = _TOPIC_PLATFORM_SUFFIX_RE.sub("", value.strip())
+            return _TOPIC_TRAILING_RE.sub("", value).strip()
+
         def remove_labeled_topic_line(matched: re.Match[str]) -> str:
             """按逗号拆分“标签:”行，并将完整标签从详情文字中移除。"""
             topics: list[str] = []
@@ -509,7 +522,7 @@ class Renderer:
                 item = item.strip()
                 if not item.startswith("#"):
                     return matched.group(0)
-                topic = _TOPIC_TRAILING_RE.sub("", item[1:].strip())
+                topic = normalize_topic(item[1:])
                 if topic:
                     topics.append(f"# {topic}")
             if not topics:
@@ -521,10 +534,19 @@ class Renderer:
 
         spans: list[tuple[int, int]] = []
         for matched in _TOPIC_TAG_RE.finditer(text):
-            topic = _TOPIC_TRAILING_RE.sub("", matched.group(1).strip())
+            topic = normalize_topic(matched.group(1))
             if not topic:
                 continue
-            spans.append(matched.span())
+            start, end = matched.span()
+            # ``[话题]#`` is Xiaohongshu's closing delimiter. Consume only
+            # that delimiter; for ordinary ``#tag#next`` text, leave the
+            # second hash available as the next topic's opening marker.
+            if (
+                _TOPIC_PLATFORM_SUFFIX_RE.search(matched.group(1))
+                and text[end : end + 1] == "#"
+            ):
+                end += 1
+            spans.append((start, end))
             tags.append(f"# {topic}")
 
         if spans:
@@ -541,7 +563,7 @@ class Renderer:
         cleaned = re.sub(r"[ \t]+", " ", cleaned)
         cleaned = re.sub(r" *\n *", "\n", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-        cleaned = cleaned.strip(" \t\r\n,，;；、。.!！?？|｜/\\")
+        cleaned = cleaned.strip(" \t\r\n,，;；、|｜/\\")
         return cls._card_text(cleaned), cls._dedupe_tags(tags)
 
     @staticmethod
