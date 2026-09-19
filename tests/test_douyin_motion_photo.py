@@ -107,6 +107,8 @@ def test_live_room_prefers_snapshot_as_separate_send_group(tmp_path: Path):
                 "title": "直播标题",
                 "owner": {"nickname": "主播"},
                 "cover": {"url_list": ["cover"]},
+                "like_count": 123,
+                "stats": {"comment_count": 45},
                 "stream_url": {"hls_pull_url": "https://stream.example/live.m3u8"},
             },
             {},
@@ -123,6 +125,8 @@ def test_live_room_prefers_snapshot_as_separate_send_group(tmp_path: Path):
     assert len(result.send_groups) == 1
     assert snapshot_path == tmp_path / "snapshot.jpg"
     assert result.send_groups[0].force_merge is False
+    assert result.like_count is None
+    assert result.comment_count is None
 
 
 def test_build_motion_photo_injects_xmp_and_appends_video(tmp_path: Path):

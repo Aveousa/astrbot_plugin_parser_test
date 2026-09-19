@@ -492,31 +492,6 @@ class DouyinParser(BaseParser):
             "live_web_rid": live_id,
         }
         stats = room.get("stats")
-        engagement = self.engagement_from_mapping(room)
-        if isinstance(stats, dict):
-            nested_engagement = self.engagement_from_mapping(stats)
-            engagement = type(engagement)(
-                likes=(
-                    engagement.likes
-                    if engagement.likes is not None
-                    else nested_engagement.likes
-                ),
-                comments=(
-                    engagement.comments
-                    if engagement.comments is not None
-                    else nested_engagement.comments
-                ),
-                favorites=(
-                    engagement.favorites
-                    if engagement.favorites is not None
-                    else nested_engagement.favorites
-                ),
-                shares=(
-                    engagement.shares
-                    if engagement.shares is not None
-                    else nested_engagement.shares
-                ),
-            )
 
         user_count = (
             room.get("user_count_str")
@@ -539,10 +514,6 @@ class DouyinParser(BaseParser):
             title=str(room.get("title") or "抖音直播"),
             author=self.create_author(nickname, avatar_url, headers=headers),
             contents=contents,
-            like_count=engagement.likes,
-            comment_count=engagement.comments,
-            favorite_count=engagement.favorites,
-            share_count=engagement.shares,
             send_groups=send_groups,
             extra=extra,
         )

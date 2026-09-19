@@ -842,7 +842,8 @@ class Renderer:
         )
         has_live_photo = platform_name in {"douyin", "xhs"} and result.has_motion_photo
         has_live_stream = (
-            platform_name == "douyin" and result.extra.get("is_live_stream") is True
+            platform_name in {"douyin", "bilibili"}
+            and result.extra.get("is_live_stream") is True
         )
         stats = result.engagement.as_dict()
         stat_items = [

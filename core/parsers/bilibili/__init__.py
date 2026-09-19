@@ -363,6 +363,10 @@ class BilibiliParser(BaseParser):
             text=room_data.detail,
             contents=contents,
             author=author,
+            extra={
+                "is_live_stream": True,
+                "live_room_id": str(room_id),
+            },
         )
 
     async def parse_favlist(self, fav_id: int):
