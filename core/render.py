@@ -124,6 +124,7 @@ class Renderer:
         "pixiv": "pixiv.png",
     }
     _LIVE_PHOTO_ICON_NAME: ClassVar[str] = "livep.png"
+    _LIVE_STREAM_ICON_NAME: ClassVar[str] = "live.png"
     _LIVE_PHOTO_HINT: ClassVar[str] = (
         "（对于除Apple、vivo机型以外的手机）可尝试点击“查看原图”后保存获取实况图~"
     )
@@ -840,6 +841,9 @@ class Renderer:
             else None
         )
         has_live_photo = platform_name in {"douyin", "xhs"} and result.has_motion_photo
+        has_live_stream = (
+            platform_name == "douyin" and result.extra.get("is_live_stream") is True
+        )
         stats = result.engagement.as_dict()
         stat_items = [
             {
@@ -882,6 +886,12 @@ class Renderer:
             "extra": result.extra,
             "extra_info": result.extra_info,
             "has_live_photo": has_live_photo,
+            "has_live_stream": has_live_stream,
+            "live_stream_uri": (
+                self._file_uri(self._RESOURCES_DIR / self._LIVE_STREAM_ICON_NAME)
+                if has_live_stream
+                else None
+            ),
             "live_photo_uri": (
                 self._file_uri(self._RESOURCES_DIR / self._LIVE_PHOTO_ICON_NAME)
                 if has_live_photo

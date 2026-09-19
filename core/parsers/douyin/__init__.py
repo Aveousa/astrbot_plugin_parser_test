@@ -1,3 +1,4 @@
+import json
 import re
 from asyncio import create_task, gather, to_thread
 from base64 import b64decode
@@ -17,7 +18,8 @@ from astrbot.api import logger
 from ...config import PluginConfig
 from ...cookie import CookieJar
 from ...data import ImageContent, SendGroup
-from ...utils import generate_file_name, safe_unlink
+from ...exception import DownloadException
+from ...utils import exec_ffmpeg_cmd, generate_file_name, safe_unlink
 from ..base import (
     BaseParser,
     Downloader,
@@ -60,6 +62,97 @@ class DouyinParser(BaseParser):
         if not contents:
             return []
         return [SendGroup(contents=contents, force_merge=item_count > 1)]
+
+    @staticmethod
+    def _extract_json_objects(value: str, marker: str) -> list[dict[str, Any]]:
+        """提取 RSC 数据中 marker 后的全部 JSON 对象。
+
+        直播页可能在同一个 RSC payload 中重复写入 ``roomStore``：后一个对象
+        有时只是空的初始化状态。只取最后一次匹配会把真实房间数据遮住，因此
+        这里保留所有可解码的对象，由调用方按内容选择。
+        """
+        objects: list[dict[str, Any]] = []
+        positions = [match.start() for match in re.finditer(re.escape(marker), value)]
+        for position in reversed(positions):
+            start = position + len(marker)
+            while start < len(value) and value[start].isspace():
+                start += 1
+            if start >= len(value) or value[start] != "{":
+                continue
+
+            depth = 0
+            in_string = False
+            escaped = False
+            for index in range(start, len(value)):
+                char = value[index]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        in_string = False
+                    continue
+
+                if char == '"':
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            payload = msgspec.json.decode(value[start : index + 1])
+                        except (msgspec.DecodeError, ValueError):
+                            payload = None
+                        if isinstance(payload, dict):
+                            objects.append(payload)
+                        break
+        return objects
+
+    @classmethod
+    def _extract_json_object(cls, value: str, marker: str) -> dict[str, Any] | None:
+        """从抖音 RSC 数据中提取 marker 对应的一个 JSON 对象。"""
+        objects = cls._extract_json_objects(value, marker)
+        return objects[0] if objects else None
+
+    @classmethod
+    def _extract_live_room(cls, html: str) -> dict[str, Any]:
+        """读取直播页的 RSC 初始状态，返回房间数据。"""
+        for payload in reversed(cls._extract_rsc_payloads(html, "pace")):
+            for room_store in cls._extract_json_objects(payload, '"roomStore":'):
+                if not room_store:
+                    continue
+                room_info = room_store.get("roomInfo")
+                if not isinstance(room_info, dict):
+                    continue
+                room = room_info.get("room")
+                if isinstance(room, dict) and room.get("title"):
+                    return room
+        raise ParseException("can't find live room data in RSC")
+
+    @staticmethod
+    def _extract_rsc_payloads(html: str, stream_name: str) -> list[str]:
+        """提取抖音页面中指定 RSC 流的字符串 payload。"""
+        payloads: list[str] = []
+        pattern = rf"self\.__{re.escape(stream_name)}_f\.push\(\[1,"
+        for matched in re.finditer(pattern, html):
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(html[matched.end() :])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(payload, str):
+                payloads.append(payload)
+        return payloads
+
+    @classmethod
+    def _extract_reflow_live_room(cls, html: str) -> dict[str, Any]:
+        """读取 webcast reflow 页中的 camelCase 直播房间数据。"""
+        for payload in reversed(cls._extract_rsc_payloads(html, "rsc")):
+            for room in cls._extract_json_objects(payload, '"room":'):
+                if isinstance(room, dict) and room.get("title"):
+                    return room
+        raise ParseException("can't find live room data in RSC")
 
     def __init__(self, config: PluginConfig, downloader: Downloader):
         super().__init__(config, downloader)
@@ -182,6 +275,22 @@ class DouyinParser(BaseParser):
         url = f"https://{searched.group(0)}"
         return await self.parse_with_redirect(url)
 
+    @handle(
+        "live.douyin",
+        r"live\.douyin\.com/(?P<web_rid>\d+)",
+    )
+    async def _parse_live(self, searched: re.Match[str]):
+        web_rid = searched.group("web_rid")
+        return await self.parse_live(web_rid)
+
+    @handle(
+        "webcast.amemv",
+        r"webcast\.amemv\.com/douyin/webcast/reflow/(?P<room_id>\d+)",
+    )
+    async def _parse_reflow_live(self, searched: re.Match[str]):
+        room_id = searched.group("room_id")
+        return await self.parse_live_reflow(room_id)
+
     # https://www.douyin.com/video/7521023890996514083
     # https://www.douyin.com/note/7469411074119322899
     @handle("", r"(?<![A-Za-z0-9_/=:%?&.-])(?P<vid>\d{18,20})(?!\d)")
@@ -301,6 +410,238 @@ class DouyinParser(BaseParser):
 
         keyword, searched = self.search_url(redirect_url)
         return await self.parse(keyword, searched)
+
+    async def parse_live(self, web_rid: str):
+        """解析抖音直播间页面中的主播、房间和封面信息。"""
+        url = f"https://live.douyin.com/{web_rid}"
+        html, headers = await self._fetch_live_page(url)
+        room = self._extract_live_room(html)
+        return self._build_live_result(url, web_rid, room, headers)
+
+    async def parse_live_reflow(self, room_id: str):
+        """解析抖音短链重定向到的 webcast reflow 直播页。"""
+        url = f"https://webcast.amemv.com/douyin/webcast/reflow/{room_id}"
+        html, headers = await self._fetch_live_page(url)
+        room = self._extract_reflow_live_room(html)
+        return self._build_live_result(url, room_id, room, headers)
+
+    async def _fetch_live_page(self, url: str) -> tuple[str, dict[str, str]]:
+        # 直播页的 SSR 数据仅在桌面版页面中提供；复用视频解析的移动端
+        # User-Agent 会被重定向到不带 RSC 状态的移动回放页。
+        headers = self.headers.copy()
+        headers.pop("Cookie", None)
+        if cookies_str := self.cookiejar.get_cookie_header_for_url(url):
+            headers["Cookie"] = cookies_str
+        async with self.session.get(url, headers=headers, allow_redirects=True) as resp:
+            if resp.status >= 400:
+                raise ParseException(f"live page status: {resp.status}")
+            html = await resp.text()
+            set_cookie_headers = resp.headers.getall("Set-Cookie", [])
+            if set_cookie_headers:
+                self.cookiejar.update_from_response(set_cookie_headers)
+                self._set_cookies()
+        return html, headers
+
+    def _build_live_result(
+        self,
+        url: str,
+        live_id: str,
+        room: dict[str, Any],
+        headers: dict[str, str],
+    ):
+        owner = room.get("owner")
+        if not isinstance(owner, dict):
+            owner = {}
+
+        nickname = str(owner.get("nickname") or "抖音直播间")
+        avatar_url = self._first_url(
+            owner.get("avatar_thumb") or owner.get("avatarThumb")
+        )
+        cover_url = self._first_url(room.get("cover"))
+        cover_content: ImageContent | None = None
+        if cover_url:
+            cover_content = ImageContent(
+                self.downloader.download_img(
+                    cover_url,
+                    headers=headers,
+                    proxy=self.proxy,
+                    worker_proxy_url=self.worker_proxy_url,
+                )
+            )
+
+        snapshot_content: ImageContent | None = None
+        if stream_url := self._first_stream_url(room):
+            snapshot_content = ImageContent(
+                create_task(
+                    self._capture_live_snapshot(stream_url, cover_content),
+                    name="douyin_live_snapshot",
+                )
+            )
+
+        contents = [cover_content] if cover_content else []
+        if not contents and snapshot_content:
+            contents = [snapshot_content]
+        send_groups = (
+            [SendGroup(contents=[snapshot_content], force_merge=False)]
+            if snapshot_content
+            else []
+        )
+
+        extra: dict[str, Any] = {
+            "is_live_stream": True,
+            "live_web_rid": live_id,
+        }
+        stats = room.get("stats")
+        engagement = self.engagement_from_mapping(room)
+        if isinstance(stats, dict):
+            nested_engagement = self.engagement_from_mapping(stats)
+            engagement = type(engagement)(
+                likes=(
+                    engagement.likes
+                    if engagement.likes is not None
+                    else nested_engagement.likes
+                ),
+                comments=(
+                    engagement.comments
+                    if engagement.comments is not None
+                    else nested_engagement.comments
+                ),
+                favorites=(
+                    engagement.favorites
+                    if engagement.favorites is not None
+                    else nested_engagement.favorites
+                ),
+                shares=(
+                    engagement.shares
+                    if engagement.shares is not None
+                    else nested_engagement.shares
+                ),
+            )
+
+        user_count = (
+            room.get("user_count_str")
+            or room.get("userCountStr")
+            or room.get("user_count")
+            or room.get("userCount")
+        )
+        if not user_count and isinstance(stats, dict):
+            user_count = (
+                stats.get("user_count_str")
+                or stats.get("userCountStr")
+                or stats.get("user_count")
+                or stats.get("userCount")
+            )
+        if user_count:
+            extra["info"] = f"观看人数：{user_count}"
+
+        return self.result(
+            url=url,
+            title=str(room.get("title") or "抖音直播"),
+            author=self.create_author(nickname, avatar_url, headers=headers),
+            contents=contents,
+            like_count=engagement.likes,
+            comment_count=engagement.comments,
+            favorite_count=engagement.favorites,
+            share_count=engagement.shares,
+            send_groups=send_groups,
+            extra=extra,
+        )
+
+    @classmethod
+    def _first_stream_url(cls, room: Mapping[str, Any]) -> str | None:
+        """从直播房间数据中选择可供 FFmpeg 读取的拉流地址。"""
+        stream = room.get("stream_url") or room.get("streamUrl")
+        if not isinstance(stream, Mapping):
+            return None
+
+        def first_string(value: object) -> str | None:
+            if isinstance(value, str) and value:
+                return value
+            if isinstance(value, Mapping):
+                for item in value.values():
+                    if result := first_string(item):
+                        return result
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if result := first_string(item):
+                        return result
+            return None
+
+        for key in (
+            "hls_pull_url",
+            "hlsPullUrl",
+            "hls_pull_url_map",
+            "hlsPullUrlMap",
+            "flv_pull_url",
+            "flvPullUrl",
+            "flv_pull_url_map",
+            "flvPullUrlMap",
+        ):
+            if result := first_string(stream.get(key)):
+                return result
+        return None
+
+    async def _capture_live_snapshot(
+        self,
+        stream_url: str,
+        fallback_content: ImageContent | None = None,
+    ) -> Path:
+        """用 FFmpeg 从直播流抓取一帧，失败时回退到直播封面。"""
+        cache_stem = Path(generate_file_name(stream_url)).stem
+        output_path = self.cfg.cache_dir / f"live_snapshot_{cache_stem}.jpg"
+        if output_path.is_file() and output_path.stat().st_size > 0:
+            return output_path
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.with_name(
+            f".{output_path.name}.{uuid4().hex}.tmp.jpg"
+        )
+        try:
+            await exec_ffmpeg_cmd(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-rw_timeout",
+                    "15000000",
+                    "-i",
+                    stream_url,
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    str(temporary_path),
+                ]
+            )
+            if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                raise RuntimeError("ffmpeg produced an empty snapshot")
+            temporary_path.replace(output_path)
+            logger.info("[抖音] 直播截图抓取成功")
+            return output_path
+        except (OSError, RuntimeError, DownloadException) as exc:
+            logger.warning(
+                "[抖音] 直播截图抓取失败，将回退到直播封面: "
+                f"{type(exc).__name__}"
+            )
+            if fallback_content is not None:
+                try:
+                    return await fallback_content.get_path()
+                except Exception:
+                    pass
+            raise DownloadException("直播截图抓取失败") from exc
+        finally:
+            await safe_unlink(temporary_path)
+
+    @staticmethod
+    def _first_url(value: object) -> str | None:
+        if not isinstance(value, dict):
+            return None
+        urls = value.get("url_list") or value.get("urlList")
+        if isinstance(urls, list):
+            return next((item for item in urls if isinstance(item, str) and item), None)
+        return urls if isinstance(urls, str) and urls else None
 
     async def parse_video(self, url: str):
         await self.ensure_ttwid()

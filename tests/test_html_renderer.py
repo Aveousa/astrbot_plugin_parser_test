@@ -429,6 +429,34 @@ def test_live_photo_badge_supports_xhs(renderer_module, tmp_path: Path):
     assert renderer_module.Renderer._LIVE_PHOTO_HINT in html
 
 
+def test_douyin_live_stream_badge_renders_next_to_platform_logo(
+    renderer_module, tmp_path: Path
+):
+    config = _Config(tmp_path)
+    config.card_template = "default"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(
+        platform=Platform("douyin", "抖音"),
+        title="直播标题",
+        extra={"is_live_stream": True},
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    card = context["card"]
+    live_uri = (renderer_module.Renderer._RESOURCES_DIR / "live.png").resolve().as_uri()
+    assert card["has_live_stream"] is True
+    assert card["live_stream_uri"] == live_uri
+
+    html = renderer.render_html(result, context)
+    assert live_uri in html
+    assert 'class="card-badge__stream"' in html
+    platform_uri = (
+        renderer_module.Renderer._RESOURCES_DIR / "logos" / "douyin.png"
+    ).resolve().as_uri()
+    assert html.index(live_uri) < html.index(platform_uri)
+
+
 class _FakePage:
     def __init__(self):
         self.goto_calls: list[tuple[str, dict]] = []

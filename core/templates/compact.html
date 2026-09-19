@@ -15,6 +15,7 @@
     .card-badges { position: absolute; top: 18px; right: 22px; display: flex; align-items: center;
                     gap: 7px; height: 24px; }
     .card-badge__live { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 0; opacity: .76; }
+    .card-badge__stream { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 0; opacity: .76; }
     .card-badge__platform { display: block; width: 48px; height: 24px; object-fit: contain; object-position: center; border-radius: 0; }
     h1 { display: -webkit-box; max-height: 2.5em; margin: 10px 0 4px; overflow: hidden;
          font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; text-overflow: ellipsis;
@@ -39,8 +40,9 @@
 </head>
 <body>
 <main class="card" data-card-root>
-  {% if platform.logo_uri or card.live_photo_uri %}
+  {% if platform.logo_uri or card.live_photo_uri or card.live_stream_uri %}
   <div class="card-badges">
+    {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
     {% if platform.logo_uri %}<img class="card-badge__platform" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>

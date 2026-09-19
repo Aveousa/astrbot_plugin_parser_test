@@ -1,5 +1,6 @@
 import asyncio
 from base64 import b64encode
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,116 @@ from core.parsers.douyin.slides import Image as SlidesImage
 from core.parsers.douyin.slides import PlayAddr as SlidesPlayAddr
 from core.parsers.douyin.slides import Video as SlidesVideo
 from core.parsers.douyin.video import AwemeDetailRes, Image, PlayAddr, Video
+
+
+def test_douyin_live_url_matches_dedicated_handler():
+    keyword, searched = DouyinParser.search_url(
+        "https://live.douyin.com/1234567890"
+    )
+
+    assert keyword == "live.douyin"
+    assert searched.group("web_rid") == "1234567890"
+
+
+def test_douyin_reflow_live_url_matches_dedicated_handler():
+    keyword, searched = DouyinParser.search_url(
+        "https://webcast.amemv.com/douyin/webcast/reflow/1234567890123456789"
+    )
+
+    assert keyword == "webcast.amemv"
+    assert searched.group("room_id") == "1234567890123456789"
+
+
+def test_extract_live_room_from_rsc_payload():
+    payload = (
+        '2:{"roomStore":{"roomInfo":{"room":{'
+        '"title":"直播标题",'
+        '"owner":{"nickname":"主播", "avatar_thumb":{"url_list":["avatar"]}},'
+        '"cover":{"url_list":["cover"]},'
+        '"like_count":1234'
+        "}}}}"
+    )
+    html = "self.__pace_f.push([1," + json.dumps(payload) + "])"
+
+    room = DouyinParser._extract_live_room(html)
+
+    assert room["title"] == "直播标题"
+    assert room["owner"]["nickname"] == "主播"
+    assert room["like_count"] == 1234
+    assert DouyinParser._first_url(room["cover"]) == "cover"
+
+
+def test_extract_live_room_from_reflow_rsc_payload():
+    payload = (
+        '5:["$","$L7",null,{"data":{"room":{'
+        '"title":"回流直播",'
+        '"owner":{"nickname":"主播","avatarThumb":{"urlList":["avatar"]}},'
+        '"cover":{"urlList":["cover"]},'
+        '"stats":{"userCountStr":"12"},"likeCount":34'
+        "}}}]"
+    )
+    html = "self.__rsc_f.push([1," + json.dumps(payload) + "])"
+
+    room = DouyinParser._extract_reflow_live_room(html)
+
+    assert room["title"] == "回流直播"
+    assert room["owner"]["nickname"] == "主播"
+    assert DouyinParser._first_url(room["owner"]["avatarThumb"]) == "avatar"
+    assert room["stats"]["userCountStr"] == "12"
+
+
+def test_extract_live_room_skips_empty_room_store_state():
+    payload = (
+        '2:{"roomStore":{"roomInfo":{"room":{"title":"真实直播"}}}'
+        ',"roomStore":{"roomInfo":{}}}'
+    )
+    html = "self.__pace_f.push([1," + json.dumps(payload) + "])"
+
+    room = DouyinParser._extract_live_room(html)
+
+    assert room["title"] == "真实直播"
+
+
+def test_live_room_prefers_snapshot_as_separate_send_group(tmp_path: Path):
+    parser = object.__new__(DouyinParser)
+    parser.cfg = SimpleNamespace(cache_dir=tmp_path)
+    parser.mycfg = SimpleNamespace(
+        worker_proxy_enabled=False,
+        worker_proxy_url="",
+        use_proxy=False,
+    )
+    parser.downloader = SimpleNamespace(
+        download_img=lambda _url, **_kwargs: tmp_path / "cover.jpg"
+    )
+
+    async def capture(_url, _fallback):
+        return tmp_path / "snapshot.jpg"
+
+    parser._capture_live_snapshot = capture
+    async def exercise():
+        result = parser._build_live_result(
+            "https://live.douyin.com/1234567890",
+            "1234567890",
+            {
+                "title": "直播标题",
+                "owner": {"nickname": "主播"},
+                "cover": {"url_list": ["cover"]},
+                "stream_url": {"hls_pull_url": "https://stream.example/live.m3u8"},
+            },
+            {},
+        )
+        snapshot = result.send_groups[0].contents[0]
+        snapshot_path = await snapshot.get_path()
+        return result, snapshot_path
+
+    result, snapshot_path = asyncio.run(exercise())
+
+    assert [content.path_task for content in result.contents] == [
+        tmp_path / "cover.jpg"
+    ]
+    assert len(result.send_groups) == 1
+    assert snapshot_path == tmp_path / "snapshot.jpg"
+    assert result.send_groups[0].force_merge is False
 
 
 def test_build_motion_photo_injects_xmp_and_appends_video(tmp_path: Path):

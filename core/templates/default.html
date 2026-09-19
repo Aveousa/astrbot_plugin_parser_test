@@ -18,6 +18,7 @@
     .card-badges { position: absolute; top: 17px; right: 0; display: flex; align-items: center;
                     gap: 7px; height: 24px; }
     .card-badge__live { display: block; width: 24px; height: 24px; object-fit: contain; opacity: .76; }
+    .card-badge__stream { display: block; width: 24px; height: 24px; object-fit: contain; opacity: .76; }
     .card-badge__platform { display: block; width: 48px; height: 24px; object-fit: contain; object-position: center; }
     .avatar { width: 58px; height: 58px; border-radius: 50%; object-fit: cover; background: #eef1f5; }
     .author-name { font-size: 21px; font-weight: 700; }
@@ -61,8 +62,9 @@
 </head>
 <body>
 <main class="card" data-card-root>
-  {% if platform.logo_uri or card.live_photo_uri %}
+  {% if platform.logo_uri or card.live_photo_uri or card.live_stream_uri %}
   <div class="card-badges">
+    {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
     {% if platform.logo_uri %}<img class="card-badge__platform" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>
