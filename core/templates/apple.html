@@ -393,6 +393,36 @@
       line-height: 1.5;
     }
 
+    .card-brand {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      margin: 18px 22px 0;
+      min-height: 42px;
+      opacity: .82;
+    }
+
+    .card-brand::before,
+    .card-brand::after {
+      content: "";
+      height: 1px;
+      flex: 1 1 auto;
+      background: linear-gradient(90deg, transparent, var(--card-divider-color));
+    }
+
+    .card-brand::after {
+      background: linear-gradient(90deg, var(--card-divider-color), transparent);
+    }
+
+    .card-brand__logo {
+      display: block;
+      width: 42px;
+      height: 42px;
+      flex: 0 0 auto;
+      object-fit: contain;
+      filter: drop-shadow(0 3px 7px rgba(30, 24, 76, 0.18));
+    }
+
     .repost {
       margin: 18px 22px 0;
       padding: 14px 15px;
@@ -555,6 +585,9 @@
   </section>
   {% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
+  <footer class="card-brand" aria-label="插件标识">
+    <img class="card-brand__logo" src="{{ (config.plugin_dir ~ '/logo.png')|file_uri }}" alt="插件 Logo">
+  </footer>
 </main>
 </body>
 </html>

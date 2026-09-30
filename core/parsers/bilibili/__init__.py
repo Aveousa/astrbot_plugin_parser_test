@@ -156,9 +156,9 @@ class BilibiliParser(BaseParser):
         # 处理分 p
         page_info = video_info.extract_info_with_page(page_num)
 
-        # 获取 AI 总结（默认提示）
+        # 获取 AI 总结（默认开启；可在 Bilibili 解析器配置中关闭）
         ai_summary = ""
-        if self.login._credential:
+        if getattr(self.mycfg, "show_ai_summary", True) and self.login._credential:
             try:
                 cid = await video.get_cid(page_info.index)
                 ai_conclusion = await video.get_ai_conclusion(cid)

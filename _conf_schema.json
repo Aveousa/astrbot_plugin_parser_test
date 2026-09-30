@@ -149,6 +149,12 @@
             "type": "string",
             "options": ["_360P", "_480P", "_720P", "_1080P", "_4K", "HDR", "DOLBY", "_8K"],
             "default": "_720P"
+          },
+          "show_ai_summary": {
+            "description": "显示 AI 总结",
+            "hint": "关闭后解析 Bilibili 视频时不请求或展示 AI 总结",
+            "type": "bool",
+            "default": true
           }
         }
       },

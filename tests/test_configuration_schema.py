@@ -225,6 +225,28 @@ def test_pixiv_exposes_multi_image_forward_setting():
     assert pixiv_defaults["multi_image_forward"] is False
 
 
+def test_bilibili_exposes_ai_summary_switch():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    bilibili_items = schema["parsers_template"]["templates"]["bilibili"]["items"]
+    assert bilibili_items["show_ai_summary"] == {
+        "description": "显示 AI 总结",
+        "hint": "关闭后解析 Bilibili 视频时不请求或展示 AI 总结",
+        "type": "bool",
+        "default": True,
+    }
+    bilibili_defaults = next(
+        item for item in defaults if item["__template_key"] == "bilibili"
+    )
+    assert bilibili_defaults["show_ai_summary"] is True
+    assert all(
+        "show_ai_summary" not in template["items"]
+        for name, template in schema["parsers_template"]["templates"].items()
+        if name != "bilibili"
+    )
+
+
 def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module):
     raw = config_module.AstrBotConfig(
         {

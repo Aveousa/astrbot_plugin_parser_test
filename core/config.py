@@ -160,6 +160,7 @@ class ParserItem(ConfigNode):
     cookies: str | None
     video_codec_list: list | None
     video_quality: str | None
+    show_ai_summary: bool | None
     nsfw: str | None
     multi_image_forward: bool | None
     max_page: int | None
