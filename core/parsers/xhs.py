@@ -12,7 +12,14 @@ from astrbot.api import logger
 
 from ..config import PluginConfig
 from ..cookie import CookieJar
-from ..data import ImageContent
+from ..data import (
+    ImageContent,
+    MotionPhotoAssets,
+    SendGroup,
+    VideoContent,
+    normalize_motion_photo_send_mode,
+)
+from ..exception import DownloadException
 from ..download import Downloader
 from ..utils import generate_file_name, safe_unlink
 from .base import BaseParser, ParseException, Platform, handle
@@ -96,6 +103,13 @@ class XHSParser(BaseParser):
         if self.cookiejar.cookies_str:
             self.headers["cookie"] = self.cookiejar.cookies_str
             self.ios_headers["cookie"] = self.cookiejar.cookies_str
+
+    @property
+    def motion_photo_send_mode(self) -> str:
+        """返回小红书实况作品的发送模式，兼容旧配置。"""
+        return normalize_motion_photo_send_mode(
+            getattr(getattr(self, "mycfg", None), "motion_photo_send_mode", None)
+        )
 
     @staticmethod
     def _engagement_payload(value: object) -> dict[str, Any]:
@@ -188,6 +202,7 @@ class XHSParser(BaseParser):
         engagement = self.engagement_from_mapping(self._engagement_payload(note_data))
 
         contents = []
+        send_contents = []
         has_motion_photo = False
         # 添加视频内容
         if video_url := note_detail.video_url:
@@ -197,7 +212,7 @@ class XHSParser(BaseParser):
 
         # 添加图片内容
         elif note_detail.imageList:
-            contents, has_motion_photo = self._create_image_contents(
+            contents, send_contents, has_motion_photo = self._create_image_contents(
                 note_detail.imageList,
                 headers=self.headers,
                 referer=url,
@@ -213,11 +228,23 @@ class XHSParser(BaseParser):
             text=note_detail.desc,
             author=author,
             contents=contents,
+            send_groups=(
+                [SendGroup(contents=send_contents, force_merge=len(note_detail.imageList) > 1)]
+                if send_contents and has_motion_photo
+                else []
+            ),
             like_count=engagement.likes,
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
-            extra={"has_motion_photo": True} if has_motion_photo else {},
+            extra=(
+                {
+                    "has_motion_photo": True,
+                    "motion_photo_send_mode": self.motion_photo_send_mode,
+                }
+                if has_motion_photo
+                else {}
+            ),
         )
 
     async def parse_discovery(self, url: str):
@@ -274,6 +301,7 @@ class XHSParser(BaseParser):
         note_data = convert(note_data, type=NoteData)
 
         contents = []
+        send_contents = []
         has_motion_photo = False
         if video_url := note_data.video_url:
             if preload_data:
@@ -283,7 +311,7 @@ class XHSParser(BaseParser):
                 img_urls = note_data.image_urls
             contents.append(self.create_video_content(video_url, img_urls[0]))
         elif note_data.imageList:
-            contents, has_motion_photo = self._create_image_contents(
+            contents, send_contents, has_motion_photo = self._create_image_contents(
                 note_data.imageList,
                 headers=self.headers,
                 referer=url,
@@ -293,13 +321,25 @@ class XHSParser(BaseParser):
             title=note_data.title,
             author=self.create_author(note_data.user.nickName, note_data.user.avatar),
             contents=contents,
+            send_groups=(
+                [SendGroup(contents=send_contents, force_merge=len(note_data.imageList) > 1)]
+                if send_contents and has_motion_photo
+                else []
+            ),
             text=note_data.desc,
             timestamp=note_data.time // 1000,
             like_count=engagement.likes,
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
-            extra={"has_motion_photo": True} if has_motion_photo else {},
+            extra=(
+                {
+                    "has_motion_photo": True,
+                    "motion_photo_send_mode": self.motion_photo_send_mode,
+                }
+                if has_motion_photo
+                else {}
+            ),
         )
 
     def _create_image_contents(
@@ -308,10 +348,12 @@ class XHSParser(BaseParser):
         *,
         headers: dict[str, str],
         referer: str,
-    ) -> tuple[list[ImageContent], bool]:
+    ) -> tuple[list[ImageContent], list[ImageContent | VideoContent], bool]:
         """创建小红书普通图片和实况图的媒体内容。"""
         contents: list[ImageContent] = []
+        send_contents: list[ImageContent | VideoContent] = []
         has_motion_photo = False
+        mode = self.motion_photo_send_mode
         for index, image in enumerate(images):
             if image.is_live_photo:
                 has_motion_photo = True
@@ -322,16 +364,43 @@ class XHSParser(BaseParser):
             video_url = image.video_url
             if image.is_live_photo:
                 if video_url:
-                    task = asyncio.create_task(
-                        self._download_motion_photo(
+                    assets_task = asyncio.create_task(
+                        self._download_motion_photo_assets(
                             image_url,
                             video_url,
                             headers=headers,
                             referer=referer,
+                            mode=mode,
                         ),
-                        name=f"xhs_motion_photo_{index}",
+                        name=f"xhs_motion_photo_assets_{index}",
                     )
-                    contents.append(ImageContent(task, card_error_placeholder=True))
+                    image_task = asyncio.create_task(
+                        self._motion_photo_asset_path(assets_task, "image"),
+                        name=f"xhs_motion_photo_image_{index}",
+                    )
+                    if mode == "video_only":
+                        image_task.add_done_callback(self._consume_task_exception)
+                    image_content = ImageContent(
+                        image_task,
+                        card_error_placeholder=True,
+                    )
+                    contents.append(image_content)
+                    if mode == "video_only":
+                        video_task = asyncio.create_task(
+                            self._motion_photo_asset_path(assets_task, "video"),
+                            name=f"xhs_motion_photo_video_{index}",
+                        )
+                        send_contents.append(VideoContent(video_task))
+                    elif mode == "video_and_livephoto":
+                        video_task = asyncio.create_task(
+                            self._motion_photo_asset_path(assets_task, "video"),
+                            name=f"xhs_motion_photo_video_{index}",
+                        )
+                        send_contents.extend(
+                            [image_content, VideoContent(video_task)]
+                        )
+                    else:
+                        send_contents.append(image_content)
                     continue
                 logger.warning(
                     f"[小红书] 实况图缺少视频地址，回退发送静态图: index={index}"
@@ -343,10 +412,19 @@ class XHSParser(BaseParser):
                 proxy=self.proxy,
                 worker_proxy_url=self.worker_proxy_url,
             )
-            contents.append(
-                ImageContent(task, card_error_placeholder=image.is_live_photo)
+            image_content = ImageContent(
+                task,
+                card_error_placeholder=image.is_live_photo,
             )
-        return contents, has_motion_photo
+            contents.append(image_content)
+            send_contents.append(image_content)
+        return contents, send_contents, has_motion_photo
+
+    @staticmethod
+    def _consume_task_exception(task) -> None:
+        """读取未参与发送的卡片预览任务异常，避免事件循环产生未处理告警。"""
+        if not task.cancelled():
+            task.exception()
 
     @staticmethod
     def _convert_to_jpeg(source: Path, target: Path) -> Path:
@@ -372,19 +450,34 @@ class XHSParser(BaseParser):
                 + ", ".join(remaining)
             )
 
-    async def _download_motion_photo(
+    @staticmethod
+    async def _motion_photo_asset_path(assets_task, asset_name: str) -> Path:
+        assets: MotionPhotoAssets = await assets_task
+        path = assets.video if asset_name == "video" else (
+            assets.motion_photo or assets.cover
+        )
+        if path is None:
+            raise DownloadException("实况作品资源下载失败")
+        return path
+
+    async def _download_motion_photo_assets(
         self,
         image_url: str,
         video_url: str,
         *,
         headers: dict[str, str],
         referer: str,
-    ) -> Path:
+        mode: str | None = None,
+    ) -> MotionPhotoAssets:
+        """下载并封装实况图，按发送模式决定是否保留中间资源。"""
+        mode = normalize_motion_photo_send_mode(
+            self.motion_photo_send_mode if mode is None else mode
+        )
         cache_key = f"{image_url}|{video_url}"
         cache_stem = Path(generate_file_name(cache_key)).stem
         output_path = self.cfg.cache_dir / f"xhs_motion_{cache_stem}.jpg"
-        if output_path.exists():
-            return output_path
+        if output_path.exists() and mode == "livephoto_only":
+            return MotionPhotoAssets(motion_photo=output_path)
 
         work_id = uuid4().hex
         image_path = self.cfg.cache_dir / (
@@ -417,39 +510,84 @@ class XHSParser(BaseParser):
             video_task,
             return_exceptions=True,
         )
+        image_download = image_result if isinstance(image_result, Path) else None
+        video_download = video_result if isinstance(video_result, Path) else None
 
-        if isinstance(image_result, BaseException):
-            paths = {video_result} if isinstance(video_result, Path) else set()
-            await self._cleanup_motion_photo_files(paths, reason="静态封面下载失败")
-            raise image_result
-        if isinstance(video_result, BaseException):
-            logger.warning(f"[小红书] 实况片段下载失败，回退发送静态图: {video_result}")
-            return image_result
+        if image_download is None:
+            if mode == "livephoto_only" and video_download is not None:
+                await self._cleanup_motion_photo_files(
+                    {video_download},
+                    reason="静态封面下载失败",
+                )
+            if video_download is not None and mode != "livephoto_only":
+                logger.warning("[小红书] 静态封面下载失败，保留效果视频供发送")
+                return MotionPhotoAssets(video=video_download)
+            if isinstance(image_result, BaseException):
+                raise image_result
+            raise DownloadException("实况图静态封面下载失败")
+
+        if video_download is None:
+            if isinstance(video_result, BaseException):
+                logger.warning(
+                    f"[小红书] 实况片段下载失败，回退发送静态图: {video_result}"
+                )
+            return MotionPhotoAssets(cover=image_download)
 
         try:
-            await to_thread(self._convert_to_jpeg, image_result, jpeg_path)
+            await to_thread(self._convert_to_jpeg, image_download, jpeg_path)
             from .douyin.motion_photo import build_motion_photo
 
             result = await to_thread(
                 build_motion_photo,
                 jpeg_path,
-                video_result,
+                video_download,
                 output_path,
             )
         except (ImportError, OSError, ValueError) as exc:
-            logger.warning(f"[小红书] Motion Photo 封装失败，回退发送静态图: {exc}")
-            await self._cleanup_motion_photo_files(
-                {video_result, jpeg_path},
-                reason="Motion Photo 封装失败",
+            logger.warning(f"[小红书] Motion Photo 封装失败，回退资源: {exc}")
+            if mode == "livephoto_only":
+                await self._cleanup_motion_photo_files(
+                    {jpeg_path, video_download},
+                    reason="Motion Photo 封装失败",
+                )
+            return MotionPhotoAssets(
+                cover=image_download,
+                video=video_download,
             )
-            return image_result
 
-        await self._cleanup_motion_photo_files(
-            {image_result, jpeg_path, video_result},
-            reason="Motion Photo 封装成功",
-        )
         logger.info(f"[小红书] Motion Photo 封装完成: {result.name}")
-        return result
+        if mode == "livephoto_only":
+            await self._cleanup_motion_photo_files(
+                {image_download, jpeg_path, video_download},
+                reason="Motion Photo 封装成功",
+            )
+        else:
+            logger.info("[小红书] 按发送模式保留 Motion Photo 中间资源")
+        return MotionPhotoAssets(
+            motion_photo=result,
+            cover=jpeg_path,
+            video=video_download,
+        )
+
+    async def _download_motion_photo(
+        self,
+        image_url: str,
+        video_url: str,
+        *,
+        headers: dict[str, str],
+        referer: str,
+        mode: str | None = None,
+    ) -> Path:
+        assets = await self._download_motion_photo_assets(
+            image_url,
+            video_url,
+            headers=headers,
+            referer=referer,
+            mode=mode,
+        )
+        if path := (assets.motion_photo or assets.cover or assets.video):
+            return path
+        raise DownloadException("实况作品资源下载失败")
 
     def _extract_initial_state_json(self, html: str) -> dict[str, Any]:
         pattern = r"window\.__INITIAL_STATE__=(.*?)</script>"

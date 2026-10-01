@@ -14,13 +14,15 @@
     "use_proxy": false,
     "worker_proxy_enabled": false,
     "worker_proxy_url": "",
-    "cookies": ""
+    "cookies": "",
+    "motion_photo_send_mode": "livephoto_only"
   },
   {
     "__template_key": "xhs",
     "enable": true,
     "use_proxy": false,
-    "cookies": ""
+    "cookies": "",
+    "motion_photo_send_mode": "livephoto_only"
   },
   {
     "__template_key": "pixiv",

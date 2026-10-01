@@ -6,6 +6,18 @@ from pathlib import Path
 from typing import Any, Mapping, TypedDict
 
 
+# 实况作品的发送模式。配置缺失或填写了未知值时，继续沿用历史行为：
+# 只发送封装后的单文件 Live Photo。
+MOTION_PHOTO_SEND_MODES = frozenset(
+    {"video_and_livephoto", "video_only", "livephoto_only"}
+)
+
+
+def normalize_motion_photo_send_mode(value: object) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in MOTION_PHOTO_SEND_MODES else "livephoto_only"
+
+
 def _coerce_count(value: Any) -> int | None:
     """把平台返回的计数值归一化为整数。
 
@@ -106,6 +118,20 @@ def repr_path_task(path_task: Path | Task[Path]) -> str:
         return f"path={path_task.name}"
     else:
         return f"task={path_task.get_name()}, done={path_task.done()}"
+
+
+@dataclass(slots=True)
+class MotionPhotoAssets:
+    """实况图下载/封装后的共享资源。
+
+    一个下载任务同时为卡片预览、Live Photo 和效果视频提供路径，避免为了
+    不同发送模式重复下载同一份封面和动态画面。``motion_photo`` 为空时，
+    ``cover`` 仍可作为静态回退；``video`` 则可在封装失败时继续发送效果视频。
+    """
+
+    motion_photo: Path | None = None
+    cover: Path | None = None
+    video: Path | None = None
 
 
 @dataclass(repr=False, slots=True)

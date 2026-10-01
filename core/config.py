@@ -163,6 +163,7 @@ class ParserItem(ConfigNode):
     show_ai_summary: bool | None
     nsfw: str | None
     multi_image_forward: bool | None
+    motion_photo_send_mode: str | None
     max_page: int | None
 
     @property
@@ -373,6 +374,10 @@ class PluginConfig(ConfigNode):
                             else [legacy_codecs]
                         )
                     merged.pop("video_codecs", None)
+            # 已安装的旧版 default_template.json 可能还没有实况作品发送模式；
+            # 即使它被选作迁移基准，也要为两个支持实况图的平台补上默认值。
+            if key in {"douyin", "xhs"}:
+                merged.setdefault("motion_photo_send_mode", "livephoto_only")
             normalized.append(merged)
 
         if not normalized:

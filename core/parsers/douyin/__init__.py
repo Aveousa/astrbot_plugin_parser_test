@@ -17,7 +17,13 @@ from astrbot.api import logger
 
 from ...config import PluginConfig
 from ...cookie import CookieJar
-from ...data import ImageContent, SendGroup
+from ...data import (
+    ImageContent,
+    MotionPhotoAssets,
+    SendGroup,
+    VideoContent,
+    normalize_motion_photo_send_mode,
+)
 from ...exception import DownloadException
 from ...utils import exec_ffmpeg_cmd, generate_file_name, safe_unlink
 from ..base import (
@@ -159,6 +165,13 @@ class DouyinParser(BaseParser):
         self.mycfg = config.parser.douyin
         self.cookiejar = CookieJar(config, self.mycfg, domain="douyin.com")
         self._set_cookies()
+
+    @property
+    def motion_photo_send_mode(self) -> str:
+        """返回抖音实况作品的发送模式，兼容旧配置。"""
+        return normalize_motion_photo_send_mode(
+            getattr(getattr(self, "mycfg", None), "motion_photo_send_mode", None)
+        )
 
     @property
     def worker_proxy_url(self) -> str | None:
@@ -669,18 +682,22 @@ class DouyinParser(BaseParser):
         # 使用新的简洁构建方式
         contents = []
         send_groups: list[SendGroup] = []
+        send_contents = []
 
         # 添加图片内容
         if video_data.images:
             logger.debug(f"[抖音] 检测到图文内容，图片数量: {len(video_data.images)}")
-            contents.extend(
-                self._create_douyin_image_contents(
-                    video_data.images,
-                    headers=self.ios_headers,
-                    referer=url,
-                )
+            image_contents, image_send_contents, _ = self._create_douyin_image_contents(
+                video_data.images,
+                headers=self.ios_headers,
+                referer=url,
             )
-            send_groups = self._gallery_send_groups(contents, len(video_data.images))
+            contents.extend(image_contents)
+            send_contents.extend(image_send_contents)
+            send_groups = self._gallery_send_groups(
+                send_contents,
+                len(video_data.images),
+            )
 
         # 添加视频内容
         elif video_data.video:
@@ -738,7 +755,10 @@ class DouyinParser(BaseParser):
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
-            extra=self._motion_photo_extra(video_data.images),
+            extra=self._motion_photo_extra(
+                video_data.images,
+                self.motion_photo_send_mode,
+            ),
         )
 
     @staticmethod
@@ -748,9 +768,15 @@ class DouyinParser(BaseParser):
         return None
 
     @staticmethod
-    def _motion_photo_extra(images: list[Any] | None) -> dict[str, bool]:
+    def _motion_photo_extra(
+        images: list[Any] | None,
+        mode: str = "livephoto_only",
+    ) -> dict[str, Any]:
         if any(image.clip_type == 5 for image in images or []):
-            return {"has_motion_photo": True}
+            return {
+                "has_motion_photo": True,
+                "motion_photo_send_mode": normalize_motion_photo_send_mode(mode),
+            }
         return {}
 
     async def fetch_signed_aweme_detail(self, aweme_id: str):
@@ -969,12 +995,14 @@ class DouyinParser(BaseParser):
         *,
         headers: dict[str, str],
         referer: str,
-    ) -> list[ImageContent]:
+    ) -> tuple[list[ImageContent], list[ImageContent | VideoContent], bool]:
         """创建普通图片或已封装的抖音实况图下载任务。"""
         contents: list[ImageContent] = []
+        send_contents: list[ImageContent | VideoContent] = []
         image_headers = self._build_image_headers(referer, base_headers=headers)
         clip_types = [image.clip_type for image in images]
         live_count = sum(clip_type == 5 for clip_type in clip_types)
+        mode = self.motion_photo_send_mode
         video_source_count = sum(
             self._motion_photo_video_url(image) is not None for image in images
         )
@@ -996,16 +1024,38 @@ class DouyinParser(BaseParser):
             video_url = self._motion_photo_video_url(image)
             if image.clip_type == 5 and video_url:
                 logger.info(f"[抖音] 检测到实况图，开始封装: index={index}")
-                task = create_task(
-                    self._download_motion_photo(
+                assets_task = create_task(
+                    self._download_motion_photo_assets(
                         image_url,
                         video_url,
                         headers=headers,
                         referer=referer,
+                        mode=mode,
                     ),
-                    name=f"douyin_motion_photo_{index}",
+                    name=f"douyin_motion_photo_assets_{index}",
                 )
-                contents.append(ImageContent(task, card_error_placeholder=True))
+                image_task = create_task(
+                    self._motion_photo_asset_path(assets_task, "image"),
+                    name=f"douyin_motion_photo_image_{index}",
+                )
+                if mode == "video_only":
+                    image_task.add_done_callback(self._consume_task_exception)
+                image_content = ImageContent(image_task, card_error_placeholder=True)
+                contents.append(image_content)
+                if mode == "video_only":
+                    video_task = create_task(
+                        self._motion_photo_asset_path(assets_task, "video"),
+                        name=f"douyin_motion_photo_video_{index}",
+                    )
+                    send_contents.append(VideoContent(video_task))
+                elif mode == "video_and_livephoto":
+                    video_task = create_task(
+                        self._motion_photo_asset_path(assets_task, "video"),
+                        name=f"douyin_motion_photo_video_{index}",
+                    )
+                    send_contents.extend([image_content, VideoContent(video_task)])
+                else:
+                    send_contents.append(image_content)
                 continue
 
             if image.clip_type == 5:
@@ -1019,13 +1069,19 @@ class DouyinParser(BaseParser):
                 proxy=self.proxy,
                 worker_proxy_url=self.worker_proxy_url,
             )
-            contents.append(
-                ImageContent(
-                    task,
-                    card_error_placeholder=image.clip_type == 5,
-                )
+            image_content = ImageContent(
+                task,
+                card_error_placeholder=image.clip_type == 5,
             )
-        return contents
+            contents.append(image_content)
+            send_contents.append(image_content)
+        return contents, send_contents, live_count > 0
+
+    @staticmethod
+    def _consume_task_exception(task) -> None:
+        """读取未参与发送的卡片预览任务异常，避免事件循环产生未处理告警。"""
+        if not task.cancelled():
+            task.exception()
 
     @staticmethod
     def _motion_photo_cover_url(urls: list[str]) -> str:
@@ -1071,19 +1127,35 @@ class DouyinParser(BaseParser):
             f"数量={len(paths)}"
         )
 
-    async def _download_motion_photo(
+    @staticmethod
+    async def _motion_photo_asset_path(assets_task, asset_name: str) -> Path:
+        assets: MotionPhotoAssets = await assets_task
+        path = assets.video if asset_name == "video" else (
+            assets.motion_photo or assets.cover
+        )
+        if path is None:
+            raise DownloadException("实况作品资源下载失败")
+        return path
+
+    async def _download_motion_photo_assets(
         self,
         image_url: str,
         video_url: str,
         *,
         headers: dict[str, str],
         referer: str,
-    ) -> Path:
+        mode: str | None = None,
+    ) -> MotionPhotoAssets:
+        """下载并封装实况图，按发送模式决定是否保留中间资源。"""
+        mode = normalize_motion_photo_send_mode(
+            self.motion_photo_send_mode if mode is None else mode
+        )
         cache_key = f"{image_url}|{video_url}"
         cache_stem = Path(generate_file_name(cache_key)).stem
         output_path = self.cfg.cache_dir / f"motion_{cache_stem}.jpg"
-        if output_path.exists():
-            return output_path
+        # 需要发送效果视频的模式不能因为已有封装缓存而跳过动态片段下载。
+        if output_path.exists() and mode == "livephoto_only":
+            return MotionPhotoAssets(motion_photo=output_path)
 
         work_id = uuid4().hex
         image_task = self.downloader.download_img(
@@ -1105,46 +1177,80 @@ class DouyinParser(BaseParser):
             video_task,
             return_exceptions=True,
         )
+        image_path = image_result if isinstance(image_result, Path) else None
+        video_path = video_result if isinstance(video_result, Path) else None
 
-        if isinstance(image_result, BaseException):
-            if isinstance(video_result, Path):
+        if image_path is None:
+            if mode == "livephoto_only" and video_path is not None:
                 await self._cleanup_motion_photo_files(
-                    {video_result},
+                    {video_path},
                     reason="静态封面下载失败",
                 )
-            raise image_result
-        if isinstance(video_result, BaseException):
-            logger.warning(
-                f"[抖音] 实况片段下载失败，回退发送静态图: {video_result}"
-            )
-            return image_result
+            if video_path is not None and mode != "livephoto_only":
+                logger.warning("[抖音] 静态封面下载失败，保留效果视频供发送")
+                return MotionPhotoAssets(video=video_path)
+            if isinstance(image_result, BaseException):
+                raise image_result
+            raise DownloadException("实况图静态封面下载失败")
+
+        if video_path is None:
+            if isinstance(video_result, BaseException):
+                logger.warning(
+                    f"[抖音] 实况片段下载失败，回退发送静态图: {video_result}"
+                )
+            return MotionPhotoAssets(cover=image_path)
 
         from .motion_photo import build_motion_photo
 
         try:
             result = await to_thread(
                 build_motion_photo,
-                image_result,
-                video_result,
+                image_path,
+                video_path,
                 output_path,
             )
         except (OSError, ValueError) as e:
-            logger.warning(f"[抖音] Motion Photo 封装失败，回退发送静态图: {e}")
-            await self._cleanup_motion_photo_files(
-                {video_result},
-                reason="Motion Photo 封装失败",
-            )
-            return image_result
+            logger.warning(f"[抖音] Motion Photo 封装失败，回退资源: {e}")
+            if mode == "livephoto_only":
+                await self._cleanup_motion_photo_files(
+                    {video_path},
+                    reason="Motion Photo 封装失败",
+                )
+            return MotionPhotoAssets(cover=image_path, video=video_path)
 
         logger.info(f"[抖音] Motion Photo 封装完成: {result.name}")
-        intermediate_paths = {
-            path for path in (image_result, video_result) if path != result
-        }
-        await self._cleanup_motion_photo_files(
-            intermediate_paths,
-            reason="Motion Photo 封装成功",
+        if mode == "livephoto_only":
+            await self._cleanup_motion_photo_files(
+                {image_path, video_path},
+                reason="Motion Photo 封装成功",
+            )
+        else:
+            logger.info("[抖音] 按发送模式保留 Motion Photo 中间资源")
+        return MotionPhotoAssets(
+            motion_photo=result,
+            cover=image_path,
+            video=video_path,
         )
-        return result
+
+    async def _download_motion_photo(
+        self,
+        image_url: str,
+        video_url: str,
+        *,
+        headers: dict[str, str],
+        referer: str,
+        mode: str | None = None,
+    ) -> Path:
+        assets = await self._download_motion_photo_assets(
+            image_url,
+            video_url,
+            headers=headers,
+            referer=referer,
+            mode=mode,
+        )
+        if path := (assets.motion_photo or assets.cover or assets.video):
+            return path
+        raise DownloadException("实况作品资源下载失败")
 
     async def probe_video_url(self, video_id: str, referer: str) -> ProbedVideo:
         probed_by_size: dict[int, ProbedVideo] = {}
@@ -1240,30 +1346,31 @@ class DouyinParser(BaseParser):
                         f"图片={len(detail_data.images)}"
                     )
         contents = []
+        send_contents = []
 
         # 添加图片内容
         if slides_data.images:
             logger.debug(f"[抖音] 检测到幻灯片图片，数量: {len(slides_data.images)}")
-            contents.extend(
-                self._create_douyin_image_contents(
-                    slides_data.images,
-                    headers=self.android_headers,
-                    referer=self._build_iesdouyin_url("slides", video_id),
-                )
+            image_contents, image_send_contents, _ = self._create_douyin_image_contents(
+                slides_data.images,
+                headers=self.android_headers,
+                referer=self._build_iesdouyin_url("slides", video_id),
             )
+            contents.extend(image_contents)
+            send_contents.extend(image_send_contents)
 
         # 添加动态内容
         if dynamic_urls := slides_data.dynamic_urls:
             logger.debug(f"[抖音] 检测到幻灯片动态效果，数量: {len(dynamic_urls)}")
-            contents.extend(
-                self.create_dynamic_contents(
-                    dynamic_urls,
-                    headers=self._build_media_headers(
-                        self._build_iesdouyin_url("slides", video_id),
-                        base_headers=self.android_headers,
-                    ),
-                )
+            dynamic_contents = self.create_dynamic_contents(
+                dynamic_urls,
+                headers=self._build_media_headers(
+                    self._build_iesdouyin_url("slides", video_id),
+                    base_headers=self.android_headers,
+                ),
             )
+            contents.extend(dynamic_contents)
+            send_contents.extend(dynamic_contents)
 
         # 构建作者
         author = self.create_author(
@@ -1286,12 +1393,15 @@ class DouyinParser(BaseParser):
             author=author,
             contents=contents,
             send_groups=self._gallery_send_groups(
-                contents, len(slides_data.images)
+                send_contents, len(slides_data.images)
             ),
             timestamp=slides_data.create_time,
             like_count=engagement.likes,
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
-            extra=self._motion_photo_extra(slides_data.images),
+            extra=self._motion_photo_extra(
+                slides_data.images,
+                self.motion_photo_send_mode,
+            ),
         )

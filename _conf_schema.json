@@ -175,7 +175,14 @@
             "type": "string",
             "default": ""
           },
-          "cookies": {"description": "Cookies", "type": "text", "default": ""}
+          "cookies": {"description": "Cookies", "type": "text", "default": ""},
+          "motion_photo_send_mode": {
+            "description": "实况作品发送模式",
+            "type": "string",
+            "options": ["video_and_livephoto", "video_only", "livephoto_only"],
+            "labels": ["同时发送实况图和效果视频", "仅发送效果视频", "仅发送单文件实况图"],
+            "default": "livephoto_only"
+          }
         }
       },
       "xhs": {
@@ -183,7 +190,14 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
-          "cookies": {"description": "Cookies", "type": "text", "default": ""}
+          "cookies": {"description": "Cookies", "type": "text", "default": ""},
+          "motion_photo_send_mode": {
+            "description": "实况作品发送模式",
+            "type": "string",
+            "options": ["video_and_livephoto", "video_only", "livephoto_only"],
+            "labels": ["同时发送实况图和效果视频", "仅发送效果视频", "仅发送单文件实况图"],
+            "default": "livephoto_only"
+          }
         }
       },
       "pixiv": {

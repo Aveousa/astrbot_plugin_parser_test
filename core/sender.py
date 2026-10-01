@@ -25,6 +25,7 @@ from .data import (
     SendGroup,
     TextContent,
     VideoContent,
+    normalize_motion_photo_send_mode,
 )
 from .exception import (
     DownloadException,
@@ -314,6 +315,14 @@ class MessageSender:
         groups: list[SendGroup],
     ) -> list[SendGroup]:
         """为抖音/小红书实况图追加说明图并强制折叠转发。"""
+        mode = normalize_motion_photo_send_mode(
+            result.extra.get("motion_photo_send_mode")
+        )
+        # video_only 已经由解析器把实况图替换为效果视频；不追加说明图，
+        # 也不把视频强制折叠成旧版 Live Photo 转发。
+        if mode == "video_only":
+            return groups
+
         if (
             result.platform.name.lower() not in self._LIVE_PHOTO_PLATFORMS
             or not result.has_motion_photo
