@@ -84,7 +84,7 @@ def _build_result(show_playlist_cover: bool | None):
         ),
         (
             NetEaseMusicParser,
-            "网易云歌单 https://music.163.com/m/playlist?id=123456",
+            "网易云歌单 https://music.163.com/m/playlist?app_version=9.5.15&id=123456&userid=1312543631",
             "music.163.com/m/playlist",
         ),
         (
@@ -126,6 +126,18 @@ def test_music_routes_match_links_embedded_in_text(
 
     assert keyword == expected_keyword
     assert searched.group(0) in text
+
+
+def test_netease_playlist_route_extracts_playlist_id_not_user_ids():
+    url = (
+        "https://music.163.com/m/playlist?app_version=9.5.15&"
+        "id=9605284231&userid=1312543631&dlt=0846&creatorId=1312543631"
+    )
+
+    keyword, searched = NetEaseMusicParser.search_url(url)
+
+    assert keyword == "music.163.com/m/playlist"
+    assert searched.group("playlist_id") == "9605284231"
 
 
 @pytest.mark.parametrize(

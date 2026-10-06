@@ -491,19 +491,19 @@ class NetEaseMusicParser(PlaylistParserBase):
 
     @handle(
         "music.163.com/#/playlist",
-        r"music\.163\.com/(?:#/|m/)?playlist\?id=(?P<playlist_id>\d+)",
+        r"music\.163\.com/(?:#/|m/)?playlist\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=&|\s|$)",
     )
     @handle(
         "music.163.com/playlist",
-        r"music\.163\.com/(?:#/|m/)?playlist\?id=(?P<playlist_id>\d+)",
+        r"music\.163\.com/(?:#/|m/)?playlist\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=&|\s|$)",
     )
     @handle(
         "music.163.com/m/playlist",
-        r"music\.163\.com/m/playlist\?id=(?P<playlist_id>\d+)",
+        r"music\.163\.com/m/playlist\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=&|\s|$)",
     )
     @handle(
         "y.music.163.com/m/playlist",
-        r"y\.music\.163\.com/m/playlist\?[^\s]*id=(?P<playlist_id>\d+)",
+        r"y\.music\.163\.com/m/playlist\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=&|\s|$)",
     )
     async def _handle_playlist(self, searched):
         playlist_id = searched.group("playlist_id")
