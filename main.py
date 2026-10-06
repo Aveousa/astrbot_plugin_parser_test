@@ -138,7 +138,12 @@ class ParserPlugin(Star):
         if not chain:
             return
 
-        text = event.message_str
+        text = event.message_str or ""
+        plain_text = "".join(
+            segment.text for segment in chain if isinstance(segment, Plain)
+        )
+        if plain_text and plain_text not in text:
+            text = f"{text}\n{plain_text}" if text else plain_text
 
         # 指定机制：专门@其他bot的消息不解析
         self_id = event.get_self_id()
@@ -208,6 +213,11 @@ class ParserPlugin(Star):
         if self.debouncer.hit_link(umo, link):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
+
+        try:
+            await event.react("👍")
+        except Exception as exc:
+            logger.warning(f"添加解析确认表情失败，继续解析: {exc}")
 
         # 解析
         parse_res = await self.parser_map[keyword].parse(keyword, searched)

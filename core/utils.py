@@ -276,6 +276,7 @@ def extract_json_url(data: dict | str) -> str | None:
         "xhslink.com",
         "xiaohongshu.com",
         "pixiv.net",
+        "163cn.tv",
         "music.163.com",
         "c6.y.qq.com",
         "y.qq.com",

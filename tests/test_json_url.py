@@ -49,3 +49,16 @@ def test_extract_json_url_prefers_nested_supported_share_over_unrelated_url(util
         },
     }
     assert utils_module.extract_json_url(data) == "https://www.xiaohongshu.com/explore/abc?x=1"
+
+
+def test_extract_json_url_recognizes_netease_short_share(utils_module):
+    data = {
+        "prompt": "https://example.com/landing",
+        "meta": {
+            "detail": {
+                "nested": "open https://163cn.tv/AbC_123 now",
+            }
+        },
+    }
+
+    assert utils_module.extract_json_url(data) == "https://163cn.tv/AbC_123"

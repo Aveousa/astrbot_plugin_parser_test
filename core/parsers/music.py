@@ -475,13 +475,24 @@ class QQMusicParser(PlaylistParserBase):
 class NetEaseMusicParser(PlaylistParserBase):
     platform = Platform(name="netease", display_name="网易云音乐")
 
+    @handle("163cn.tv", r"163cn\.tv/[A-Za-z0-9_-]+/?")
+    async def _handle_short(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return await self._redirect_and_parse(url)
+
     @handle(
         "music.163.com/#/playlist",
-        r"music\.163\.com/(?:#/)?playlist\?id=(?P<playlist_id>\d+)",
+        r"music\.163\.com/(?:#/|m/)?playlist\?id=(?P<playlist_id>\d+)",
     )
     @handle(
         "music.163.com/playlist",
-        r"music\.163\.com/(?:#/)?playlist\?id=(?P<playlist_id>\d+)",
+        r"music\.163\.com/(?:#/|m/)?playlist\?id=(?P<playlist_id>\d+)",
+    )
+    @handle(
+        "music.163.com/m/playlist",
+        r"music\.163\.com/m/playlist\?id=(?P<playlist_id>\d+)",
     )
     async def _handle_playlist(self, searched):
         playlist_id = searched.group("playlist_id")
