@@ -357,6 +357,9 @@ class PlaylistParserBase(BaseParser):
                 "playlist_tracks": playlist_tracks,
                 "playlist_id": identifier,
                 "playlist_track_count": track_count,
+                # 这张封面用于信息卡片预览；发送器在卡片成功发送后会
+                # 将它从独立媒体消息中排除，避免同一封面重复发送。
+                "playlist_cover_only": bool(contents),
                 "show_playlist_url": self._show_playlist_url(),
             },
         )
@@ -420,6 +423,10 @@ class QQMusicParser(PlaylistParserBase):
     @handle(
         "i.y.qq.com/n2/m/share/details/taoge",
         r"i\.y\.qq\.com/n2/m/share/details/taoge\.html\?[^\s]*id=(?P<playlist_id>\d+)",
+    )
+    @handle(
+        "i2.y.qq.com/n3/other/pages/details/playlist",
+        r"i2\.y\.qq\.com/n3/other/pages/details/playlist\.html\?[^\s]*id=(?P<playlist_id>\d+)",
     )
     async def _handle_playlist(self, searched):
         playlist_id = searched.group("playlist_id")
@@ -493,6 +500,10 @@ class NetEaseMusicParser(PlaylistParserBase):
     @handle(
         "music.163.com/m/playlist",
         r"music\.163\.com/m/playlist\?id=(?P<playlist_id>\d+)",
+    )
+    @handle(
+        "y.music.163.com/m/playlist",
+        r"y\.music\.163\.com/m/playlist\?[^\s]*id=(?P<playlist_id>\d+)",
     )
     async def _handle_playlist(self, searched):
         playlist_id = searched.group("playlist_id")

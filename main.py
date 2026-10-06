@@ -214,11 +214,6 @@ class ParserPlugin(Star):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
-        try:
-            await event.react("👍")
-        except Exception as exc:
-            logger.warning(f"添加解析确认表情失败，继续解析: {exc}")
-
         # 解析
         parse_res = await self.parser_map[keyword].parse(keyword, searched)
 

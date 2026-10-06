@@ -304,10 +304,34 @@ class MessageSender:
         text = "\n".join(line for line in lines if line).strip()
         return [Plain(text)] if text else []
 
-    def _resolve_groups(self, result: ParseResult) -> list[SendGroup]:
+    def _resolve_groups(
+        self,
+        result: ParseResult,
+        *,
+        omit_playlist_cover: bool = False,
+    ) -> list[SendGroup]:
         if result.send_groups:
-            return result.send_groups
-        return [SendGroup(contents=list(MessageSender._iter_contents(result)))]
+            groups = result.send_groups
+        else:
+            groups = [SendGroup(contents=list(MessageSender._iter_contents(result)))]
+
+        if not omit_playlist_cover or result.extra.get("playlist_cover_only") is not True:
+            return groups
+
+        # 歌单封面仍保留在 ParseResult.contents 中供卡片渲染；卡片已成功
+        # 发送后，只从实际媒体发送分组中去掉同一个内容对象。
+        cover = result.contents[0] if result.contents else None
+        if cover is None:
+            return groups
+
+        return [
+            SendGroup(
+                contents=[content for content in group.contents if content is not cover],
+                force_merge=group.force_merge,
+                render_card=group.render_card,
+            )
+            for group in groups
+        ]
 
     def _prepare_motion_photo_group(
         self,
@@ -397,20 +421,24 @@ class MessageSender:
         3. 必要时合并转发
         4. 发送媒体；没有可发送媒体时保留原有文本兜底
         """
-        groups = self._prepare_motion_photo_group(
-            result,
-            self._resolve_groups(result),
-        )
-
         # 全局卡片开关开启时，每个解析结果固定先发送一张信息卡片。媒体分组
         # 只决定媒体本身是否折叠，避免图集因卡片计数而改变发送结构。
-        await self._send_result_card(event, result)
+        card_sent = await self._send_result_card(event, result)
+
+        groups = self._prepare_motion_photo_group(
+            result,
+            self._resolve_groups(result, omit_playlist_cover=card_sent),
+        )
 
         sent = False
         for group in groups:
             sent = await self._send_group(event, result, group) or sent
 
         if not sent:
+            # 歌单封面已作为卡片预览发送；过滤掉独立封面后，不再额外发送
+            # 一条纯文本兜底消息，避免卡片后又出现无意义的重复内容。
+            if card_sent and result.extra.get("playlist_cover_only") is True:
+                return
             segs = self._build_text_fallback(result)
             if not segs:
                 logger.warning("发送结果为空，不执行发送")

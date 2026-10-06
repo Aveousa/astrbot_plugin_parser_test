@@ -98,7 +98,7 @@ def _plugin(main_module, calls: list[str], *, hit_link: bool = False):
     return plugin
 
 
-def test_matched_link_reacts_before_parser_and_sender():
+def test_matched_link_parses_without_reaction():
     main_module = _load_main_module()
     calls: list[str] = []
     plugin = _plugin(main_module, calls)
@@ -106,8 +106,8 @@ def test_matched_link_reacts_before_parser_and_sender():
 
     asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
 
-    assert event.reactions == ["👍"]
-    assert calls == ["react", "parse", "send"]
+    assert event.reactions == []
+    assert calls == ["parse", "send"]
 
 
 def test_debounced_link_does_not_react_or_parse():
@@ -122,7 +122,7 @@ def test_debounced_link_does_not_react_or_parse():
     assert calls == []
 
 
-def test_reaction_failure_does_not_block_parsing():
+def test_matching_does_not_call_reaction():
     main_module = _load_main_module()
     calls: list[str] = []
     plugin = _plugin(main_module, calls)
@@ -135,7 +135,8 @@ def test_reaction_failure_does_not_block_parsing():
 
     asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
 
-    assert calls == ["react", "parse", "send"]
+    assert event.reactions == []
+    assert calls == ["parse", "send"]
 
 
 def test_plain_message_chain_is_used_when_adapter_message_text_is_empty():
@@ -151,5 +152,5 @@ def test_plain_message_chain_is_used_when_adapter_message_text_is_empty():
 
     asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
 
-    assert event.reactions == ["👍"]
-    assert calls == ["react", "parse", "send"]
+    assert event.reactions == []
+    assert calls == ["parse", "send"]

@@ -73,6 +73,11 @@ def _build_result(show_playlist_cover: bool | None):
             "c6.y.qq.com/base/fcgi-bin/u",
         ),
         (
+            QQMusicParser,
+            "QQ 音乐歌单 https://i2.y.qq.com/n3/other/pages/details/playlist.html?hosteuin=abc&id=9013740134&source=qq",
+            "i2.y.qq.com/n3/other/pages/details/playlist",
+        ),
+        (
             NetEaseMusicParser,
             "网易云歌单：https://163cn.tv/AbC_123",
             "163cn.tv",
@@ -86,6 +91,11 @@ def _build_result(show_playlist_cover: bool | None):
             NetEaseMusicParser,
             "网易云歌单 https://music.163.com/#/playlist?id=123456",
             "music.163.com/#/playlist",
+        ),
+        (
+            NetEaseMusicParser,
+            "网易云歌单 https://y.music.163.com/m/playlist?app_version=9.5.15&id=12431056413&userid=1312543631",
+            "y.music.163.com/m/playlist",
         ),
         (
             KugouMusicParser,
@@ -131,3 +141,4 @@ def test_playlist_cover_setting_controls_only_main_cover(
     assert len(result.extra["playlist_tracks"]) == 1
     assert "歌曲数: 1" in result.extra["info"]
     assert "歌曲数" not in result.extra["card_info"]
+    assert result.extra["playlist_cover_only"] is (expected_contents == 1)

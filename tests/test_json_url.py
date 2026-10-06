@@ -62,3 +62,20 @@ def test_extract_json_url_recognizes_netease_short_share(utils_module):
     }
 
     assert utils_module.extract_json_url(data) == "https://163cn.tv/AbC_123"
+
+
+def test_extract_json_url_prefers_qq_music_playlist_share(utils_module):
+    playlist_url = (
+        "https://i2.y.qq.com/n3/other/pages/details/playlist.html?"
+        "hosteuin=abc&id=9013740134&source=qq"
+    )
+    data = {
+        "prompt": "https://example.com/landing",
+        "meta": {
+            "detail": {
+                "card": "open " + playlist_url,
+            }
+        },
+    }
+
+    assert utils_module.extract_json_url(data) == playlist_url

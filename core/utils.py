@@ -279,6 +279,7 @@ def extract_json_url(data: dict | str) -> str | None:
         "163cn.tv",
         "music.163.com",
         "c6.y.qq.com",
+        "i2.y.qq.com/n3/other/pages/details/playlist",
         "y.qq.com",
         "t1.kugou.com",
         "activity.kugou.com/share",

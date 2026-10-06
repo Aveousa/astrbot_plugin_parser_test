@@ -221,6 +221,24 @@ def test_card_does_not_make_a_single_image_folded(sender_module):
     assert event.sent[1][0].path == "image.png"
 
 
+def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
+    cover = ImageContent(Path("playlist-cover.png"))
+    result = ParseResult(
+        platform=Platform("qqmusic", "QQ音乐"),
+        contents=[cover],
+        extra={"playlist_cover_only": True},
+    )
+    renderer = _Renderer()
+    sender = sender_module.MessageSender(_card_config(forward_threshold=10), renderer)
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert renderer.calls == [result]
+    assert len(event.sent) == 1
+    assert event.sent[0][0].path == "card.png"
+
+
 def test_douyin_gallery_card_precedes_folded_media(sender_module):
     images = [ImageContent(Path("one.png")), ImageContent(Path("two.png"))]
     result = ParseResult(
