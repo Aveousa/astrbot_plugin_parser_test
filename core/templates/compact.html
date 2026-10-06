@@ -12,11 +12,18 @@
            font-family: "Douyin Sans", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 15px; line-height: 1.45; }
     .card { position: relative; box-sizing: border-box; width: 680px; padding: 18px 22px; }
     .head { color: #64748b; font-size: 13px; border-bottom: 1px solid #e5e7eb; padding: 0 88px 8px 0; }
+    .head--wide-badge { padding-right: 122px; }
     .card-badges { position: absolute; top: 18px; right: 22px; display: flex; align-items: center;
                     gap: 7px; height: 24px; }
     .card-badge__live { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 0; opacity: .76; }
     .card-badge__stream { display: block; width: 24px; height: 24px; object-fit: contain; border-radius: 0; opacity: .76; }
     .card-badge__platform { display: block; width: 48px; height: 24px; object-fit: contain; object-position: center; border-radius: 0; }
+    .card-badge__platform--qqmusic,
+    .card-badge__platform--netease,
+    .card-badge__platform--kugou,
+    .card-badge__platform--qishui {
+      width: auto; max-width: 116px; height: 24px; flex: 0 0 auto;
+    }
     h1 { display: -webkit-box; max-height: 2.5em; margin: 10px 0 4px; overflow: hidden;
          font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; text-overflow: ellipsis;
          -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -32,6 +39,18 @@
     .stat__icon { width: 14px; height: 14px; object-fit: contain; opacity: .62; flex: 0 0 auto; }
     .stat__fallback { font-size: 14px; line-height: 1; }
     .url { color: #64748b; font-size: 11px; overflow-wrap: anywhere; margin-top: 5px; }
+    .playlist-tracks { margin-top: 10px; padding-top: 3px; border-top: 1px solid #e5e7eb; }
+    .playlist-track { display: flex; align-items: center; gap: 10px; min-height: 56px;
+                      padding: 7px 0; border-bottom: 1px solid #e5e7eb; }
+    .playlist-track:last-child { border-bottom: 0; }
+    .playlist-track__index { flex: 0 0 23px; color: #94a3b8; font-size: 11px;
+                             font-variant-numeric: tabular-nums; text-align: center; }
+    .playlist-track__body { min-width: 0; flex: 1; }
+    .playlist-track__title { overflow: hidden; font-size: 14px; font-weight: 650;
+                             line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .playlist-track__meta { margin-top: 2px; overflow: hidden; color: #64748b; font-size: 12px;
+                            line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+    .playlist-track__cover { flex: 0 0 44px; width: 44px; height: 44px; object-fit: cover; border-radius: 6px; }
     .live-photo-hint { margin-top: 13px; padding-top: 10px; color: #64748b; border-top: 1px solid #e5e7eb;
                         font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
     .emoji { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
@@ -44,15 +63,29 @@
   <div class="card-badges">
     {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
-    {% if platform.logo_uri %}<img class="card-badge__platform" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
+    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>
   {% endif %}
-  <div class="head">{{ platform.display_name|emoji }}{% if author %} · {{ author.name|emoji }}{% endif %}{% if card.datetime %} · {{ card.datetime }}{% endif %}</div>
+  <div class="head{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} head--wide-badge{% endif %}">{{ platform.display_name|emoji }}{% if author %} · {{ author.name|emoji }}{% endif %}{% if card.datetime %} · {{ card.datetime }}{% endif %}</div>
   {% if card.title %}<h1>{{ card.title|emoji }}</h1>{% endif %}
   {% if card.text %}<div class="text">{{ card.text|emoji }}</div>{% endif %}
   {% if card.topic_tags %}<div class="topics" aria-label="话题">{% for tag in card.topic_tags %}<span class="topic">{{ tag|emoji }}</span>{% endfor %}</div>{% endif %}
   {% set visual = contents|selectattr('uri')|list %}
   {% if visual %}<div class="grid">{% for item in visual %}<img src="{{ item.uri }}" alt="{{ item.alt or '' }}">{% endfor %}</div>{% endif %}
+  {% if card.playlist_tracks %}
+  <section class="playlist-tracks" aria-label="歌曲列表">
+    {% for track in card.playlist_tracks %}
+    <div class="playlist-track">
+      <div class="playlist-track__index">{{ "%02d"|format(track.index) }}</div>
+      <div class="playlist-track__body">
+        <div class="playlist-track__title">{{ track.title|emoji }}</div>
+        {% if track.artist or track.album %}<div class="playlist-track__meta">By {{ (track.artist or "未知艺术家")|emoji }}{% if track.album %} - {{ track.album|emoji }}{% endif %}</div>{% endif %}
+      </div>
+      {% if track.cover_uri %}<img class="playlist-track__cover" src="{{ track.cover_uri }}" alt="">{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
   {% if card.stat_items %}<div class="stats">{% for item in card.stat_items %}<span class="stat" aria-label="{{ item.label }} {{ item.value|format_count }}">{% if item.icon_uri %}<img class="stat__icon" src="{{ item.icon_uri }}" alt="{{ item.label }}">{% else %}<span class="stat__fallback" aria-hidden="true">{{ item.icon }}</span>{% endif %}<strong>{{ item.value|format_count }}</strong></span>{% if not loop.last %}<span aria-hidden="true">·</span>{% endif %}{% endfor %}</div>{% endif %}
   {% if card.url %}<div class="url">{{ card.url }}</div>{% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}

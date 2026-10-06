@@ -276,6 +276,13 @@ def extract_json_url(data: dict | str) -> str | None:
         "xhslink.com",
         "xiaohongshu.com",
         "pixiv.net",
+        "music.163.com",
+        "c6.y.qq.com",
+        "y.qq.com",
+        "t1.kugou.com",
+        "activity.kugou.com/share",
+        "qishui.douyin.com",
+        "music.douyin.com/qishui",
     )
     for keyword in preferred_keywords:
         for url in candidates:

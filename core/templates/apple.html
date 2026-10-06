@@ -74,6 +74,8 @@
       padding: 18px 104px 16px 22px;
     }
 
+    .card-header--wide-badge { padding-right: 140px; }
+
     .card-badges {
       position: absolute;
       top: 18px;
@@ -106,6 +108,19 @@
       height: 24px;
       object-fit: contain;
       object-position: center;
+    }
+
+    /* Music marks are much wider than the legacy platform marks. Keep the
+       same visual height and let their intrinsic aspect ratio determine the
+       width, instead of shrinking them into the generic 48px slot. */
+    .card-badge__platform--qqmusic,
+    .card-badge__platform--netease,
+    .card-badge__platform--kugou,
+    .card-badge__platform--qishui {
+      width: auto;
+      max-width: 116px;
+      height: 24px;
+      flex: 0 0 auto;
     }
 
     .avatar {
@@ -314,6 +329,61 @@
       line-height: 1.55;
     }
 
+    .playlist-tracks {
+      margin: 18px 22px 0;
+      padding-top: 4px;
+      border-top: 1px solid var(--card-divider-color);
+    }
+
+    .playlist-track {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-height: 68px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--card-divider-color);
+    }
+
+    .playlist-track:last-child { border-bottom: 0; }
+
+    .playlist-track__index {
+      flex: 0 0 28px;
+      color: var(--card-muted-text);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+    }
+
+    .playlist-track__body { min-width: 0; flex: 1; }
+
+    .playlist-track__title {
+      overflow: hidden;
+      color: var(--card-primary-text);
+      font-size: 15px;
+      font-weight: 650;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .playlist-track__meta {
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--card-muted-text);
+      font-size: 13px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .playlist-track__cover {
+      flex: 0 0 52px;
+      width: 52px;
+      height: 52px;
+      object-fit: cover;
+      border-radius: 10px;
+    }
+
     .meta {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -483,6 +553,8 @@
       .byline,
       .cover-caption,
       .extra,
+      .playlist-track__index,
+      .playlist-track__meta,
       .stat__head { color: #4d4d52; }
     }
   </style>
@@ -499,10 +571,10 @@
   <div class="card-badges">
     {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
-    {% if platform.logo_uri %}<img class="card-badge__platform" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
+    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>
   {% endif %}
-  <header class="card-header">
+  <header class="card-header{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-header--wide-badge{% endif %}">
     {% if author and author.avatar_uri %}
       <img class="avatar" src="{{ author.avatar_uri }}" alt="">
     {% else %}
@@ -560,6 +632,21 @@
   </section>
   {% endif %}
   {% if cover.alt %}<div class="cover-caption">{{ cover.alt|emoji }}</div>{% endif %}
+  {% endif %}
+
+  {% if card.playlist_tracks %}
+  <section class="playlist-tracks" aria-label="歌曲列表">
+    {% for track in card.playlist_tracks %}
+    <div class="playlist-track">
+      <div class="playlist-track__index">{{ "%02d"|format(track.index) }}</div>
+      <div class="playlist-track__body">
+        <div class="playlist-track__title">{{ track.title|emoji }}</div>
+        {% if track.artist or track.album %}<div class="playlist-track__meta">By {{ (track.artist or "未知艺术家")|emoji }}{% if track.album %} - {{ track.album|emoji }}{% endif %}</div>{% endif %}
+      </div>
+      {% if track.cover_uri %}<img class="playlist-track__cover" src="{{ track.cover_uri }}" alt="">{% endif %}
+    </div>
+    {% endfor %}
+  </section>
   {% endif %}
 
   {% if card.extra_info %}<div class="extra">{{ card.extra_info|emoji }}</div>{% endif %}

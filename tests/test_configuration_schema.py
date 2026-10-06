@@ -170,10 +170,19 @@ def test_test_plugin_identity_is_isolated_from_original_plugin(config_module):
     assert config_module.PluginConfig._plugin_name == "astrbot_plugin_parser_test"
 
 
-def test_only_four_parser_templates_are_exposed():
+def test_supported_parser_templates_are_exposed():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
-    supported = {"bilibili", "douyin", "xhs", "pixiv"}
+    supported = {
+        "bilibili",
+        "douyin",
+        "xhs",
+        "pixiv",
+        "qqmusic",
+        "netease",
+        "kugou",
+        "qishui",
+    }
 
     assert set(schema["parsers_template"]["templates"]) == supported
     assert {item["__template_key"] for item in defaults} == supported
@@ -225,6 +234,48 @@ def test_pixiv_exposes_multi_image_forward_setting():
     assert pixiv_defaults["multi_image_forward"] is False
 
 
+def test_music_parsers_expose_playlist_cover_setting():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    expected = {
+        "description": "显示歌单封面",
+        "hint": "关闭后歌单信息卡片不再显示歌单封面，但仍保留歌曲专辑缩略图",
+        "type": "bool",
+        "default": True,
+    }
+    templates = schema["parsers_template"]["templates"]
+    for name in ("qqmusic", "netease", "kugou", "qishui"):
+        assert templates[name]["items"]["show_playlist_cover"] == expected
+        item = next(item for item in defaults if item["__template_key"] == name)
+        assert item["show_playlist_cover"] is True
+
+    for name, template in templates.items():
+        if name not in {"qqmusic", "netease", "kugou", "qishui"}:
+            assert "show_playlist_cover" not in template["items"]
+
+
+def test_music_parsers_expose_playlist_url_setting():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    templates = schema["parsers_template"]["templates"]
+    expected = {
+        "description": "显示歌单原始链接",
+        "hint": "关闭后信息卡片底部不显示歌单原始链接",
+        "type": "bool",
+        "default": True,
+    }
+    for name in ("qqmusic", "netease", "kugou", "qishui"):
+        assert templates[name]["items"]["show_playlist_url"] == expected
+        item = next(item for item in defaults if item["__template_key"] == name)
+        assert item["show_playlist_url"] is True
+
+    for name, template in templates.items():
+        if name not in {"qqmusic", "netease", "kugou", "qishui"}:
+            assert "show_playlist_url" not in template["items"]
+
+
 def test_bilibili_exposes_ai_summary_switch():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -273,6 +324,10 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
         "douyin",
         "xhs",
         "pixiv",
+        "qqmusic",
+        "netease",
+        "kugou",
+        "qishui",
     ]
     bilibili = raw["parsers_template"][0]
     assert bilibili["enable"] is False
@@ -284,4 +339,16 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     assert douyin["worker_proxy_url"] == ""
     pixiv = raw["parsers_template"][3]
     assert pixiv["multi_image_forward"] is False
+    assert all(
+        raw["parsers_template"][index]["enable"] is True
+        for index in range(4, 8)
+    )
+    assert all(
+        raw["parsers_template"][index]["show_playlist_cover"] is True
+        for index in range(4, 8)
+    )
+    assert all(
+        raw["parsers_template"][index]["show_playlist_url"] is True
+        for index in range(4, 8)
+    )
     assert raw.save_calls == 1

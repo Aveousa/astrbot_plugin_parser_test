@@ -379,6 +379,69 @@ def test_builtin_templates_render_supported_platform_logo(
     assert 'class="card-badge__platform"' in html
 
 
+def test_playlist_song_count_uses_shared_stat_style_and_icon(renderer_module, tmp_path: Path):
+    config = _Config(tmp_path)
+    config.card_template = "apple"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(
+        platform=Platform("qishui", "汽水音乐"),
+        title="playlist",
+        extra={"playlist_track_count": 40},
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    song_count = context["card"]["stat_items"][0]
+    icon_uri = (renderer_module.Renderer._RESOURCES_DIR / "song_count.png").resolve().as_uri()
+
+    assert song_count["key"] == "playlist_track_count"
+    assert song_count["label"] == "歌曲数"
+    assert song_count["value"] == 40
+    assert song_count["icon_uri"] == icon_uri
+    html = renderer.render_html(result, context)
+    assert icon_uri in html
+    assert "歌曲数" in html
+
+
+@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+def test_music_playlist_can_hide_source_url(
+    renderer_module, tmp_path: Path, template: str
+):
+    config = _Config(tmp_path)
+    config.card_template = template
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    source_url = "https://t1.kugou.com/zQfV86G6V3"
+    result = ParseResult(
+        platform=Platform("kugou", "Kugou"),
+        title="playlist",
+        url=source_url,
+        extra={"show_playlist_url": False},
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    assert result.url == source_url
+    assert context["card"]["url"] is None
+    html = renderer.render_html(result, context)
+    assert source_url not in html
+
+
+def test_music_playlist_shows_source_url_by_default(renderer_module, tmp_path: Path):
+    config = _Config(tmp_path)
+    config.card_template = "apple"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    source_url = "https://t1.kugou.com/zQfV86G6V3"
+    result = ParseResult(
+        platform=Platform("kugou", "Kugou"), title="playlist", url=source_url
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    assert context["card"]["url"] == source_url
+    html = renderer.render_html(result, context)
+    assert source_url in html
+
+
 @pytest.mark.parametrize("template", ["default", "compact", "apple"])
 def test_douyin_motion_photo_renders_badge_and_save_hint(
     renderer_module, tmp_path: Path, template: str

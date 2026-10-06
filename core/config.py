@@ -164,6 +164,8 @@ class ParserItem(ConfigNode):
     nsfw: str | None
     multi_image_forward: bool | None
     motion_photo_send_mode: str | None
+    show_playlist_cover: bool | None
+    show_playlist_url: bool | None
     max_page: int | None
 
     @property
@@ -172,11 +174,26 @@ class ParserItem(ConfigNode):
 
 
 class ParserConfig(ConfigNodeContainer):
-    SUPPORTED = frozenset({"bilibili", "douyin", "xhs", "pixiv"})
+    SUPPORTED = frozenset(
+        {
+            "bilibili",
+            "douyin",
+            "xhs",
+            "pixiv",
+            "qqmusic",
+            "netease",
+            "kugou",
+            "qishui",
+        }
+    )
     bilibili: ParserItem
     douyin: ParserItem
     xhs: ParserItem
     pixiv: ParserItem
+    qqmusic: ParserItem
+    netease: ParserItem
+    kugou: ParserItem
+    qishui: ParserItem
 
     def __init__(self, nodes: list[dict[str, Any]]):
         super().__init__(nodes, item_cls=ParserItem)
@@ -228,7 +245,16 @@ class PluginConfig(ConfigNode):
     # 必须与 metadata.yaml 中的 name 保持一致。这样测试版会使用独立的
     # 安装目录、配置、Cookie 和卡片模板目录，可与原版同时运行。
     _plugin_name = "astrbot_plugin_parser_test"
-    _supported_parser_names = ("bilibili", "douyin", "xhs", "pixiv")
+    _supported_parser_names = (
+        "bilibili",
+        "douyin",
+        "xhs",
+        "pixiv",
+        "qqmusic",
+        "netease",
+        "kugou",
+        "qishui",
+    )
 
     def __init__(self, config: AstrBotConfig, context: Context):
         defaults_changed = self._migrate_card_switches(config)
@@ -332,7 +358,7 @@ class PluginConfig(ConfigNode):
         return sorted(names)
 
     def _migrate_parser_template(self) -> None:
-        """移除旧平台配置，并为四个保留平台补齐最新默认字段。"""
+        """移除旧平台配置，并为当前支持的平台补齐最新默认字段。"""
         defaults = self.load_parser_template(self.default_template_file)
         if not any(
             isinstance(item, dict)

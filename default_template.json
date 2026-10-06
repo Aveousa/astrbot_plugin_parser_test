@@ -32,5 +32,33 @@
     "nsfw": "send",
     "multi_image_forward": false,
     "max_page": 0
+  },
+  {
+    "__template_key": "qqmusic",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
+  },
+  {
+    "__template_key": "netease",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
+  },
+  {
+    "__template_key": "kugou",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
+  },
+  {
+    "__template_key": "qishui",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
   }
 ]

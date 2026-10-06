@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, ClassVar
@@ -116,12 +117,17 @@ class Renderer:
         "comments": "comment.png",
         "favorites": "favorites.png",
         "shares": "share.png",
+        "playlist_track_count": "song_count.png",
     }
     _PLATFORM_LOGO_NAMES: ClassVar[dict[str, str]] = {
         "bilibili": "bilibili.png",
         "douyin": "douyin.png",
         "xhs": "xhs.png",
         "pixiv": "pixiv.png",
+        "qqmusic": "qqmusic.png",
+        "netease": "cloudmusic.png",
+        "kugou": "kugou.png",
+        "qishui": "qishui.png",
     }
     _LIVE_PHOTO_ICON_NAME: ClassVar[str] = "livep.png"
     _LIVE_STREAM_ICON_NAME: ClassVar[str] = "live.png"
@@ -416,6 +422,13 @@ class Renderer:
             values.extend((item.platform.display_name, item.title, item.text, item.extra_info))
             if item.author:
                 values.extend((item.author.name, item.author.description))
+            playlist_tracks = item.extra.get("playlist_tracks")
+            if isinstance(playlist_tracks, list):
+                for track in playlist_tracks:
+                    if isinstance(track, Mapping):
+                        values.extend(
+                            (track.get("title"), track.get("artist"), track.get("album"))
+                        )
             for content in item.contents:
                 values.extend(
                     (getattr(content, "text", None), getattr(content, "alt", None))
@@ -810,6 +823,53 @@ class Renderer:
             "name": getattr(content, "name", None),
         }
 
+    @staticmethod
+    async def _optional_image_uri(content: object) -> str | None:
+        """Resolve an auxiliary image without showing the card placeholder."""
+
+        if not isinstance(content, ImageContent):
+            return None
+        try:
+            path = await content.get_path()
+        except (DownloadException, OSError, RuntimeError):
+            return None
+        try:
+            return (
+                Renderer._file_uri(path)
+                if isinstance(path, Path) and path.is_file()
+                else None
+            )
+        except OSError:
+            return None
+
+    async def _playlist_tracks_context(self, value: object) -> list[dict[str, Any]]:
+        """Convert parser-owned song summaries into safe template data."""
+
+        if not isinstance(value, list):
+            return []
+        tracks: list[dict[str, Any]] = []
+        for raw_track in value:
+            if not isinstance(raw_track, Mapping):
+                continue
+            title = str(raw_track.get("title") or "").strip()
+            if not title:
+                continue
+            try:
+                index = int(raw_track.get("index") or len(tracks) + 1)
+            except (TypeError, ValueError):
+                index = len(tracks) + 1
+            item: dict[str, Any] = {
+                "index": index,
+                "title": title,
+                "artist": str(raw_track.get("artist") or "").strip() or None,
+                "album": str(raw_track.get("album") or "").strip() or None,
+                "cover_uri": await self._optional_image_uri(
+                    raw_track.get("cover_content")
+                ),
+            }
+            tracks.append(item)
+        return tracks
+
     async def _result_context(self, result: ParseResult, *, depth: int = 0) -> dict[str, Any]:
         if depth == 0:
             await self._prepare_emoji_assets(result)
@@ -846,7 +906,30 @@ class Renderer:
             and result.extra.get("is_live_stream") is True
         )
         stats = result.engagement.as_dict()
-        stat_items = [
+        playlist_track_count = result.extra.get("playlist_track_count")
+        try:
+            playlist_track_count = (
+                int(playlist_track_count)
+                if playlist_track_count is not None
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            playlist_track_count = None
+        stat_items: list[dict[str, Any]] = []
+        if playlist_track_count is not None:
+            stat_items.append(
+                {
+                    "key": "playlist_track_count",
+                    "label": "歌曲数",
+                    "icon": "♫",
+                    "icon_uri": self._file_uri(
+                        self._RESOURCES_DIR
+                        / self._STAT_ICON_NAMES["playlist_track_count"]
+                    ),
+                    "value": playlist_track_count,
+                }
+            )
+        stat_items.extend(
             {
                 "key": key,
                 "label": label,
@@ -860,10 +943,22 @@ class Renderer:
                 ("favorites", "收藏", "☆", self._STAT_ICON_NAMES["favorites"]),
                 ("shares", "转发", "↗", self._STAT_ICON_NAMES["shares"]),
             )
-        ]
+        )
         title, title_topic_tags = self._split_topic_tags(self._card_text(result.title))
         text, text_topic_tags = self._split_topic_tags(self._card_text(result.text))
         topic_tags = self._dedupe_tags(title_topic_tags + text_topic_tags)
+        playlist_tracks = await self._playlist_tracks_context(
+            result.extra.get("playlist_tracks")
+        )
+        card_extra_info = result.extra.get("card_info")
+        if card_extra_info is None:
+            card_extra_info = result.extra_info
+        card_extra = {
+            key: value for key, value in result.extra.items() if key != "playlist_tracks"
+        }
+        card_url = result.url
+        if result.extra.get("show_playlist_url") is False:
+            card_url = None
         card: dict[str, Any] = {
             "platform": {
                 "name": result.platform.name,
@@ -883,9 +978,10 @@ class Renderer:
             "topic_tags": topic_tags,
             "timestamp": result.timestamp,
             "datetime": result.formatted_datetime(),
-            "url": result.url,
-            "extra": result.extra,
-            "extra_info": result.extra_info,
+            "url": card_url,
+            "extra": card_extra,
+            "extra_info": card_extra_info,
+            "playlist_tracks": playlist_tracks,
             "has_live_photo": has_live_photo,
             "has_live_stream": has_live_stream,
             "live_stream_uri": (
@@ -959,6 +1055,7 @@ class Renderer:
             stats=context["card"]["stats"],
             contents=context["card"]["contents"],
             extra=context["card"]["extra"],
+            playlist_tracks=context["card"].get("playlist_tracks", []),
             config=self.cfg,
             template_name=self._template_name(),
             emoji_style=str(getattr(self.cfg, "emoji_style", "APPLE") or "APPLE").lower(),
