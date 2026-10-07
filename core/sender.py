@@ -315,10 +315,13 @@ class MessageSender:
         else:
             groups = [SendGroup(contents=list(MessageSender._iter_contents(result)))]
 
-        if not omit_playlist_cover or result.extra.get("playlist_cover_only") is not True:
+        preview_only = result.extra.get("playlist_cover_only") is True or result.extra.get(
+            "card_preview_only"
+        ) is True
+        if not omit_playlist_cover or not preview_only:
             return groups
 
-        # 歌单封面仍保留在 ParseResult.contents 中供卡片渲染；卡片已成功
+        # 卡片预览仍保留在 ParseResult.contents 中供卡片渲染；卡片已成功
         # 发送后，只从实际媒体发送分组中去掉同一个内容对象。
         cover = result.contents[0] if result.contents else None
         if cover is None:
@@ -435,9 +438,12 @@ class MessageSender:
             sent = await self._send_group(event, result, group) or sent
 
         if not sent:
-            # 歌单封面已作为卡片预览发送；过滤掉独立封面后，不再额外发送
-            # 一条纯文本兜底消息，避免卡片后又出现无意义的重复内容。
-            if card_sent and result.extra.get("playlist_cover_only") is True:
+            # 卡片预览已发送；过滤掉独立预览图后，不再额外发送一条纯文本
+            # 兜底消息，避免卡片后又出现无意义的重复内容。
+            if card_sent and (
+                result.extra.get("playlist_cover_only") is True
+                or result.extra.get("card_preview_only") is True
+            ):
                 return
             segs = self._build_text_fallback(result)
             if not segs:

@@ -92,3 +92,18 @@ def test_extract_json_url_recognizes_new_music_platforms(utils_module, playlist_
     data = {"meta": {"detail": {"url": "open " + playlist_url}}}
 
     assert utils_module.extract_json_url(data) == playlist_url
+
+
+@pytest.mark.parametrize(
+    "track_url",
+    [
+        "https://m.kugou.com/share/?album_id=1012787&hash=abc&action=single",
+        "https://m.kuwo.cn/yinyue/72057414?f=ip",
+        "https://i.y.qq.com/v8/playsong.html?media_mid=x&songid=453455745",
+        "https://y.music.163.com/m/song?id=3429744904",
+    ],
+)
+def test_extract_json_url_recognizes_music_single_tracks(utils_module, track_url):
+    data = {"meta": {"detail": {"url": "open " + track_url}}}
+
+    assert utils_module.extract_json_url(data) == track_url

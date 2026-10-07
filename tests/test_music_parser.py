@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,13 +12,21 @@ from core.parsers.music import (
     NetEaseMusicParser,
     QQMusicParser,
     QishuiMusicParser,
+    _duration_seconds,
 )
+from core.data import AudioContent
 
 
 class _Downloader:
     def download_img(self, url: str, **_kwargs):
         async def complete() -> Path:
             return Path(url.rsplit("/", 1)[-1] or "image.jpg")
+
+        return asyncio.create_task(complete())
+
+    def download_audio(self, url: str, **_kwargs):
+        async def complete() -> Path:
+            return Path(url.rsplit("/", 1)[-1] or "track.mp3")
 
         return asyncio.create_task(complete())
 
@@ -115,6 +124,16 @@ def _build_result(show_playlist_cover: bool | None):
             "m.kugou.com/songlist",
         ),
         (
+            KugouMusicParser,
+            "酷狗单曲 https://m.kugou.com/share/?album_id=1012787&hash=3F66F1BA3ADA9E30DD5C597438942741&action=single",
+            "m.kugou.com/share",
+        ),
+        (
+            KugouMusicParser,
+            "酷狗单曲 https://h5.kugou.com/v2/v-5a15aeb1/index.html?hash=dec2bffc693efc0895809f0952244048&album_id=631501",
+            "h5.kugou.com/v2/v-",
+        ),
+        (
             QishuiMusicParser,
             "汽水歌单：https://qishui.douyin.com/s/iXqUS9uU/",
             "qishui.douyin.com/s",
@@ -123,6 +142,21 @@ def _build_result(show_playlist_cover: bool | None):
             QishuiMusicParser,
             "汽水歌单 https://music.douyin.com/qishui/share/playlist?playlist_id=123456",
             "music.douyin.com/qishui/share/playlist",
+        ),
+        (
+            KuwoMusicParser,
+            "酷我单曲 https://m.kuwo.cn/yinyue/72057414?f=ip&t=qqfriend",
+            "m.kuwo.cn/yinyue",
+        ),
+        (
+            QQMusicParser,
+            "QQ单曲 https://i.y.qq.com/v8/playsong.html?media_mid=002OvI0G0XlMaO&songid=453455745",
+            "i.y.qq.com/v8/playsong",
+        ),
+        (
+            NetEaseMusicParser,
+            "网易云单曲 https://y.music.163.com/m/song?fx=x&id=3429744904&userid=1",
+            "y.music.163.com/m/song",
         ),
     ],
 )
@@ -171,6 +205,101 @@ def test_netease_playlist_route_extracts_playlist_id_not_user_ids():
 
     assert keyword == "music.163.com/m/playlist"
     assert searched.group("playlist_id") == "9605284231"
+
+
+def test_netease_track_route_extracts_song_id_not_user_id():
+    url = (
+        "https://y.music.163.com/m/song?fx-wechatnew=t1&fx-wxqd=&"
+        "fx-wordtest=&id=3429744904&PlayerStyles_SynchronousSharing=t3&"
+        "userid=1312543631&app_version=9.5.15"
+    )
+
+    keyword, searched = NetEaseMusicParser.search_url(url)
+
+    assert keyword == "y.music.163.com/m/song"
+    assert searched.group("song_id") == "3429744904"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(132, 132.0), (146000, 146.0), ("02:46", 166.0), ("3:58", 238.0)],
+)
+def test_single_track_duration_is_normalized(value, expected):
+    assert _duration_seconds(value) == expected
+
+
+def test_qishui_track_route_extracts_track_id():
+    url = (
+        "https://music.douyin.com/qishui/share/track?"
+        "track_id=7693571928527079458&sec_sharer_id=demo"
+    )
+
+    keyword, searched = QishuiMusicParser.search_url(url)
+
+    assert keyword == "music.douyin.com/qishui/share/track"
+    assert searched.group("track_id") == "7693571928527079458"
+
+
+def test_qishui_track_payload_builds_card_and_audio():
+    async def build():
+        parser = QishuiMusicParser.__new__(QishuiMusicParser)
+        parser.cfg = SimpleNamespace(
+            card_enabled=True,
+            proxy=None,
+            parser=SimpleNamespace(
+                qishui=SimpleNamespace(use_proxy=False),
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        payload = {
+            "loaderData": {
+                "track_page": {
+                    "audioWithLyricsOption": {
+                        "track_id": "7693571928527079458",
+                        "trackName": "泥",
+                        "artistName": "歌手",
+                        "duration": 238.848,
+                        "url": "https://example.com/audio.mp4",
+                        "coverURL": "https://example.com/cover.jpg",
+                        "trackInfo": {
+                            "name": "泥",
+                            "album": {"name": "专辑"},
+                            "artists": [{"name": "歌手"}],
+                            "stats": {
+                                "count_collected": 4,
+                                "count_comment": 2,
+                                "count_shared": 1,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        html = (
+            "<script>_ROUTER_DATA = "
+            + json.dumps(payload, ensure_ascii=False)
+            + "\nfunction runWindowFn"
+        )
+        router_data = parser._decode_router_data(html)
+        track = router_data["loaderData"]["track_page"]["audioWithLyricsOption"]
+        result = parser._track_result(
+            track,
+            url="https://music.douyin.com/qishui/share/track?track_id=1",
+            track_id="1",
+        )
+        await asyncio.gather(*(content.get_path() for content in result.contents))
+        return result
+
+    result = asyncio.run(build())
+
+    assert result.title == "泥"
+    assert result.author is not None and result.author.name == "歌手"
+    assert result.text is None
+    assert result.comment_count == 2
+    assert result.favorite_count == 4
+    assert result.share_count == 1
+    assert any(isinstance(content, AudioContent) for content in result.contents)
 
 
 @pytest.mark.parametrize(

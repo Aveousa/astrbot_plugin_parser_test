@@ -1,8 +1,8 @@
-"""Music playlist parsers for QQ Music, NetEase, Kugou, Qishui, Kuwo and Apple Music.
+"""Music playlist and single-track parsers for supported music platforms.
 
-The parsers intentionally produce a playlist summary instead of downloading
-every track.  That keeps the result useful for the existing information-card
-pipeline without turning a shared playlist link into a bulk audio download.
+Playlist links produce a compact summary instead of downloading every track;
+single-track links expose the same card fields and attach audio only when the
+platform returns a directly playable URL.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from datetime import datetime
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -236,6 +237,55 @@ def _timestamp(value: object, *, milliseconds: bool = False) -> int | None:
     if milliseconds or number > 10_000_000_000:
         number //= 1000
     return number if number > 0 else None
+
+
+def _date_timestamp(value: object, *, milliseconds: bool = False) -> int | None:
+    """Normalize numeric and ISO date values exposed by music platforms."""
+
+    if timestamp := _timestamp(value, milliseconds=milliseconds):
+        return timestamp
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(parsed.timestamp())
+
+
+def _duration_seconds(value: object) -> float:
+    """Normalize the duration formats returned by music platforms.
+
+    The APIs are not consistent here: QQ Music and Qishui normally return
+    seconds, NetEase returns milliseconds, while some Kuwo pages expose a
+    display value such as ``02:46``.  Keeping the conversion in one place
+    makes the single-track card and any optional audio content use the same
+    duration regardless of the source platform.
+    """
+
+    if value is None or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0.0
+        if ":" in text:
+            parts = text.split(":")
+            try:
+                seconds = 0.0
+                for part in parts:
+                    seconds = seconds * 60 + float(part.strip())
+                return max(0.0, seconds)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+        value = text.replace(",", "")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if seconds > 10_000:
+        seconds /= 1000
+    return max(0.0, seconds)
 
 
 def _clean_text(value: object) -> str | None:
@@ -555,6 +605,75 @@ class PlaylistParserBase(BaseParser):
             },
         )
 
+    def _single_track_result(
+        self,
+        *,
+        title: str,
+        artist_name: str,
+        album_name: str | None,
+        cover: str | None,
+        duration: object,
+        url: str,
+        identifier: str,
+        author_avatar: str | None = None,
+        timestamp: int | None = None,
+        audio_url: str | None = None,
+        stats: Mapping[str, object] | None = None,
+    ) -> ParseResult:
+        """Build the common card/audio representation for a single song."""
+
+        duration_value = _duration_seconds(duration)
+
+        contents = (
+            self.create_image_contents([cover], headers=self.headers) if cover else []
+        )
+        if audio_url and audio_url.startswith(("http://", "https://")):
+            contents.append(
+                self.create_audio_content(
+                    audio_url,
+                    duration=duration_value,
+                    headers=self.headers,
+                )
+            )
+
+        info_lines: list[str] = []
+        if album_name:
+            info_lines.append(f"专辑: {album_name}")
+        if duration_value:
+            minutes, seconds = divmod(int(duration_value), 60)
+            info_lines.append(f"时长: {minutes}:{seconds:02d}")
+
+        stats = stats if isinstance(stats, Mapping) else {}
+
+        def stat_value(*keys: str) -> int | None:
+            for key in keys:
+                if key in stats:
+                    value = _as_int(stats.get(key))
+                    if value is not None:
+                        return value
+            return None
+
+        return self.result(
+            author=self.create_author(artist_name or "未知艺术家", author_avatar),
+            title=title or "未命名歌曲",
+            timestamp=timestamp,
+            url=url,
+            contents=contents,
+            comment_count=stat_value("comments", "comment_count", "count_comment"),
+            favorite_count=stat_value(
+                "favorites", "favorite_count", "count_collected"
+            ),
+            share_count=stat_value("shares", "share_count", "count_shared"),
+            extra={
+                "info": "\n".join(info_lines),
+                "card_info": "\n".join(info_lines),
+                "music_type": "track",
+                "track_id": identifier,
+                "card_preview_only": bool(cover),
+                "show_playlist_url": self._show_playlist_url(),
+            },
+        )
+
 
 class KuwoMusicParser(PlaylistParserBase):
     platform = Platform(name="kuwo", display_name="酷我音乐")
@@ -660,6 +779,52 @@ class KuwoMusicParser(PlaylistParserBase):
             identifier=playlist_id,
             tracks=[item for item in tracks if isinstance(item, Mapping)],
             stats={"visits": playlist.get("listencnt")},
+        )
+
+
+    @handle(
+        "m.kuwo.cn/yinyue",
+        r"m\.kuwo\.cn/yinyue/(?P<track_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    @handle(
+        "m.kuwo.cn/h5app/single",
+        r"m\.kuwo\.cn/h5app/single/(?P<track_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    @handle(
+        "www.kuwo.cn/play_detail",
+        r"www\.kuwo\.cn/play_detail/(?P<track_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    async def _handle_track(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.headers, "Referer": "https://www.kuwo.cn/"},
+        ) as response:
+            if response.status >= 400:
+                raise ParseException(f"酷我音乐歌曲请求失败：HTTP {response.status}")
+            html = await response.text()
+
+        payload = self._decode_nuxt_payload(html)
+        data = payload.get("data")
+        page = data[0] if isinstance(data, list) and data else {}
+        page = page if isinstance(page, Mapping) else {}
+        song = page.get("songinfo")
+        song = song if isinstance(song, Mapping) else None
+        if not song:
+            raise ParseException("酷我音乐歌曲不存在或暂时无法访问")
+
+        track_id = str(song.get("rid") or searched.group("track_id"))
+        return self._single_track_result(
+            title=_first_text(song, "name", "songname") or "未命名歌曲",
+            artist_name=_first_text(song, "artist", "artistname") or "未知艺术家",
+            album_name=_first_text(song, "album", "albumname"),
+            cover=_cover_url(song.get("albumpic") or song.get("pic")),
+            duration=song.get("duration") or song.get("songTimeMinutes"),
+            url=url,
+            identifier=track_id,
+            timestamp=_date_timestamp(song.get("releaseDate")),
         )
 
 
@@ -840,16 +1005,52 @@ class QQMusicParser(PlaylistParserBase):
         return await self._redirect_and_parse(url)
 
     @handle(
+        "i.y.qq.com/v8/playsong",
+        r"i\.y\.qq\.com/v8/playsong\.html\?(?:[^&\s]*&)*songid=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    @handle(
+        "i2.y.qq.com/n3/other/pages/playsong",
+        r"i2\.y\.qq\.com/n3/other/pages/playsong/index\.html\?(?:[^&\s]*&)*songid=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    @handle(
+        "y.qq.com/n/ryqq_v2/songDetail",
+        r"y\.qq\.com/n/ryqq_v2/songDetail/(?P<song_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    async def _handle_track(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        tracks = await self._fetch_song_details([searched.group("song_id")])
+        track = tracks[0] if tracks else None
+        if not track:
+            raise ParseException("QQ音乐歌曲不存在或暂时无法访问")
+
+        artist_names = _track_artist_names(track)
+        return self._single_track_result(
+            title=_track_title(track) or "未命名歌曲",
+            artist_name=" / ".join(artist_names) or "未知艺术家",
+            album_name=_track_album_name(track),
+            cover=_track_cover_url(track),
+            duration=track.get("interval"),
+            url=url,
+            identifier=_first_text(track, "mid") or searched.group("song_id"),
+            timestamp=_date_timestamp(track.get("time_public")),
+            audio_url=_first_text(track.get("file"), "url")
+            if isinstance(track.get("file"), Mapping)
+            else None,
+        )
+
+    @handle(
         "y.qq.com/n/ryqq",
         r"y\.qq\.com/n/ryqq(?:_v2)?/playlist/(?P<playlist_id>\d+)",
     )
     @handle(
         "i.y.qq.com/n2/m/share/details/taoge",
-        r"i\.y\.qq\.com/n2/m/share/details/taoge\.html\?[^\s]*id=(?P<playlist_id>\d+)",
+        r"i\.y\.qq\.com/n2/m/share/details/taoge\.html\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=[&\s]|$)[^\s<>]*",
     )
     @handle(
         "i2.y.qq.com/n3/other/pages/details/playlist",
-        r"i2\.y\.qq\.com/n3/other/pages/details/playlist\.html\?[^\s]*id=(?P<playlist_id>\d+)",
+        r"i2\.y\.qq\.com/n3/other/pages/details/playlist\.html\?(?:[^&\s]*&)*id=(?P<playlist_id>\d+)(?=[&\s]|$)[^\s<>]*",
     )
     async def _handle_playlist(self, searched):
         playlist_id = searched.group("playlist_id")
@@ -911,6 +1112,58 @@ class NetEaseMusicParser(PlaylistParserBase):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         return await self._redirect_and_parse(url)
+
+    @handle(
+        "y.music.163.com/m/song",
+        r"y\.music\.163\.com/m/song\?(?:[^&\s]*&)*id=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    @handle(
+        "music.163.com/m/song",
+        r"music\.163\.com/m/song\?(?:[^&\s]*&)*id=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    @handle(
+        "music.163.com/song",
+        r"music\.163\.com/song\?(?:[^&\s]*&)*id=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    @handle(
+        "music.163.com/#/song",
+        r"music\.163\.com/#/song\?(?:[^&\s]*&)*id=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    async def _handle_track(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        body = await self._json_request(
+            "https://music.163.com/api/song/detail?ids="
+            + json.dumps([int(searched.group("song_id"))]),
+            headers={"Referer": "https://music.163.com/"},
+        )
+        songs = body.get("songs") if isinstance(body, Mapping) else None
+        track = songs[0] if isinstance(songs, list) and songs else None
+        if not isinstance(track, Mapping):
+            raise ParseException("网易云音乐歌曲不存在或暂时无法访问")
+
+        artists = _track_artist_names(track)
+        raw_artists = track.get("artists")
+        author_avatar = None
+        if isinstance(raw_artists, list) and raw_artists:
+            first_artist = raw_artists[0]
+            if isinstance(first_artist, Mapping):
+                author_avatar = _cover_url(
+                    first_artist.get("picUrl") or first_artist.get("img1v1Url")
+                )
+        return self._single_track_result(
+            title=_track_title(track) or "未命名歌曲",
+            artist_name=" / ".join(artists) or "未知艺术家",
+            album_name=_track_album_name(track),
+            cover=_track_cover_url(track),
+            duration=track.get("duration") or track.get("dt"),
+            url=url,
+            identifier=str(track.get("id") or searched.group("song_id")),
+            author_avatar=author_avatar,
+            timestamp=_date_timestamp(track.get("publishTime"), milliseconds=True),
+            audio_url=_first_text(track, "mp3Url"),
+        )
 
     @handle(
         "music.163.com/#/playlist",
@@ -989,6 +1242,154 @@ class KugouMusicParser(PlaylistParserBase):
             params.update({key: str(value) for key, value in extra.items()})
         params["signature"] = cls._signature(params)
         return params
+
+    @staticmethod
+    def _decode_mixsong_payload(html: str) -> Mapping[str, Any]:
+        marker = re.search(r"dataFromSmarty\s*=\s*", html)
+        if not marker:
+            raise ParseException("酷狗音乐歌曲页面没有返回可识别的数据")
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(html[marker.end() :].lstrip())
+        except json.JSONDecodeError as exc:
+            raise ParseException("酷狗音乐歌曲页面数据格式无法识别") from exc
+        if not isinstance(payload, list) or not payload:
+            raise ParseException("酷狗音乐歌曲页面没有返回可识别的数据")
+        track = payload[0]
+        if not isinstance(track, Mapping):
+            raise ParseException("酷狗音乐歌曲页面没有返回可识别的数据")
+        return track
+
+    @staticmethod
+    def _mixsong_album_name(html: str) -> str | None:
+        match = re.search(
+            r'<p[^>]+class=["\'][^"\']*albumName[^"\']*["\'][^>]*>.*?'
+            r'<a[^>]*>(.*?)</a>',
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            return None
+        text = re.sub(r"<[^>]+>", "", match.group(1))
+        return _clean_text(text)
+
+    async def _fetch_kugou_song_info(self, song_hash: str) -> Mapping[str, Any]:
+        try:
+            payload = await self._json_request(
+                "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
+                + song_hash,
+                headers={"Referer": self._MOBILE_REFERER},
+            )
+        except ParseException:
+            return {}
+        return payload if isinstance(payload, Mapping) else {}
+
+    async def _kugou_single_result(
+        self,
+        *,
+        source_url: str,
+        song_hash: str,
+        fallback: Mapping[str, Any] | None = None,
+        album_name: str | None = None,
+    ) -> ParseResult:
+        fallback = fallback if isinstance(fallback, Mapping) else {}
+        info = await self._fetch_kugou_song_info(song_hash)
+        title = (
+            _first_text(info, "songName", "fileName")
+            or _first_text(fallback, "song_name", "audio_name")
+            or "未命名歌曲"
+        )
+        artist_name = (
+            _first_text(info, "author_name", "singerName")
+            or _first_text(fallback, "author_name")
+            or "未知艺术家"
+        )
+        cover = _cover_url(
+            info.get("album_img")
+            or info.get("imgUrl")
+            or fallback.get("album_img")
+        )
+        extra = info.get("extra")
+        extra = extra if isinstance(extra, Mapping) else {}
+        duration = (
+            info.get("timeLength")
+            or extra.get("320timelength")
+            or extra.get("128timelength")
+            or fallback.get("timelength")
+        )
+        audio_url = _first_text(info, "url", "play_url")
+        return self._single_track_result(
+            title=title,
+            artist_name=artist_name,
+            album_name=album_name or _first_text(info, "album_name"),
+            cover=cover,
+            duration=duration,
+            url=source_url,
+            identifier=(
+                _first_text(info, "album_audio_id", "audio_id")
+                or _first_text(fallback, "mixsongid", "encode_album_audio_id")
+                or song_hash
+            ),
+            author_avatar=_cover_url(info.get("imgUrl"), size=165),
+            audio_url=audio_url,
+            stats={},
+        )
+
+    @handle(
+        "m.kugou.com/share",
+        r"m\.kugou\.com/share/\?[^\s]+",
+    )
+    async def _handle_mobile_share(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return await self._redirect_and_parse(url)
+
+    @handle(
+        "www.kugou.com/mixsong",
+        r"www\.kugou\.com/mixsong/[^\s?]+\.html(?:\?[^\s]+)?",
+    )
+    async def _handle_mixsong(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.headers, "Referer": "https://www.kugou.com/"},
+        ) as response:
+            if response.status >= 400:
+                raise ParseException(f"酷狗音乐歌曲请求失败：HTTP {response.status}")
+            html = await response.text()
+        track = self._decode_mixsong_payload(html)
+        song_hash = _first_text(track, "hash")
+        if not song_hash:
+            raise ParseException("酷狗音乐歌曲缺少有效标识")
+        return await self._kugou_single_result(
+            source_url=url,
+            song_hash=song_hash,
+            fallback=track,
+            album_name=self._mixsong_album_name(html),
+        )
+
+    @handle(
+        "h5.kugou.com/v2/v-",
+        r"h5\.kugou\.com/v2/v-[^/\s]+/index\.html\?[^\s]+",
+    )
+    async def _handle_h5_share(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        query = parse_qs(urlparse(url).query)
+        song_hash = (query.get("hash") or [""])[0]
+        if not song_hash:
+            raise ParseException("酷狗音乐歌曲缺少有效标识")
+        return await self._kugou_single_result(
+            source_url=url,
+            song_hash=song_hash,
+            fallback={
+                "album_id": (query.get("album_id") or [None])[0],
+                "album_audio_id": (query.get("album_audio_id") or [None])[0],
+            },
+        )
 
     @handle("t1.kugou.com", r"t1\.kugou\.com/[A-Za-z0-9_-]+/?")
     async def _handle_short(self, searched):
@@ -1156,6 +1557,101 @@ class KugouMusicParser(PlaylistParserBase):
 class QishuiMusicParser(PlaylistParserBase):
     platform = Platform(name="qishui", display_name="汽水音乐")
 
+    @staticmethod
+    def _decode_router_data(html: str) -> Mapping[str, Any]:
+        """Extract the server-rendered Qishui router payload from a page."""
+
+        marker = re.search(r"_ROUTER_DATA\s*=\s*", html)
+        if marker:
+            try:
+                payload, _ = json.JSONDecoder().raw_decode(
+                    html[marker.end() :].lstrip()
+                )
+            except json.JSONDecodeError as exc:
+                raise ParseException("汽水音乐页面数据无法解析") from exc
+            if isinstance(payload, Mapping):
+                return payload
+
+        # Keep compatibility with the newer Modern.js page shell, which puts
+        # the same JSON payload in a dedicated script element.
+        script = re.search(
+            r'<script[^>]+id=["\']__MODERN_ROUTER_DATA__["\'][^>]*>(.*?)</script>',
+            html,
+            flags=re.DOTALL,
+        )
+        if script:
+            try:
+                payload = json.loads(script.group(1).strip())
+            except json.JSONDecodeError as exc:
+                raise ParseException("汽水音乐页面数据无法解析") from exc
+            if isinstance(payload, Mapping):
+                return payload
+
+        raise ParseException("汽水音乐页面没有返回可识别的数据")
+
+    def _track_result(
+        self,
+        track: Mapping[str, Any],
+        *,
+        url: str,
+        track_id: str,
+    ) -> ParseResult:
+        """Build a card and optional audio message for a shared single track."""
+
+        track_info = track.get("trackInfo")
+        track_info = track_info if isinstance(track_info, Mapping) else track
+        album = track_info.get("album")
+        album = album if isinstance(album, Mapping) else {}
+        artists = _track_artist_names(track_info)
+        artist_name = (
+            " / ".join(artists)
+            or _first_text(track, "artistName", "artist_name")
+            or "未知艺术家"
+        )
+        title = (
+            _first_text(track, "trackName", "name")
+            or _first_text(track_info, "name", "title")
+            or "未命名歌曲"
+        )
+        album_name = _first_text(album, "name", "title")
+        cover = (
+            _cover_url(track.get("coverURL"), size=400)
+            or _cover_url(album.get("url_cover"), size=400)
+            or _track_cover_url(track_info)
+        )
+
+        author_avatar: str | None = None
+        raw_artists = track_info.get("artists")
+        if isinstance(raw_artists, list) and raw_artists:
+            first_artist = raw_artists[0]
+            if isinstance(first_artist, Mapping):
+                author_avatar = _cover_url(first_artist.get("url_avatar"), size=400)
+                user_info = first_artist.get("user_info")
+                if not author_avatar and isinstance(user_info, Mapping):
+                    author_avatar = _cover_url(
+                        user_info.get("medium_avatar_url"), size=720
+                    )
+
+        duration = track.get("duration")
+        if duration is None:
+            duration = track_info.get("duration")
+        audio_url = _first_text(track, "url", "audio_url")
+        stats = track_info.get("stats")
+        stats = stats if isinstance(stats, Mapping) else {}
+        return self._single_track_result(
+            title=title,
+            artist_name=artist_name,
+            album_name=album_name,
+            cover=cover,
+            duration=duration,
+            url=url,
+            identifier=track_id,
+            author_avatar=author_avatar,
+            timestamp=_date_timestamp(album.get("release_date")),
+            audio_url=audio_url,
+            stats=stats,
+        )
+
     @handle("qishui.douyin.com/s", r"qishui\.douyin\.com/s/[A-Za-z0-9_-]+/?")
     async def _handle_short(self, searched):
         url = searched.group(0)
@@ -1176,8 +1672,39 @@ class QishuiMusicParser(PlaylistParserBase):
             raise
 
     @handle(
+        "music.douyin.com/qishui/share/track",
+        r"music\.douyin\.com/qishui/share/track\?(?:[^&\s]*&)*track_id=(?P<track_id>\d+)(?=[&\s]|$)[^\s<>]*",
+    )
+    async def _handle_track(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.headers, "Referer": "https://qishui.douyin.com/"},
+        ) as response:
+            if response.status >= 400:
+                raise ParseException(f"汽水音乐页面请求失败：HTTP {response.status}")
+            html = await response.text()
+
+        router_data = self._decode_router_data(html)
+        loader_data = router_data.get("loaderData")
+        loader_data = loader_data if isinstance(loader_data, Mapping) else {}
+        page = loader_data.get("track_page")
+        page = page if isinstance(page, Mapping) else {}
+        track = page.get("audioWithLyricsOption")
+        if not isinstance(track, Mapping):
+            raise ParseException("汽水音乐页面没有返回可识别的歌曲数据")
+
+        return self._track_result(
+            track,
+            url=url,
+            track_id=str(track.get("track_id") or searched.group("track_id")),
+        )
+
+    @handle(
         "music.douyin.com/qishui/share/playlist",
-        r"music\.douyin\.com/qishui/share/playlist\?[^\s]*playlist_id=(?P<playlist_id>\d+)[^\s]*",
+        r"music\.douyin\.com/qishui/share/playlist\?(?:[^&\s]*&)*playlist_id=(?P<playlist_id>\d+)(?=[&\s]|$)[^\s<>]*",
     )
     async def _handle_playlist(self, searched):
         url = searched.group(0)
