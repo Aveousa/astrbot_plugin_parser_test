@@ -278,6 +278,7 @@ def test_netease_track_resolves_audio_url(mp3_url: str, expected_url: str):
     assert result.title == "Brand New Sky"
     assert result.extra["card_preview_only"] is False
     assert result.extra["audio_as_voice"] is True
+    assert result.extra["audio_send_url"] == expected_url
 
 
 @pytest.mark.parametrize(

@@ -113,6 +113,7 @@ def _result() -> ParseResult:
 class _Event:
     def __init__(self):
         self.sent = []
+        self.bot = None
 
     def chain_result(self, segments):
         return segments
@@ -122,6 +123,12 @@ class _Event:
 
     def get_self_id(self):
         return "bot"
+
+    def get_group_id(self):
+        return "123"
+
+    def get_sender_id(self):
+        return "456"
 
 
 class _Renderer:
@@ -236,6 +243,49 @@ def test_audio_as_voice_overrides_global_audio_file_setting(sender_module):
     assert len(event.sent) == 2
     assert event.sent[0][0].path == "card.png"
     assert event.sent[1][0].__class__.__name__ == "Record"
+
+
+def test_netease_audio_uses_remote_url_for_onebot_and_keeps_local_download(
+    sender_module,
+):
+    actions = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            actions.append((action, kwargs))
+
+    result = ParseResult(
+        platform=Platform("netease", "网易云音乐"),
+        contents=[AudioContent(Path("song.mp3"))],
+        extra={
+            "audio_as_voice": True,
+            "audio_send_url": "https://music.163.com/song/media/outer/url?id=12345",
+        },
+    )
+    event = _Event()
+    event.bot = _Bot()
+    sender = sender_module.MessageSender(_card_config(audio_to_file=True), _Renderer())
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert event.sent[0][0].path == "card.png"
+    assert actions == [
+        (
+            "send_group_msg",
+            {
+                "group_id": 123,
+                "message": [
+                    {
+                        "type": "record",
+                        "data": {
+                            "file": "https://music.163.com/song/media/outer/url?id=12345"
+                        },
+                    }
+                ],
+            },
+        )
+    ]
 
 
 def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):

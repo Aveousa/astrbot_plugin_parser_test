@@ -397,6 +397,43 @@ class MessageSender:
             return False
 
     @staticmethod
+    async def _send_audio_url_via_onebot(
+        event: AstrMessageEvent,
+        url: str,
+    ) -> bool:
+        """让 OneBot 端按 URL 拉取语音，避免把整段音频塞进 WebSocket 帧。"""
+
+        bot = getattr(event, "bot", None)
+        call_action = getattr(bot, "call_action", None)
+        if not callable(call_action):
+            return False
+
+        self_id = str(event.get_self_id() or "").strip()
+        routing = {"self_id": int(self_id)} if self_id.isdigit() else {}
+        group_id = str(event.get_group_id() or "").strip()
+        if group_id:
+            if not group_id.isdigit():
+                raise RuntimeError("无效的群号，无法发送语音")
+            await call_action(
+                "send_group_msg",
+                group_id=int(group_id),
+                message=[{"type": "record", "data": {"file": url}}],
+                **routing,
+            )
+            return True
+
+        user_id = str(event.get_sender_id() or "").strip()
+        if not user_id.isdigit():
+            raise RuntimeError("无效的用户号，无法发送语音")
+        await call_action(
+            "send_private_msg",
+            user_id=int(user_id),
+            message=[{"type": "record", "data": {"file": url}}],
+            **routing,
+        )
+        return True
+
+    @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
         """提取消息段元信息，用于失败日志定位。"""
         meta: list[dict[str, str]] = []
@@ -445,9 +482,68 @@ class MessageSender:
             self._resolve_groups(result, omit_playlist_cover=card_sent),
         )
 
+        # 网易云单曲仍先下载到本次解析目录，但 OneBot 发送时传媒体 URL，
+        # 让 Napcat 自行拉取并转码，避免本地 Record 被编码成超大 WebSocket 帧。
+        direct_audio_url = result.extra.get("audio_send_url")
+        direct_audio_content: AudioContent | None = None
+        if (
+            result.extra.get("audio_as_voice") is True
+            and isinstance(direct_audio_url, str)
+            and direct_audio_url.startswith(("http://", "https://"))
+            and callable(getattr(getattr(event, "bot", None), "call_action", None))
+        ):
+            direct_audio_content = next(
+                (
+                    content
+                    for group in groups
+                    for content in group.contents
+                    if isinstance(content, AudioContent)
+                ),
+                None,
+            )
+            if direct_audio_content is not None:
+                try:
+                    # 语音改走 OneBot URL 发送，但仍确保文件下载并保存在解析缓存。
+                    await direct_audio_content.get_path()
+                except (
+                    DownloadException,
+                    DownloadLimitException,
+                    SizeLimitException,
+                    DurationLimitException,
+                    ZeroSizeException,
+                ):
+                    direct_audio_content = None
+                else:
+                    groups = [
+                        SendGroup(
+                            contents=[
+                                content
+                                for content in group.contents
+                                if content is not direct_audio_content
+                            ],
+                            force_merge=group.force_merge,
+                            render_card=group.render_card,
+                        )
+                        for group in groups
+                    ]
+
         sent = False
         for group in groups:
             sent = await self._send_group(event, result, group) or sent
+
+        if direct_audio_content is not None:
+            try:
+                sent = (
+                    await self._send_audio_url_via_onebot(
+                        event,
+                        direct_audio_url,
+                    )
+                    or sent
+                )
+            except Exception as exc:
+                logger.error(f"网易云语音 URL 发送失败：{exc}")
+                # 已经尝试发送语音，不再追加一条与原消息无关的文本兜底。
+                sent = True
 
         if not sent:
             # 卡片预览已发送；过滤掉独立预览图后，不再额外发送一条纯文本

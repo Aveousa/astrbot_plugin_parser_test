@@ -1154,6 +1154,9 @@ class NetEaseMusicParser(PlaylistParserBase):
                 )
         song_id = _first_text(track, "id") or searched.group("song_id")
         cover = _track_cover_url(track)
+        audio_url = _first_text(track, "mp3Url") or (
+            f"https://music.163.com/song/media/outer/url?id={song_id}"
+        )
         result = self._single_track_result(
             title=_track_title(track) or "未命名歌曲",
             artist_name=" / ".join(artists) or "未知艺术家",
@@ -1164,14 +1167,15 @@ class NetEaseMusicParser(PlaylistParserBase):
             identifier=song_id,
             author_avatar=author_avatar,
             timestamp=_date_timestamp(track.get("publishTime"), milliseconds=True),
-            # 旧详情接口经常不返回 mp3Url。网易云的媒体跳转地址会重定向
+            # 旧详情接口经常不返回 mp3Url。网易云媒体跳转地址会重定向
             # 到歌曲文件，由共用 Downloader 下载并归档到本次解析目录。
-            audio_url=_first_text(track, "mp3Url")
-            or f"https://music.163.com/song/media/outer/url?id={song_id}",
+            audio_url=audio_url,
         )
         # 网易云单曲附加的本地音频应始终作为语音发送，不受全局
-        # “音频以文件形式发送”选项影响。
+        # “音频以文件形式发送”选项影响。OneBot 同时保留源 URL，避免将
+        # 大型本地音频编码进反向 WebSocket 消息。
         result.extra["audio_as_voice"] = True
+        result.extra["audio_send_url"] = audio_url
         return result
 
     @handle(
