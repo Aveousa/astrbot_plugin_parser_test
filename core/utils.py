@@ -240,8 +240,8 @@ def extract_json_url(data: dict | str) -> str | None:
         ("news", "url"),
         ("news", "sourceUrl"),
         ("news", "shareUrl"),
-        ("music", "musicUrl"),
         ("music", "jumpUrl"),
+        ("music", "musicUrl"),
         ("music", "url"),
     )
     for key1, key2 in priority_paths:

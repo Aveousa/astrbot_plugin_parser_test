@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import importlib
 import sys
 import types
@@ -107,3 +108,34 @@ def test_extract_json_url_recognizes_music_single_tracks(utils_module, track_url
     data = {"meta": {"detail": {"url": "open " + track_url}}}
 
     assert utils_module.extract_json_url(data) == track_url
+
+
+def test_extract_json_url_prefers_netease_song_page_over_media_url(utils_module):
+    song_page_url = (
+        "https://y.music.163.com/m/song?fx-wechatnew=t1&fx-wxqd=&"
+        "fx-wordtest=&id=3395393731&PlayerStyles_SynchronousSharing=t3&"
+        "fx-listentest=t3&H5_DownloadVIPGift=&userid=1312543631&"
+        "app_version=9.5.15&dlt=0846&ts-wakeup="
+    )
+    media_url = "http://music.163.com/song/media/outer/url?id=3395393731"
+    card = {
+        "app": "com.tencent.music.lua",
+        "bizsrc": "qqconnect.sdkshare_music",
+        "meta": {
+            "music": {
+                "desc": "鸣潮先约电台/飞行雪绒",
+                "jumpUrl": song_page_url,
+                "musicUrl": media_url,
+                "preview": "https://pic.ugcimg.cn/example.jpg",
+                "tag": "网易云音乐",
+                "title": "Brand New Sky (新世界的天空)",
+            }
+        },
+        "prompt": "[分享]Brand New Sky",
+        "view": "music",
+    }
+
+    # Napcat/AstrBot may pass either the decoded card object or its serialized
+    # value inside the outer Json.data field.
+    assert utils_module.extract_json_url(card) == song_page_url
+    assert utils_module.extract_json_url({"data": json.dumps(card)}) == song_page_url
