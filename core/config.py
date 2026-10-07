@@ -166,6 +166,7 @@ class ParserItem(ConfigNode):
     motion_photo_send_mode: str | None
     show_playlist_cover: bool | None
     show_playlist_url: bool | None
+    audio_api_base: str | None
     max_page: int | None
 
     @property

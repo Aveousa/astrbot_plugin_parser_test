@@ -17,10 +17,11 @@ from datetime import datetime
 from html import unescape
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from aiohttp import ClientError
 
+from ..cookie import CookieJar
 from ..data import ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
 from .base import BaseParser, handle
@@ -618,6 +619,7 @@ class PlaylistParserBase(BaseParser):
         author_avatar: str | None = None,
         timestamp: int | None = None,
         audio_url: str | None = None,
+        audio_headers: Mapping[str, str] | None = None,
         stats: Mapping[str, object] | None = None,
     ) -> ParseResult:
         """Build the common card/audio representation for a single song."""
@@ -632,7 +634,7 @@ class PlaylistParserBase(BaseParser):
                 self.create_audio_content(
                     audio_url,
                     duration=duration_value,
-                    headers=self.headers,
+                    headers=dict(audio_headers or self.headers),
                 )
             )
 
@@ -1105,6 +1107,87 @@ class QQMusicParser(PlaylistParserBase):
 
 class NetEaseMusicParser(PlaylistParserBase):
     platform = Platform(name="netease", display_name="网易云音乐")
+    _DEFAULT_METING_API = "https://api.qijieya.cn/meting/"
+
+    def __init__(self, config, downloader):
+        super().__init__(config, downloader)
+        parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
+        self.cookiejar = (
+            CookieJar(self.cfg, parser_config, domain="music.163.com")
+            if parser_config is not None
+            else None
+        )
+
+    def _netease_cookie_header(self, url: str) -> str:
+        cookiejar = getattr(self, "cookiejar", None)
+        if cookiejar is None:
+            return ""
+        return cookiejar.get_cookie_header_for_url(url)
+
+    def _netease_api_base(self) -> str:
+        parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
+        configured = getattr(parser_config, "audio_api_base", None)
+        return str(configured or self._DEFAULT_METING_API).strip().rstrip("/")
+
+    async def _resolve_netease_audio_url(self, song_id: str) -> str | None:
+        """按 MomoTune 的 NcmClient 约定请求 Meting 或网易云兼容 API。"""
+
+        base = self._netease_api_base()
+        if not base:
+            return None
+        is_meting = "meting" in base.lower()
+        if is_meting:
+            request_url = base
+            params: dict[str, str] = {
+                "server": "netease",
+                "type": "url",
+                "id": song_id,
+                "br": "320",
+            }
+        else:
+            request_url = f"{base}/song/url/v1"
+            params = {"id": song_id, "level": "exhigh"}
+            cookie = getattr(getattr(self, "cookiejar", None), "cookies_str", "")
+            if cookie:
+                # 与 MomoTune 一致，仅向用户明确配置的兼容 API 转发 Cookie；
+                # 标准 Meting API 不支持该参数，也不接收用户 Cookie。
+                params["cookie"] = cookie
+
+        try:
+            async with self.session.get(
+                request_url,
+                params=params,
+                headers=self.headers,
+                allow_redirects=False,
+            ) as response:
+                if response.status in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("Location")
+                    return urljoin(str(response.url), location) if location else None
+                if response.status >= 400:
+                    return None
+                text = (await response.text()).strip()
+        except (ClientError, TimeoutError):
+            return None
+
+        try:
+            payload: object = json.loads(text)
+        except json.JSONDecodeError:
+            payload = text
+
+        if is_meting:
+            if isinstance(payload, str):
+                return payload.strip() or None
+            if isinstance(payload, Mapping):
+                return _first_text(payload, "url")
+            return None
+
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        rows = data if isinstance(data, list) else []
+        if not rows or not isinstance(rows[0], Mapping):
+            return None
+        if _as_int(rows[0].get("code")) not in (None, 200):
+            return None
+        return _first_text(rows[0], "url")
 
     @handle("163cn.tv", r"163cn\.tv/[A-Za-z0-9_-]+/?")
     async def _handle_short(self, searched):
@@ -1133,11 +1216,14 @@ class NetEaseMusicParser(PlaylistParserBase):
         url = searched.group(0)
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        body = await self._json_request(
+        detail_url = (
             "https://music.163.com/api/song/detail?ids="
-            + json.dumps([int(searched.group("song_id"))]),
-            headers={"Referer": "https://music.163.com/"},
+            + json.dumps([int(searched.group("song_id"))])
         )
+        detail_headers = {"Referer": "https://music.163.com/"}
+        if cookie := self._netease_cookie_header(detail_url):
+            detail_headers["Cookie"] = cookie
+        body = await self._json_request(detail_url, headers=detail_headers)
         songs = body.get("songs") if isinstance(body, Mapping) else None
         track = songs[0] if isinstance(songs, list) and songs else None
         if not isinstance(track, Mapping):
@@ -1154,9 +1240,14 @@ class NetEaseMusicParser(PlaylistParserBase):
                 )
         song_id = _first_text(track, "id") or searched.group("song_id")
         cover = _track_cover_url(track)
-        audio_url = _first_text(track, "mp3Url") or (
+        audio_url = await self._resolve_netease_audio_url(song_id)
+        audio_url = audio_url or _first_text(track, "mp3Url") or (
             f"https://music.163.com/song/media/outer/url?id={song_id}"
         )
+        audio_headers = dict(self.headers)
+        audio_headers["Referer"] = "https://music.163.com/"
+        if cookie := self._netease_cookie_header(audio_url):
+            audio_headers["Cookie"] = cookie
         result = self._single_track_result(
             title=_track_title(track) or "未命名歌曲",
             artist_name=" / ".join(artists) or "未知艺术家",
@@ -1170,6 +1261,7 @@ class NetEaseMusicParser(PlaylistParserBase):
             # 旧详情接口经常不返回 mp3Url。网易云媒体跳转地址会重定向
             # 到歌曲文件，由共用 Downloader 下载并归档到本次解析目录。
             audio_url=audio_url,
+            audio_headers=audio_headers,
         )
         # 网易云单曲附加的本地音频应始终作为语音发送，不受全局
         # “音频以文件形式发送”选项影响。OneBot 同时保留源 URL，避免将

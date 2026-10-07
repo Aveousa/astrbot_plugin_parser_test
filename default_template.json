@@ -44,6 +44,8 @@
     "__template_key": "netease",
     "enable": true,
     "use_proxy": false,
+    "audio_api_base": "https://api.qijieya.cn/meting/",
+    "cookies": "",
     "show_playlist_cover": true,
     "show_playlist_url": true
   },

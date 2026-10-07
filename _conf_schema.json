@@ -246,6 +246,20 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "audio_api_base": {
+            "description": "单曲音源 API",
+            "hint": "Meting API 用于按歌曲 ID 获取播放地址；需要 Cookie 播放 VIP 歌曲时，选择支持 Cookie 的网易云兼容 API。Cookie 会按域名用于网易云请求，并转发给所配置的兼容 API。",
+            "type": "string",
+            "default": "https://api.qijieya.cn/meting/",
+            "options": ["https://api.qijieya.cn/meting/", "https://api.ames.cc.cd"]
+          },
+          "cookies": {
+            "description": "网易云 Cookie（选填）",
+            "hint": "支持普通 Cookie 或 Netscape Cookie；按域名用于网易云详情/音频请求，并发送给所配置的兼容音源 API。标准 Meting API 不支持按请求传入 Cookie。",
+            "type": "text",
+            "default": "",
+            "secret": true
+          },
           "show_playlist_cover": {
             "description": "显示歌单封面",
             "hint": "关闭后歌单信息卡片不再显示歌单封面，但仍保留歌曲专辑缩略图",

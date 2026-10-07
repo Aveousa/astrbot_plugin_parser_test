@@ -20,6 +20,7 @@ from core.parsers.music import (
 class _Downloader:
     def __init__(self):
         self.audio_urls: list[str] = []
+        self.audio_requests: list[dict[str, object]] = []
 
     def download_img(self, url: str, **_kwargs):
         async def complete() -> Path:
@@ -29,6 +30,7 @@ class _Downloader:
 
     def download_audio(self, url: str, **_kwargs):
         self.audio_urls.append(url)
+        self.audio_requests.append({"url": url, **_kwargs})
 
         async def complete() -> Path:
             return Path(url.rsplit("/", 1)[-1] or "track.mp3")
@@ -226,16 +228,30 @@ def test_netease_track_route_extracts_song_id_not_user_id():
 
 
 @pytest.mark.parametrize(
-    ("mp3_url", "expected_url"),
+    ("mp3_url", "resolved_url", "expected_url"),
     [
         (
             "",
+            None,
             "https://music.163.com/song/media/outer/url?id=3395393731",
         ),
-        ("https://example.com/song.mp3", "https://example.com/song.mp3"),
+        (
+            "https://example.com/song.mp3",
+            None,
+            "https://example.com/song.mp3",
+        ),
+        (
+            "",
+            "https://media.example/meting-song.mp3",
+            "https://media.example/meting-song.mp3",
+        ),
     ],
 )
-def test_netease_track_resolves_audio_url(mp3_url: str, expected_url: str):
+def test_netease_track_resolves_audio_url(
+    mp3_url: str,
+    resolved_url: str | None,
+    expected_url: str,
+):
     async def build():
         parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
         parser.cfg = SimpleNamespace(
@@ -259,7 +275,11 @@ def test_netease_track_resolves_audio_url(mp3_url: str, expected_url: str):
                 ]
             }
 
+        async def resolve_audio_url(_song_id):
+            return resolved_url
+
         parser._json_request = request
+        parser._resolve_netease_audio_url = resolve_audio_url
         _, searched = NetEaseMusicParser.search_url(
             "https://y.music.163.com/m/song?id=3395393731&userid=123"
         )
@@ -279,6 +299,138 @@ def test_netease_track_resolves_audio_url(mp3_url: str, expected_url: str):
     assert result.extra["card_preview_only"] is False
     assert result.extra["audio_as_voice"] is True
     assert result.extra["audio_send_url"] == expected_url
+
+
+@pytest.mark.parametrize(
+    ("api_base", "body", "expected_url", "expected_params"),
+    [
+        (
+            "https://api.qijieya.cn/meting/",
+            "https://media.example/meting.mp3",
+            "https://media.example/meting.mp3",
+            {
+                "server": "netease",
+                "type": "url",
+                "id": "3395393731",
+                "br": "320",
+            },
+        ),
+        (
+            "https://api.ames.cc.cd",
+            '{"data":[{"code":200,"url":"https://media.example/vip.mp3"}]}',
+            "https://media.example/vip.mp3",
+            {
+                "id": "3395393731",
+                "level": "exhigh",
+                "cookie": "MUSIC_U=vip-session",
+            },
+        ),
+    ],
+)
+def test_netease_audio_api_supports_meting_and_cookie_compatible_sources(
+    api_base: str,
+    body: str,
+    expected_url: str,
+    expected_params: dict[str, str],
+):
+    async def resolve():
+        class _Response:
+            def __init__(self):
+                self.status = 200
+                self.headers = {}
+                self.url = "https://api.example/"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return body
+
+        class _Session:
+            closed = False
+
+            def get(self, url, **kwargs):
+                requests.append((url, kwargs))
+                return _Response()
+
+        requests = []
+        parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
+        parser.cfg = SimpleNamespace(
+            parser=SimpleNamespace(
+                netease=SimpleNamespace(audio_api_base=api_base),
+            ),
+        )
+        parser.headers = {}
+        parser._session = _Session()
+        parser.cookiejar = SimpleNamespace(cookies_str="MUSIC_U=vip-session")
+
+        result = await parser._resolve_netease_audio_url("3395393731")
+        return result, requests
+
+    result, requests = asyncio.run(resolve())
+
+    assert result == expected_url
+    assert len(requests) == 1
+    request_url, kwargs = requests[0]
+    expected_request_url = (
+        api_base.rstrip("/")
+        if "meting" in api_base.lower()
+        else f"{api_base}/song/url/v1"
+    )
+    assert request_url == expected_request_url
+    assert kwargs["params"] == expected_params
+
+
+def test_netease_cookie_is_applied_to_official_detail_and_media_requests():
+    async def build():
+        parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(netease=SimpleNamespace(use_proxy=False)),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda url: (
+                "MUSIC_U=vip-session" if "music.163.com" in url else ""
+            )
+        )
+        requested_headers = []
+
+        async def request(_url, **kwargs):
+            requested_headers.append(kwargs["headers"])
+            return {
+                "songs": [
+                    {
+                        "id": 3395393731,
+                        "name": "VIP track",
+                        "duration": 180000,
+                        "artists": [],
+                    }
+                ]
+            }
+
+        async def no_api_url(_song_id):
+            return None
+
+        parser._json_request = request
+        parser._resolve_netease_audio_url = no_api_url
+        _, searched = NetEaseMusicParser.search_url(
+            "https://music.163.com/song?id=3395393731"
+        )
+        result = await parser._handle_track(searched)
+        await asyncio.gather(*(content.get_path() for content in result.contents))
+        return parser, requested_headers
+
+    parser, requested_headers = asyncio.run(build())
+
+    assert requested_headers[0]["Cookie"] == "MUSIC_U=vip-session"
+    assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == (
+        "MUSIC_U=vip-session"
+    )
 
 
 @pytest.mark.parametrize(

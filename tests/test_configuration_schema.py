@@ -280,6 +280,23 @@ def test_music_parsers_expose_playlist_url_setting():
             assert "show_playlist_url" not in template["items"]
 
 
+def test_netease_exposes_audio_api_and_optional_cookie_settings():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    items = schema["parsers_template"]["templates"]["netease"]["items"]
+    assert items["audio_api_base"]["default"] == "https://api.qijieya.cn/meting/"
+    assert "https://api.ames.cc.cd" in items["audio_api_base"]["options"]
+    assert items["cookies"]["default"] == ""
+    assert items["cookies"]["secret"] is True
+
+    netease_defaults = next(
+        item for item in defaults if item["__template_key"] == "netease"
+    )
+    assert netease_defaults["audio_api_base"] == "https://api.qijieya.cn/meting/"
+    assert netease_defaults["cookies"] == ""
+
+
 def test_bilibili_exposes_ai_summary_switch():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -311,6 +328,10 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
                     "enable": False,
                     "cookies": "kept-cookie",
                     "video_codecs": "HEV",
+                },
+                {
+                    "__template_key": "netease",
+                    "cookies": "netease-vip-cookie",
                 },
                 {"__template_key": "qzone", "enable": True},
             ]
@@ -357,4 +378,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
         raw["parsers_template"][index]["show_playlist_url"] is True
         for index in range(4, 10)
     )
+    netease = raw["parsers_template"][5]
+    assert netease["cookies"] == "netease-vip-cookie"
+    assert netease["audio_api_base"] == "https://api.qijieya.cn/meting/"
     assert raw.save_calls == 1
