@@ -152,3 +152,118 @@ def test_streamd_posts_worker_download_contract(download_module, tmp_path: Path)
             },
         )
     ]
+
+
+def test_download_audio_rejects_html_error_page(download_module, tmp_path: Path):
+    """A successful HTTP status must not turn an HTML error page into audio."""
+
+    body = b"<!doctype html><html><body>permission denied</body></html>"
+
+    class Content:
+        async def iter_chunked(self, _size: int):
+            yield body
+
+    class Response:
+        status = 200
+        reason = "OK"
+        content_length = len(body)
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Progress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def update(self, _size: int):
+            return None
+
+    downloader = object.__new__(download_module.Downloader)
+    downloader.cfg = SimpleNamespace(cache_dir=tmp_path, download_retry_times=0)
+    downloader.max_size = 1
+    downloader.default_headers = {"User-Agent": "default"}
+    downloader.client = Client()
+    downloader.get_progress_bar = lambda *_args, **_kwargs: Progress()
+
+    async def download():
+        return await downloader.download_audio(
+            "https://media.example/song",
+            audio_name="song.mp3",
+            headers={"User-Agent": "music-parser"},
+            proxy=None,
+        )
+
+    with pytest.raises(download_module.DownloadException):
+        asyncio.run(download())
+
+    assert not (tmp_path / "song.mp3").exists()
+
+
+def test_download_audio_accepts_audio_only_mp4_container(
+    download_module, tmp_path: Path
+):
+    """Qishui may expose an audio-only MP4 URL with a ``video/mp4`` type."""
+
+    body = b"\x00\x00\x00\x1cftypM4A " + b"audio-data"
+
+    class Content:
+        async def iter_chunked(self, _size: int):
+            yield body
+
+    class Response:
+        status = 200
+        reason = "OK"
+        content_length = len(body)
+        headers = {"Content-Type": "video/mp4"}
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Progress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def update(self, _size: int):
+            return None
+
+    downloader = object.__new__(download_module.Downloader)
+    downloader.cfg = SimpleNamespace(cache_dir=tmp_path, download_retry_times=0)
+    downloader.max_size = 1
+    downloader.default_headers = {"User-Agent": "default"}
+    downloader.client = Client()
+    downloader.get_progress_bar = lambda *_args, **_kwargs: Progress()
+
+    async def download():
+        return await downloader.download_audio(
+            "https://media.example/song",
+            audio_name="song.mp3",
+            headers={"User-Agent": "music-parser"},
+            proxy=None,
+        )
+
+    path = asyncio.run(download())
+
+    assert path.read_bytes() == body

@@ -25,6 +25,42 @@ from .utils import generate_file_name, merge_av, safe_unlink
 P = ParamSpec("P")
 T = TypeVar("T")
 _PERCENT_ENCODED_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_AUDIO_ERROR_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/xhtml+xml",
+        "application/xml",
+        "text/html",
+        "text/json",
+        "text/plain",
+        "text/xml",
+    }
+)
+_AUDIO_ERROR_PREFIXES = (
+    b"<!doctype html",
+    b"<html",
+    b"<head",
+    b"<body",
+    b"{",
+    b"[",
+)
+
+
+def _looks_like_invalid_audio(content_type: str, chunk: bytes) -> bool:
+    """Return whether a response is an error document instead of audio data.
+
+    Media endpoints occasionally answer an expired signed URL with HTTP 200 and
+    an HTML/JSON error page.  Status and Content-Length checks alone cannot
+    detect that case, so audio downloads validate the response headers and a
+    small prefix before creating the cached file.  ``video/mp4`` is deliberately
+    accepted because some platforms expose an audio-only MP4 container.
+    """
+
+    media_type = content_type.partition(";")[0].strip().lower()
+    if media_type in _AUDIO_ERROR_MEDIA_TYPES:
+        return True
+    prefix = chunk.lstrip()[:64].lower()
+    return prefix.startswith(_AUDIO_ERROR_PREFIXES)
 
 
 def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]:
@@ -71,6 +107,7 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
         worker_proxy_url: str | None = None,
+        validate_audio: bool = False,
     ) -> Path:
         """流式下载"""
         if not file_name:
@@ -106,6 +143,8 @@ class Downloader:
                         raise ClientError(f"HTTP {response.status} {response.reason}")
                     content_length = response.content_length
                     max_bytes = self.max_size * 1024 * 1024
+                    response_headers = getattr(response, "headers", {}) or {}
+                    content_type = str(response_headers.get("Content-Type", ""))
 
                     if content_length == 0:
                         logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
@@ -117,11 +156,18 @@ class Downloader:
                         raise SizeLimitException
 
                     downloaded = 0
+                    first_chunk = True
                     with self.get_progress_bar(file_name, content_length) as bar:
                         async with aiofiles.open(file_path, "wb") as file:
                             async for chunk in response.content.iter_chunked(
                                 1024 * 1024
                             ):
+                                if validate_audio and first_chunk:
+                                    first_chunk = False
+                                    if _looks_like_invalid_audio(content_type, chunk):
+                                        raise DownloadException(
+                                            "音频地址返回的不是可用媒体文件"
+                                        )
                                 downloaded += len(chunk)
                                 if downloaded > max_bytes:
                                     raise SizeLimitException
@@ -138,6 +184,9 @@ class Downloader:
 
                 return file_path
             except (ZeroSizeException, SizeLimitException):
+                await safe_unlink(file_path)
+                raise
+            except DownloadException:
                 await safe_unlink(file_path)
                 raise
             except (ClientError, TimeoutError) as exc:
@@ -208,6 +257,7 @@ class Downloader:
             headers=headers,
             proxy=proxy,
             worker_proxy_url=worker_proxy_url,
+            validate_audio=True,
         )
 
     @auto_task
