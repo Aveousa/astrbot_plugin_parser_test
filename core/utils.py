@@ -283,6 +283,8 @@ def extract_json_url(data: dict | str) -> str | None:
         "y.qq.com",
         "t1.kugou.com",
         "activity.kugou.com/share",
+        "m.kugou.com/songlist",
+        "www.kugou.com/songlist",
         "qishui.douyin.com",
         "music.douyin.com/qishui",
     )

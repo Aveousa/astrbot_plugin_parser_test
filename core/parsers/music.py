@@ -543,6 +543,7 @@ class NetEaseMusicParser(PlaylistParserBase):
 class KugouMusicParser(PlaylistParserBase):
     platform = Platform(name="kugou", display_name="酷狗音乐")
     _KUGOU_SECRET = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
+    _MOBILE_REFERER = "https://m.kugou.com/"
 
     @staticmethod
     def _signature(params: Mapping[str, object], body: str = "") -> str:
@@ -586,6 +587,82 @@ class KugouMusicParser(PlaylistParserBase):
         if not global_id:
             raise ParseException("酷狗分享链接缺少歌单标识")
         return await self._parse_playlist(global_id, url)
+
+    @staticmethod
+    def _decode_mobile_songlist(html: str) -> Mapping[str, Any]:
+        """Extract the server-rendered ``window.$output`` payload.
+
+        The mobile song-list page embeds the playlist metadata and the first
+        page of songs directly in the HTML.  This is more reliable than
+        redirecting to the desktop page, which currently presents an
+        anti-bot shell to non-browser clients.
+        """
+
+        marker = "window.$output"
+        marker_pos = html.find(marker)
+        if marker_pos < 0:
+            raise ParseException("酷狗歌单页面没有返回可识别的数据")
+        assignment = html.find("=", marker_pos + len(marker))
+        if assignment < 0:
+            raise ParseException("酷狗歌单页面没有返回可识别的数据")
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(html[assignment + 1 :].lstrip())
+        except json.JSONDecodeError as exc:
+            raise ParseException("酷狗歌单页面数据格式无法识别") from exc
+        if not isinstance(payload, Mapping):
+            raise ParseException("酷狗歌单页面没有返回可识别的数据")
+        return payload
+
+    @handle(
+        "m.kugou.com/songlist",
+        r"m\.kugou\.com/songlist/gcid_[A-Za-z0-9_-]+(?:/[^\s?]*)?(?:\?[^\s]+)?",
+    )
+    @handle(
+        "www.kugou.com/songlist",
+        r"www\.kugou\.com/songlist/gcid_[A-Za-z0-9_-]+(?:/[^\s?]*)?(?:\?[^\s]+)?",
+    )
+    async def _handle_mobile_songlist(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.android_headers, "Referer": self._MOBILE_REFERER},
+        ) as response:
+            if response.status >= 400:
+                raise ParseException(f"酷狗歌单页面请求失败: HTTP {response.status}")
+            html = await response.text()
+
+        payload = self._decode_mobile_songlist(html)
+        info = payload.get("info")
+        info = info if isinstance(info, Mapping) else {}
+        list_info = info.get("listinfo")
+        list_info = list_info if isinstance(list_info, Mapping) else {}
+        songs = info.get("songs")
+        songs = songs if isinstance(songs, list) else []
+        if not list_info and not songs:
+            raise ParseException("酷狗歌单不存在或暂时无法访问")
+
+        return self._playlist_result(
+            title=_first_text(list_info, "name") or "酷狗歌单",
+            author_name=_first_text(list_info, "list_create_username") or "未知用户",
+            author_avatar=_cover_url(list_info.get("create_user_pic"), size=165),
+            description=_clean_text(list_info.get("intro")),
+            cover=_cover_url(list_info.get("pic")),
+            track_count=_as_int(list_info.get("count")),
+            timestamp=_timestamp(list_info.get("create_time")),
+            url=url,
+            identifier=(
+                _first_text(payload, "global_collection_id", "encode_src_gid")
+                or url
+            ),
+            tracks=[item for item in songs if isinstance(item, Mapping)],
+            stats={
+                "plays": list_info.get("heat"),
+                "favorites": list_info.get("collect_count"),
+                "comments": list_info.get("comment_count"),
+            },
+        )
 
     async def _parse_playlist(self, global_id: str, source_url: str) -> ParseResult:
         list_payload = {"data": [{"specialid": 0, "global_collection_id": global_id}]}

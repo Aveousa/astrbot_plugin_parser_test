@@ -108,6 +108,11 @@ def _build_result(show_playlist_cover: bool | None):
             "activity.kugou.com/share",
         ),
         (
+            KugouMusicParser,
+            "酷狗歌单 https://m.kugou.com/songlist/gcid_3znb0r4xz2z03e/?src_cid=3znb0r4xz2z03e&uid=1224543248&iszlist=1",
+            "m.kugou.com/songlist",
+        ),
+        (
             QishuiMusicParser,
             "汽水歌单：https://qishui.douyin.com/s/iXqUS9uU/",
             "qishui.douyin.com/s",
@@ -154,3 +159,17 @@ def test_playlist_cover_setting_controls_only_main_cover(
     assert "歌曲数: 1" in result.extra["info"]
     assert "歌曲数" not in result.extra["card_info"]
     assert result.extra["playlist_cover_only"] is (expected_contents == 1)
+
+
+def test_kugou_mobile_songlist_payload_is_decoded():
+    html = (
+        '<script>window.$output = '
+        '{"encode_src_gid":"gcid_demo","info":{"listinfo":'
+        '{"name":"测试歌单","list_create_username":"测试作者","count":2},'
+        '"songs":[{"name":"歌曲 - 歌手","singerinfo":[],"albuminfo":{"name":"专辑"}}]}};'
+    )
+
+    payload = KugouMusicParser._decode_mobile_songlist(html)
+
+    assert payload["info"]["listinfo"]["name"] == "测试歌单"
+    assert payload["encode_src_gid"] == "gcid_demo"
