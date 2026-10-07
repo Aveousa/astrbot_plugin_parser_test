@@ -79,3 +79,16 @@ def test_extract_json_url_prefers_qq_music_playlist_share(utils_module):
     }
 
     assert utils_module.extract_json_url(data) == playlist_url
+
+
+@pytest.mark.parametrize(
+    "playlist_url",
+    [
+        "https://m.kuwo.cn/newh5app/playlist_detail/3567046051?from=ip&t=qqfriend",
+        "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=en",
+    ],
+)
+def test_extract_json_url_recognizes_new_music_platforms(utils_module, playlist_url):
+    data = {"meta": {"detail": {"url": "open " + playlist_url}}}
+
+    assert utils_module.extract_json_url(data) == playlist_url

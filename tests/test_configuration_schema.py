@@ -182,6 +182,8 @@ def test_supported_parser_templates_are_exposed():
         "netease",
         "kugou",
         "qishui",
+        "kuwo",
+        "applemusic",
     }
 
     assert set(schema["parsers_template"]["templates"]) == supported
@@ -245,13 +247,14 @@ def test_music_parsers_expose_playlist_cover_setting():
         "default": True,
     }
     templates = schema["parsers_template"]["templates"]
-    for name in ("qqmusic", "netease", "kugou", "qishui"):
+    music_names = {"qqmusic", "netease", "kugou", "qishui", "kuwo", "applemusic"}
+    for name in music_names:
         assert templates[name]["items"]["show_playlist_cover"] == expected
         item = next(item for item in defaults if item["__template_key"] == name)
         assert item["show_playlist_cover"] is True
 
     for name, template in templates.items():
-        if name not in {"qqmusic", "netease", "kugou", "qishui"}:
+        if name not in music_names:
             assert "show_playlist_cover" not in template["items"]
 
 
@@ -266,13 +269,14 @@ def test_music_parsers_expose_playlist_url_setting():
         "type": "bool",
         "default": True,
     }
-    for name in ("qqmusic", "netease", "kugou", "qishui"):
+    music_names = {"qqmusic", "netease", "kugou", "qishui", "kuwo", "applemusic"}
+    for name in music_names:
         assert templates[name]["items"]["show_playlist_url"] == expected
         item = next(item for item in defaults if item["__template_key"] == name)
         assert item["show_playlist_url"] is True
 
     for name, template in templates.items():
-        if name not in {"qqmusic", "netease", "kugou", "qishui"}:
+        if name not in music_names:
             assert "show_playlist_url" not in template["items"]
 
 
@@ -328,6 +332,8 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
         "netease",
         "kugou",
         "qishui",
+        "kuwo",
+        "applemusic",
     ]
     bilibili = raw["parsers_template"][0]
     assert bilibili["enable"] is False
@@ -341,14 +347,14 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     assert pixiv["multi_image_forward"] is False
     assert all(
         raw["parsers_template"][index]["enable"] is True
-        for index in range(4, 8)
+        for index in range(4, 10)
     )
     assert all(
         raw["parsers_template"][index]["show_playlist_cover"] is True
-        for index in range(4, 8)
+        for index in range(4, 10)
     )
     assert all(
         raw["parsers_template"][index]["show_playlist_url"] is True
-        for index in range(4, 8)
+        for index in range(4, 10)
     )
     assert raw.save_calls == 1

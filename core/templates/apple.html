@@ -116,7 +116,9 @@
     .card-badge__platform--qqmusic,
     .card-badge__platform--netease,
     .card-badge__platform--kugou,
-    .card-badge__platform--qishui {
+    .card-badge__platform--qishui,
+    .card-badge__platform--kuwo,
+    .card-badge__platform--applemusic {
       width: auto;
       max-width: 116px;
       height: 24px;
@@ -571,10 +573,10 @@
   <div class="card-badges">
     {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
-    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
+    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui', 'kuwo', 'applemusic'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>
   {% endif %}
-  <header class="card-header{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-header--wide-badge{% endif %}">
+  <header class="card-header{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui', 'kuwo', 'applemusic'] %} card-header--wide-badge{% endif %}">
     {% if author and author.avatar_uri %}
       <img class="avatar" src="{{ author.avatar_uri }}" alt="">
     {% else %}

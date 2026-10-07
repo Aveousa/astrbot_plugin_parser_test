@@ -1,4 +1,4 @@
-"""Music playlist parsers for QQ Music, NetEase, Kugou and Qishui Music.
+"""Music playlist parsers for QQ Music, NetEase, Kugou, Qishui, Kuwo and Apple Music.
 
 The parsers intentionally produce a playlist summary instead of downloading
 every track.  That keeps the result useful for the existing information-card
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from html import unescape
@@ -22,6 +23,191 @@ from aiohttp import ClientError
 from ..data import ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
 from .base import BaseParser, handle
+
+
+class _JavaScriptReference:
+    """A reference used by Nuxt's compact server-state serializer."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _NuxtValueParser:
+    """Parse the JSON-like literal format emitted by Nuxt SSR.
+
+    Kuwo serializes ``window.__NUXT__`` as ``function(a, b, ...){return
+    {...}}(value_a, value_b, ...)``.  It is deliberately not valid JSON, but
+    the payload itself only uses literals, arrays, objects and references to
+    the function arguments.  Keeping this tiny parser local avoids requiring
+    a JavaScript runtime just to read playlist metadata.
+    """
+
+    _IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*")
+    _NUMBER_RE = re.compile(r"-?(?:\d+\.\d*|\d+)(?:[eE][+-]?\d+)?")
+
+    def __init__(self, source: str, position: int = 0):
+        self.source = source
+        self.position = position
+
+    def _skip_space(self) -> None:
+        while self.position < len(self.source) and self.source[self.position].isspace():
+            self.position += 1
+
+    def parse(self) -> Any:
+        self._skip_space()
+        if self.position >= len(self.source):
+            raise ValueError("unexpected end of JavaScript value")
+        char = self.source[self.position]
+        if char in "'\"":
+            return self._parse_string()
+        if char == "{":
+            return self._parse_object()
+        if char == "[":
+            return self._parse_array()
+        if char in "-0123456789":
+            return self._parse_number()
+        if self.source.startswith("!0", self.position):
+            self.position += 2
+            return True
+        if self.source.startswith("!1", self.position):
+            self.position += 2
+            return False
+        match = self._IDENTIFIER_RE.match(self.source, self.position)
+        if match:
+            self.position = match.end()
+            name = match.group(0)
+            if name == "true":
+                return True
+            if name == "false":
+                return False
+            if name in {"null", "undefined"}:
+                return None
+            return _JavaScriptReference(name)
+        raise ValueError(f"unsupported JavaScript value near {self.source[self.position:self.position + 40]!r}")
+
+    def _parse_string(self) -> str:
+        quote = self.source[self.position]
+        self.position += 1
+        result: list[str] = []
+        while self.position < len(self.source):
+            char = self.source[self.position]
+            self.position += 1
+            if char == quote:
+                return "".join(result)
+            if char != "\\":
+                result.append(char)
+                continue
+            if self.position >= len(self.source):
+                break
+            escaped = self.source[self.position]
+            self.position += 1
+            simple_escapes = {
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+                "b": "\b",
+                "f": "\f",
+                "v": "\v",
+                "0": "\0",
+            }
+            if escaped in simple_escapes:
+                result.append(simple_escapes[escaped])
+            elif escaped == "u":
+                code = self.source[self.position:self.position + 4]
+                if len(code) != 4:
+                    raise ValueError("invalid Unicode escape in JavaScript string")
+                self.position += 4
+                result.append(chr(int(code, 16)))
+            elif escaped == "x":
+                code = self.source[self.position:self.position + 2]
+                if len(code) != 2:
+                    raise ValueError("invalid hex escape in JavaScript string")
+                self.position += 2
+                result.append(chr(int(code, 16)))
+            elif escaped in "\r\n":
+                if escaped == "\r" and self.position < len(self.source) and self.source[self.position] == "\n":
+                    self.position += 1
+            else:
+                result.append(escaped)
+        raise ValueError("unterminated JavaScript string")
+
+    def _parse_number(self) -> int | float:
+        match = self._NUMBER_RE.match(self.source, self.position)
+        if not match:
+            raise ValueError("invalid JavaScript number")
+        text = match.group(0)
+        self.position = match.end()
+        return float(text) if any(char in text for char in ".eE") else int(text)
+
+    def _parse_key(self) -> str:
+        self._skip_space()
+        if self.position >= len(self.source):
+            raise ValueError("missing object key")
+        if self.source[self.position] in "'\"":
+            return self._parse_string()
+        match = self._IDENTIFIER_RE.match(self.source, self.position)
+        if not match:
+            match = self._NUMBER_RE.match(self.source, self.position)
+        if not match:
+            raise ValueError("invalid object key")
+        self.position = match.end()
+        return match.group(0)
+
+    def _parse_object(self) -> dict[str, Any]:
+        self.position += 1
+        result: dict[str, Any] = {}
+        self._skip_space()
+        while self.position < len(self.source) and self.source[self.position] != "}":
+            key = self._parse_key()
+            self._skip_space()
+            if self.position >= len(self.source) or self.source[self.position] != ":":
+                raise ValueError("missing object value separator")
+            self.position += 1
+            result[key] = self.parse()
+            self._skip_space()
+            if self.position < len(self.source) and self.source[self.position] == ",":
+                self.position += 1
+                self._skip_space()
+                continue
+            if self.position >= len(self.source) or self.source[self.position] != "}":
+                raise ValueError("missing object item separator")
+        if self.position >= len(self.source):
+            raise ValueError("unterminated JavaScript object")
+        self.position += 1
+        return result
+
+    def _parse_array(self) -> list[Any]:
+        self.position += 1
+        result: list[Any] = []
+        self._skip_space()
+        while self.position < len(self.source) and self.source[self.position] != "]":
+            result.append(self.parse())
+            self._skip_space()
+            if self.position < len(self.source) and self.source[self.position] == ",":
+                self.position += 1
+                self._skip_space()
+                continue
+            if self.position >= len(self.source) or self.source[self.position] != "]":
+                raise ValueError("missing array item separator")
+        if self.position >= len(self.source):
+            raise ValueError("unterminated JavaScript array")
+        self.position += 1
+        return result
+
+
+def _resolve_nuxt_references(value: Any, arguments: Mapping[str, Any]) -> Any:
+    if isinstance(value, _JavaScriptReference):
+        return arguments.get(value.name)
+    if isinstance(value, list):
+        return [_resolve_nuxt_references(item, arguments) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _resolve_nuxt_references(item, arguments)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _first_text(value: object, *keys: str) -> str | None:
@@ -60,7 +246,7 @@ def _clean_text(value: object) -> str | None:
 
 
 def _cover_url(value: object, *, size: int = 400) -> str | None:
-    """Normalize the cover formats used by the four APIs."""
+    """Normalize the cover formats used by the supported music APIs."""
 
     if isinstance(value, Mapping):
         # Qishui uses a URI plus one or more image hosts and a template prefix.
@@ -86,7 +272,12 @@ def _cover_url(value: object, *, size: int = 400) -> str | None:
     url = str(value).strip()
     if not url:
         return None
-    url = url.replace("{size}", str(size))
+    url = (
+        url.replace("{size}", str(size))
+        .replace("{w}", str(size))
+        .replace("{h}", str(size))
+        .replace("{f}", "jpg")
+    )
     if url.startswith("http://"):
         url = "https://" + url[7:]
     return url
@@ -364,6 +555,238 @@ class PlaylistParserBase(BaseParser):
             },
         )
 
+
+class KuwoMusicParser(PlaylistParserBase):
+    platform = Platform(name="kuwo", display_name="酷我音乐")
+
+    @staticmethod
+    def _decode_nuxt_payload(html: str) -> Mapping[str, Any]:
+        marker = re.search(
+            r"window\.__NUXT__\s*=\s*\(function\((.*?)\)\s*\{\s*return\s*",
+            html,
+            flags=re.DOTALL,
+        )
+        if not marker:
+            raise ParseException("酷我音乐页面没有返回可识别的歌单数据")
+
+        parameters = [item.strip() for item in marker.group(1).split(",")]
+        parser = _NuxtValueParser(html, marker.end())
+        try:
+            serialized = parser.parse()
+            parser._skip_space()
+            if parser.position >= len(html) or html[parser.position] != "}":
+                raise ValueError("missing Nuxt function terminator")
+            parser.position += 1
+            parser._skip_space()
+            if parser.position >= len(html) or html[parser.position] != "(":
+                raise ValueError("missing Nuxt argument list")
+            parser.position += 1
+            arguments: list[Any] = []
+            parser._skip_space()
+            while parser.position < len(html) and html[parser.position] != ")":
+                arguments.append(parser.parse())
+                parser._skip_space()
+                if parser.position < len(html) and html[parser.position] == ",":
+                    parser.position += 1
+                    parser._skip_space()
+                    continue
+                if parser.position >= len(html) or html[parser.position] != ")":
+                    raise ValueError("invalid Nuxt argument separator")
+            if len(arguments) != len(parameters):
+                raise ValueError("Nuxt parameter and argument counts differ")
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ParseException("酷我音乐页面数据格式无法识别") from exc
+
+        resolved = _resolve_nuxt_references(serialized, dict(zip(parameters, arguments)))
+        if not isinstance(resolved, Mapping):
+            raise ParseException("酷我音乐页面没有返回可识别的歌单数据")
+        return resolved
+
+    @handle(
+        "m.kuwo.cn/newh5app/playlist_detail",
+        r"m\.kuwo\.cn/newh5app/playlist_detail/(?P<playlist_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    @handle(
+        "www.kuwo.cn/playlist_detail",
+        r"www\.kuwo\.cn/playlist_detail/(?P<playlist_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    @handle(
+        "kuwo.cn/playlist_detail",
+        r"(?<!www\.)kuwo\.cn/playlist_detail/(?P<playlist_id>\d+)(?:\?[^\s<>]*)?",
+    )
+    async def _handle_playlist(self, searched):
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.headers, "Referer": "https://www.kuwo.cn/"},
+        ) as response:
+            # Kuwo may return HTTP 430 while embedding complete SSR data.
+            html = await response.text()
+
+        payload = self._decode_nuxt_payload(html)
+        data = payload.get("data")
+        page = data[0] if isinstance(data, list) and data else {}
+        page = page if isinstance(page, Mapping) else {}
+        playlist = page.get("playListInfo")
+        playlist = playlist if isinstance(playlist, Mapping) else None
+        if not playlist:
+            raise ParseException("酷我音乐歌单不存在或暂时无法访问")
+
+        tracks = playlist.get("musicList")
+        tracks = tracks if isinstance(tracks, list) else []
+        page_data = page.get("pageData")
+        page_data = page_data if isinstance(page_data, Mapping) else {}
+        playlist_id = _first_text(page, "playlistId") or searched.group("playlist_id")
+        return self._playlist_result(
+            title=_first_text(playlist, "name") or "酷我音乐歌单",
+            author_name=_first_text(playlist, "userName", "uname") or "未知用户",
+            author_avatar=_cover_url(playlist.get("uPic"), size=165),
+            description=_clean_text(playlist.get("desc")),
+            cover=_cover_url(
+                playlist.get("img700")
+                or playlist.get("img500")
+                or playlist.get("img300")
+                or playlist.get("img")
+            ),
+            track_count=_as_int(playlist.get("total") or page_data.get("total")),
+            timestamp=_timestamp(
+                playlist.get("createTime")
+                or playlist.get("create_time")
+                or playlist.get("ctime")
+            ),
+            url=url,
+            identifier=playlist_id,
+            tracks=[item for item in tracks if isinstance(item, Mapping)],
+            stats={"visits": playlist.get("listencnt")},
+        )
+
+
+class AppleMusicParser(PlaylistParserBase):
+    platform = Platform(name="applemusic", display_name="Apple Music")
+
+    @staticmethod
+    def _decode_server_data(html: str) -> Mapping[str, Any]:
+        match = re.search(
+            r"<script[^>]+id=[\"']serialized-server-data[\"'][^>]*>(.*?)</script>",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            raise ParseException("Apple Music 页面没有返回可识别的歌单数据")
+        try:
+            payload = json.loads(match.group(1).strip().lstrip("\ufeff"))
+        except json.JSONDecodeError as exc:
+            raise ParseException("Apple Music 歌单数据无法解析") from exc
+        if not isinstance(payload, Mapping):
+            raise ParseException("Apple Music 页面没有返回可识别的歌单数据")
+        return payload
+
+    @staticmethod
+    def _artwork_url(value: object, *, size: int = 500) -> str | None:
+        if not isinstance(value, Mapping):
+            return None
+        artwork = value.get("dictionary")
+        artwork = artwork if isinstance(artwork, Mapping) else value
+        return _cover_url(artwork.get("url"), size=size)
+
+    @staticmethod
+    def _first_link_title(value: object) -> str | None:
+        if not isinstance(value, list):
+            return None
+        for link in value:
+            if isinstance(link, Mapping) and (title := _first_text(link, "title")):
+                return title
+        return None
+
+    @handle(
+        "music.apple.com",
+        r"music\.apple\.com/(?:(?P<storefront>[a-z]{2})/)?playlist/(?:[^/\s<>]+/)?(?P<playlist_id>pl\.[A-Za-z0-9._-]+)(?:\?[^\s<>]*)?",
+    )
+    async def _handle_playlist(self, searched):
+        source_url = searched.group(0)
+        url = source_url
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        async with self.session.get(
+            url,
+            headers={**self.headers, "Referer": "https://music.apple.com/"},
+        ) as response:
+            if getattr(response, "status", 200) >= 400:
+                raise ParseException(f"Apple Music 歌单请求失败: HTTP {response.status}")
+            html = await response.text()
+
+        payload = self._decode_server_data(html)
+        data = payload.get("data")
+        root = (
+            data[0]
+            if isinstance(data, list) and data
+            else data
+            if isinstance(data, Mapping)
+            else {}
+        )
+        root = root if isinstance(root, Mapping) else {}
+        page = root.get("data")
+        page = page if isinstance(page, Mapping) else root
+        sections = page.get("sections")
+        sections = sections if isinstance(sections, list) else []
+
+        header: Mapping[str, Any] = {}
+        track_items: list[Mapping[str, Any]] = []
+        for section in sections:
+            if not isinstance(section, Mapping):
+                continue
+            items = section.get("items")
+            items = items if isinstance(items, list) else []
+            section_id = str(section.get("id") or "")
+            if "playlist-detail-header" in section_id and items:
+                candidate = items[0]
+                if isinstance(candidate, Mapping):
+                    header = candidate
+            if "track-list" in section_id:
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    descriptor = item.get("contentDescriptor")
+                    if isinstance(descriptor, Mapping) and descriptor.get("kind") == "song":
+                        track_items.append(item)
+
+        if not header:
+            raise ParseException("Apple Music 歌单不存在或暂时无法访问")
+        tracks: list[Mapping[str, Any]] = []
+        for item in track_items:
+            album = AppleMusicParser._first_link_title(item.get("tertiaryLinks"))
+            tracks.append(
+                {
+                    "title": _first_text(item, "title", "name"),
+                    "artist": _first_text(item, "artistName")
+                    or AppleMusicParser._first_link_title(item.get("subtitleLinks")),
+                    "album": album or _first_text(item, "albumName", "album"),
+                    "cover": AppleMusicParser._artwork_url(item.get("artwork"), size=300),
+                }
+            )
+
+        title = _first_text(header, "title")
+        seo_data = page.get("seoData")
+        seo_data = seo_data if isinstance(seo_data, Mapping) else {}
+        if not title:
+            title = _first_text(seo_data, "pageTitle")
+        return self._playlist_result(
+            title=title or "Apple Music 歌单",
+            author_name=(
+                AppleMusicParser._first_link_title(header.get("subtitleLinks"))
+                or "Apple Music 用户"
+            ),
+            author_avatar=None,
+            description=None,
+            cover=AppleMusicParser._artwork_url(header.get("artwork"), size=500),
+            track_count=_as_int(header.get("trackCount")) or len(tracks),
+            timestamp=None,
+            url=url,
+            identifier=searched.group("playlist_id"),
+            tracks=tracks,
+        )
 
 class QQMusicParser(PlaylistParserBase):
     platform = Platform(name="qqmusic", display_name="QQ音乐")

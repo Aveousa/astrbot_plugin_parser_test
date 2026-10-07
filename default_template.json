@@ -60,5 +60,19 @@
     "use_proxy": false,
     "show_playlist_cover": true,
     "show_playlist_url": true
+  },
+  {
+    "__template_key": "kuwo",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
+  },
+  {
+    "__template_key": "applemusic",
+    "enable": true,
+    "use_proxy": false,
+    "show_playlist_cover": true,
+    "show_playlist_url": true
   }
 ]

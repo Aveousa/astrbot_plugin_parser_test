@@ -128,6 +128,8 @@ class Renderer:
         "netease": "cloudmusic.png",
         "kugou": "kugou.png",
         "qishui": "qishui.png",
+        "kuwo": "kuwo.png",
+        "applemusic": "applemusic.png",
     }
     _LIVE_PHOTO_ICON_NAME: ClassVar[str] = "livep.png"
     _LIVE_STREAM_ICON_NAME: ClassVar[str] = "live.png"

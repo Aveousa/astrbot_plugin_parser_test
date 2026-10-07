@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from core.parsers.music import (
+    AppleMusicParser,
     KugouMusicParser,
+    KuwoMusicParser,
     NetEaseMusicParser,
     QQMusicParser,
     QishuiMusicParser,
@@ -133,6 +135,32 @@ def test_music_routes_match_links_embedded_in_text(
     assert searched.group(0) in text
 
 
+@pytest.mark.parametrize(
+    ("parser_cls", "url", "expected_keyword", "expected_id"),
+    [
+        (
+            KuwoMusicParser,
+            "https://m.kuwo.cn/newh5app/playlist_detail/3567046051?from=ip&t=qqfriend",
+            "m.kuwo.cn/newh5app/playlist_detail",
+            "3567046051",
+        ),
+        (
+            AppleMusicParser,
+            "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=en",
+            "music.apple.com",
+            "pl.u-leyl0YAsMJgb1ro",
+        ),
+    ],
+)
+def test_new_music_routes_match_direct_links(
+    parser_cls, url: str, expected_keyword: str, expected_id: str
+):
+    keyword, searched = parser_cls.search_url(url)
+
+    assert keyword == expected_keyword
+    assert searched.group("playlist_id") == expected_id
+
+
 def test_netease_playlist_route_extracts_playlist_id_not_user_ids():
     url = (
         "https://music.163.com/m/playlist?app_version=9.5.15&"
@@ -173,3 +201,35 @@ def test_kugou_mobile_songlist_payload_is_decoded():
 
     assert payload["info"]["listinfo"]["name"] == "测试歌单"
     assert payload["encode_src_gid"] == "gcid_demo"
+
+
+def test_kuwo_nuxt_payload_is_decoded():
+    html = (
+        '<script>window.__NUXT__=(function(a,b){return '
+        '{data:[{playlistId:"123",playListInfo:{name:"测试",total:2,'
+        'musicList:[{name:"Song",artist:"Artist",album:"Album",'
+        'albumpic:"https://example.com/a.jpg"}]}}]} '
+        '}(null,"cover"));</script>'
+    )
+
+    payload = KuwoMusicParser._decode_nuxt_payload(html)
+
+    info = payload["data"][0]["playListInfo"]
+    assert info["name"] == "测试"
+    assert info["total"] == 2
+    assert info["musicList"][0]["name"] == "Song"
+
+
+def test_apple_music_server_data_is_decoded():
+    html = (
+        '<script id="serialized-server-data" type="application/json">'
+        '{"data":[{"data":{"sections":[{"id":"playlist-detail-header-section",'
+        '"items":[{"title":"Mix","trackCount":1}]},{"id":"track-list",'
+        '"items":[{"title":"Song","artistName":"Artist",'
+        '"contentDescriptor":{"kind":"song"}}]}]}}]}'
+        '</script>'
+    )
+
+    payload = AppleMusicParser._decode_server_data(html)
+
+    assert payload["data"][0]["data"]["sections"][0]["items"][0]["title"] == "Mix"

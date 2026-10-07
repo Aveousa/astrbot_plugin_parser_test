@@ -10,7 +10,9 @@ from .douyin import DouyinParser
 from .pixiv import PixivParser
 from .xhs import XHSParser
 from .music import (
+    AppleMusicParser,
     KugouMusicParser,
+    KuwoMusicParser,
     NetEaseMusicParser,
     QQMusicParser,
     QishuiMusicParser,
@@ -26,4 +28,6 @@ __all__ = [
     "NetEaseMusicParser",
     "KugouMusicParser",
     "QishuiMusicParser",
+    "KuwoMusicParser",
+    "AppleMusicParser",
 ]

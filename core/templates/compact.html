@@ -21,7 +21,9 @@
     .card-badge__platform--qqmusic,
     .card-badge__platform--netease,
     .card-badge__platform--kugou,
-    .card-badge__platform--qishui {
+    .card-badge__platform--qishui,
+    .card-badge__platform--kuwo,
+    .card-badge__platform--applemusic {
       width: auto; max-width: 116px; height: 24px; flex: 0 0 auto;
     }
     h1 { display: -webkit-box; max-height: 2.5em; margin: 10px 0 4px; overflow: hidden;
@@ -63,10 +65,10 @@
   <div class="card-badges">
     {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
     {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
-    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
+    {% if platform.logo_uri %}<img class="card-badge__platform{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui', 'kuwo', 'applemusic'] %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
   </div>
   {% endif %}
-  <div class="head{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui'] %} head--wide-badge{% endif %}">{{ platform.display_name|emoji }}{% if author %} · {{ author.name|emoji }}{% endif %}{% if card.datetime %} · {{ card.datetime }}{% endif %}</div>
+  <div class="head{% if platform.name in ['qqmusic', 'netease', 'kugou', 'qishui', 'kuwo', 'applemusic'] %} head--wide-badge{% endif %}">{{ platform.display_name|emoji }}{% if author %} · {{ author.name|emoji }}{% endif %}{% if card.datetime %} · {{ card.datetime }}{% endif %}</div>
   {% if card.title %}<h1>{{ card.title|emoji }}</h1>{% endif %}
   {% if card.text %}<div class="text">{{ card.text|emoji }}</div>{% endif %}
   {% if card.topic_tags %}<div class="topics" aria-label="话题">{% for tag in card.topic_tags %}<span class="topic">{{ tag|emoji }}</span>{% endfor %}</div>{% endif %}

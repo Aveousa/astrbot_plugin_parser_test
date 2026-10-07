@@ -287,6 +287,10 @@ def extract_json_url(data: dict | str) -> str | None:
         "www.kugou.com/songlist",
         "qishui.douyin.com",
         "music.douyin.com/qishui",
+        "m.kuwo.cn",
+        "www.kuwo.cn",
+        "kuwo.cn/playlist_detail",
+        "music.apple.com",
     )
     for keyword in preferred_keywords:
         for url in candidates:

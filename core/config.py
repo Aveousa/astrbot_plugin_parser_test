@@ -184,6 +184,8 @@ class ParserConfig(ConfigNodeContainer):
             "netease",
             "kugou",
             "qishui",
+            "kuwo",
+            "applemusic",
         }
     )
     bilibili: ParserItem
@@ -194,6 +196,8 @@ class ParserConfig(ConfigNodeContainer):
     netease: ParserItem
     kugou: ParserItem
     qishui: ParserItem
+    kuwo: ParserItem
+    applemusic: ParserItem
 
     def __init__(self, nodes: list[dict[str, Any]]):
         super().__init__(nodes, item_cls=ParserItem)
@@ -254,6 +258,8 @@ class PluginConfig(ConfigNode):
         "netease",
         "kugou",
         "qishui",
+        "kuwo",
+        "applemusic",
     )
 
     def __init__(self, config: AstrBotConfig, context: Context):
@@ -360,13 +366,29 @@ class PluginConfig(ConfigNode):
     def _migrate_parser_template(self) -> None:
         """移除旧平台配置，并为当前支持的平台补齐最新默认字段。"""
         defaults = self.load_parser_template(self.default_template_file)
+        # The installed template can lag behind the bundled one after a
+        # plugin upgrade.  Keep its existing values, but append newly shipped
+        # parser entries so they become available without resetting user data.
+        bundled = Path(__file__).parent.parent / "default_template.json"
+        if bundled != self.default_template_file and bundled.exists():
+            bundled_defaults = self.load_parser_template(bundled)
+            default_keys = {
+                str(item.get("__template_key"))
+                for item in defaults
+                if isinstance(item, dict)
+            }
+            defaults.extend(
+                item
+                for item in bundled_defaults
+                if isinstance(item, dict)
+                and str(item.get("__template_key")) not in default_keys
+            )
         if not any(
             isinstance(item, dict)
             and item.get("__template_key") in self._supported_parser_names
             for item in defaults
         ):
             # 安装目录若仍是旧版本模板，使用随当前代码发布的模板作为迁移基准。
-            bundled = Path(__file__).parent.parent / "default_template.json"
             if bundled != self.default_template_file:
                 defaults = self.load_parser_template(bundled)
         if not defaults:
