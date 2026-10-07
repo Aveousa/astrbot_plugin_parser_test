@@ -5,19 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.data import AudioContent
 from core.parsers.music import (
     AppleMusicParser,
     KugouMusicParser,
     KuwoMusicParser,
     NetEaseMusicParser,
-    QQMusicParser,
     QishuiMusicParser,
+    QQMusicParser,
     _duration_seconds,
 )
-from core.data import AudioContent
 
 
 class _Downloader:
+    def __init__(self):
+        self.audio_urls: list[str] = []
+
     def download_img(self, url: str, **_kwargs):
         async def complete() -> Path:
             return Path(url.rsplit("/", 1)[-1] or "image.jpg")
@@ -25,6 +28,8 @@ class _Downloader:
         return asyncio.create_task(complete())
 
     def download_audio(self, url: str, **_kwargs):
+        self.audio_urls.append(url)
+
         async def complete() -> Path:
             return Path(url.rsplit("/", 1)[-1] or "track.mp3")
 
@@ -218,6 +223,61 @@ def test_netease_track_route_extracts_song_id_not_user_id():
 
     assert keyword == "y.music.163.com/m/song"
     assert searched.group("song_id") == "3429744904"
+
+
+@pytest.mark.parametrize(
+    ("mp3_url", "expected_url"),
+    [
+        (
+            "",
+            "https://music.163.com/song/media/outer/url?id=3395393731",
+        ),
+        ("https://example.com/song.mp3", "https://example.com/song.mp3"),
+    ],
+)
+def test_netease_track_resolves_audio_url(mp3_url: str, expected_url: str):
+    async def build():
+        parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(netease=SimpleNamespace(use_proxy=False)),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+
+        async def request(_url, **_kwargs):
+            return {
+                "songs": [
+                    {
+                        "id": 3395393731,
+                        "name": "Brand New Sky",
+                        "duration": 238000,
+                        "mp3Url": mp3_url,
+                        "artists": [{"name": "测试歌手"}],
+                        "album": {"name": "测试专辑"},
+                    }
+                ]
+            }
+
+        parser._json_request = request
+        _, searched = NetEaseMusicParser.search_url(
+            "https://y.music.163.com/m/song?id=3395393731&userid=123"
+        )
+        result = await parser._handle_track(searched)
+        audio = next(
+            content
+            for content in result.contents
+            if isinstance(content, AudioContent)
+        )
+        await audio.get_path()
+        return parser, result
+
+    parser, result = asyncio.run(build())
+
+    assert parser.downloader.audio_urls == [expected_url]
+    assert result.title == "Brand New Sky"
+    assert result.extra["card_preview_only"] is False
+    assert result.extra["audio_as_voice"] is True
 
 
 @pytest.mark.parametrize(

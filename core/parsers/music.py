@@ -1,8 +1,8 @@
 """Music playlist and single-track parsers for supported music platforms.
 
 Playlist links produce a compact summary instead of downloading every track;
-single-track links expose the same card fields and attach audio only when the
-platform returns a directly playable URL.
+single-track links expose the same card fields and attach audio when a playable
+media URL can be resolved.
 """
 
 from __future__ import annotations
@@ -1152,18 +1152,27 @@ class NetEaseMusicParser(PlaylistParserBase):
                 author_avatar = _cover_url(
                     first_artist.get("picUrl") or first_artist.get("img1v1Url")
                 )
-        return self._single_track_result(
+        song_id = _first_text(track, "id") or searched.group("song_id")
+        cover = _track_cover_url(track)
+        result = self._single_track_result(
             title=_track_title(track) or "未命名歌曲",
             artist_name=" / ".join(artists) or "未知艺术家",
             album_name=_track_album_name(track),
-            cover=_track_cover_url(track),
+            cover=cover,
             duration=track.get("duration") or track.get("dt"),
             url=url,
-            identifier=str(track.get("id") or searched.group("song_id")),
+            identifier=song_id,
             author_avatar=author_avatar,
             timestamp=_date_timestamp(track.get("publishTime"), milliseconds=True),
-            audio_url=_first_text(track, "mp3Url"),
+            # 旧详情接口经常不返回 mp3Url。网易云的媒体跳转地址会重定向
+            # 到歌曲文件，由共用 Downloader 下载并归档到本次解析目录。
+            audio_url=_first_text(track, "mp3Url")
+            or f"https://music.163.com/song/media/outer/url?id={song_id}",
         )
+        # 网易云单曲附加的本地音频应始终作为语音发送，不受全局
+        # “音频以文件形式发送”选项影响。
+        result.extra["audio_as_voice"] = True
+        return result
 
     @handle(
         "music.163.com/#/playlist",

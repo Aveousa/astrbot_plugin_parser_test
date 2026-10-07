@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.data import (
+    AudioContent,
     DynamicContent,
     GraphicsContent,
     ImageContent,
@@ -219,6 +220,22 @@ def test_card_does_not_make_a_single_image_folded(sender_module):
     assert event.sent[0][0].path == "card.png"
     assert event.sent[1][0].__class__.__name__ == "Image"
     assert event.sent[1][0].path == "image.png"
+
+
+def test_audio_as_voice_overrides_global_audio_file_setting(sender_module):
+    result = ParseResult(
+        platform=Platform("netease", "网易云音乐"),
+        contents=[AudioContent(Path("song.mp3"))],
+        extra={"audio_as_voice": True},
+    )
+    sender = sender_module.MessageSender(_card_config(audio_to_file=True), _Renderer())
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[0][0].path == "card.png"
+    assert event.sent[1][0].__class__.__name__ == "Record"
 
 
 def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
