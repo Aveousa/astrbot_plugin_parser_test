@@ -327,6 +327,8 @@ class ParseResult:
     """收藏数"""
     share_count: int | None = None
     """转发/分享数"""
+    cache_dir: Path | None = None
+    """当前解析产生的缓存目录；为空时沿用全局缓存目录。"""
     _resource_id: str | None = field(init=False, repr=False)
     """资源 ID"""
 

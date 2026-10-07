@@ -14,6 +14,7 @@ from astrbot.core.message.components import (
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
+from .cache import cache_dir_scope
 from .config import PluginConfig
 from .data import (
     AudioContent,
@@ -411,6 +412,16 @@ class MessageSender:
         return meta
 
     async def send_parse_result(
+        self,
+        event: AstrMessageEvent,
+        result: ParseResult,
+    ):
+        # 解析阶段创建的任务已经继承了同一个 contextvar；发送阶段重新
+        # 激活结果目录，确保卡片、发送过程中新建的临时资源也归档到同一处。
+        with cache_dir_scope(result.cache_dir):
+            await self._send_parse_result(event, result)
+
+    async def _send_parse_result(
         self,
         event: AstrMessageEvent,
         result: ParseResult,

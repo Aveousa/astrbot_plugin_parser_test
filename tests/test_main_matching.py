@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.data import ParseResult, Platform
@@ -67,10 +68,13 @@ class _Debouncer:
 class _Parser:
     def __init__(self, calls: list[str]):
         self.calls = calls
+        self.results: list[ParseResult] = []
 
     async def parse(self, keyword, searched):
         self.calls.append("parse")
-        return ParseResult(platform=Platform("test", "Test"), url=searched.group(0))
+        result = ParseResult(platform=Platform("test", "Test"), url=searched.group(0))
+        self.results.append(result)
+        return result
 
 
 class _Sender:
@@ -81,12 +85,19 @@ class _Sender:
         self.calls.append("send")
 
 
-def _plugin(main_module, calls: list[str], *, hit_link: bool = False):
+def _plugin(
+    main_module,
+    calls: list[str],
+    *,
+    hit_link: bool = False,
+    cache_dir: Path | None = None,
+):
     plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
     plugin.cfg = SimpleNamespace(
         whitelist=[],
         blacklist=[],
         require_at_in_group=False,
+        **({"cache_dir": cache_dir} if cache_dir is not None else {}),
     )
     plugin.key_pattern_list = [
         ("163cn.tv", main_module.re.compile(r"163cn\.tv/[A-Za-z0-9_-]+"))
@@ -154,3 +165,17 @@ def test_plain_message_chain_is_used_when_adapter_message_text_is_empty():
 
     assert event.reactions == []
     assert calls == ["parse", "send"]
+
+
+def test_matching_creates_a_parse_cache_directory(tmp_path: Path):
+    main_module = _load_main_module()
+    calls: list[str] = []
+    plugin = _plugin(main_module, calls, cache_dir=tmp_path / "cache")
+    event = _Event(main_module, "推荐歌单 https://163cn.tv/AbC_123", calls)
+
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
+
+    result = plugin.parser_map["163cn.tv"].results[0]
+    assert result.cache_dir is not None
+    assert result.cache_dir.parent == tmp_path / "cache"
+    assert result.cache_dir.is_dir()

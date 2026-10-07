@@ -10,6 +10,7 @@ from msgspec import Struct, convert, field
 
 from astrbot.api import logger
 
+from ..cache import get_active_cache_dir
 from ..config import PluginConfig
 from ..cookie import CookieJar
 from ..data import (
@@ -475,18 +476,19 @@ class XHSParser(BaseParser):
         )
         cache_key = f"{image_url}|{video_url}"
         cache_stem = Path(generate_file_name(cache_key)).stem
-        output_path = self.cfg.cache_dir / f"xhs_motion_{cache_stem}.jpg"
+        cache_dir = get_active_cache_dir(self.cfg.cache_dir)
+        output_path = cache_dir / f"xhs_motion_{cache_stem}.jpg"
         if output_path.exists() and mode == "livephoto_only":
             return MotionPhotoAssets(motion_photo=output_path)
 
         work_id = uuid4().hex
-        image_path = self.cfg.cache_dir / (
+        image_path = cache_dir / (
             f".xhs_motion_{cache_stem}_{work_id}_cover.webp"
         )
-        jpeg_path = self.cfg.cache_dir / (
+        jpeg_path = cache_dir / (
             f".xhs_motion_{cache_stem}_{work_id}_cover.jpg"
         )
-        video_path = self.cfg.cache_dir / (
+        video_path = cache_dir / (
             f".xhs_motion_{cache_stem}_{work_id}_clip.mp4"
         )
         media_headers = headers.copy()

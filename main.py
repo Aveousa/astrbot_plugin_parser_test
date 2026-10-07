@@ -15,6 +15,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
+from .core.cache import cache_dir_scope, create_parse_cache_dir
 from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
@@ -214,8 +215,25 @@ class ParserPlugin(Star):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
-        # 解析
-        parse_res = await self.parser_map[keyword].parse(keyword, searched)
+        # 解析。每次解析使用独立缓存目录；目录通过 contextvar 传递给
+        # 下载任务和解析器内部的合并/封装逻辑，不修改全局 cfg.cache_dir，
+        # 因而并发消息不会互相覆盖。
+        cache_root = getattr(self.cfg, "cache_dir", None)
+        try:
+            parse_cache_dir = (
+                create_parse_cache_dir(cache_root, keyword)
+                if cache_root is not None
+                else None
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            # 缓存归档是增强项；目录不可写时沿用旧的全局缓存路径，
+            # 不让一次缓存故障阻断平台解析本身。
+            logger.warning(f"[缓存] 无法创建解析目录，回退到默认缓存目录: {exc}")
+            parse_cache_dir = None
+        with cache_dir_scope(parse_cache_dir):
+            parse_res = await self.parser_map[keyword].parse(keyword, searched)
+        if parse_cache_dir is not None:
+            parse_res.cache_dir = parse_cache_dir
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()

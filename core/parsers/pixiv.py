@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 import httpx
 from PIL import Image, ImageFilter
 
+from ..cache import get_active_cache_dir
 from ..config import PluginConfig
 from ..constants import COMMON_HEADER
 from ..cookie import CookieJar
@@ -329,7 +330,7 @@ class PixivParser(BaseParser):
         paths = await img_paths_task
         if not paths:
             raise ParseException("漫画图片下载失败")
-        pdf_path = self.cfg.cache_dir / f"pixiv_{pid}.pdf"
+        pdf_path = get_active_cache_dir(self.cfg.cache_dir) / f"pixiv_{pid}.pdf"
         await asyncio.to_thread(PixivHelper.imgs_to_pdf, paths, pdf_path)
         return pdf_path
 
@@ -347,7 +348,7 @@ class PixivParser(BaseParser):
             headers=PIXIV_IMG_HEADERS,
             proxy=self.proxy,
         )
-        gif_path = self.cfg.cache_dir / f"pixiv_{pid}.gif"
+        gif_path = get_active_cache_dir(self.cfg.cache_dir) / f"pixiv_{pid}.gif"
         await asyncio.to_thread(
             PixivHelper.build_gif_sync, zip_path, frames, gif_path
         )
@@ -370,7 +371,7 @@ class PixivParser(BaseParser):
             headers=PIXIV_IMG_HEADERS,
             proxy=self.proxy,
         )
-        pdf_path = self.cfg.cache_dir / f"pixiv_{pid}.pdf"
+        pdf_path = get_active_cache_dir(self.cfg.cache_dir) / f"pixiv_{pid}.pdf"
         await asyncio.to_thread(
             PixivHelper.build_pdf_from_zip_sync, zip_path, frames, pdf_path
         )
@@ -518,7 +519,7 @@ class PixivParser(BaseParser):
         if not novel_text:
             raise ParseException("小说正文为空")
         novel_text = PixivHelper.clean_novel_text(novel_text)
-        txt_path = self.cfg.cache_dir / f"pixiv_{nid}.txt"
+        txt_path = get_active_cache_dir(self.cfg.cache_dir) / f"pixiv_{nid}.txt"
         await asyncio.to_thread(
             lambda: txt_path.write_text(novel_text, encoding="utf-8")
         )

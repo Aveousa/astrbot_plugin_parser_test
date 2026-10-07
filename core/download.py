@@ -13,6 +13,7 @@ from yarl import URL
 from astrbot.api import logger
 
 from .config import PluginConfig
+from .cache import get_active_cache_dir
 from .constants import COMMON_HEADER
 from .exception import (
     DownloadException,
@@ -74,7 +75,9 @@ class Downloader:
         """流式下载"""
         if not file_name:
             file_name = generate_file_name(url)
-        file_path = self.cfg.cache_dir / file_name
+        cache_dir = get_active_cache_dir(self.cfg.cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        file_path = cache_dir / file_name
         # 如果文件存在，则直接返回
         if file_path.exists():
             return file_path

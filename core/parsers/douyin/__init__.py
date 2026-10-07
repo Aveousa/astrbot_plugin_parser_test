@@ -15,6 +15,7 @@ import msgspec
 from aiohttp import ClientError
 from astrbot.api import logger
 
+from ...cache import get_active_cache_dir
 from ...config import PluginConfig
 from ...cookie import CookieJar
 from ...data import (
@@ -572,7 +573,9 @@ class DouyinParser(BaseParser):
     ) -> Path:
         """用 FFmpeg 从直播流抓取一帧，失败时回退到直播封面。"""
         cache_stem = Path(generate_file_name(stream_url)).stem
-        output_path = self.cfg.cache_dir / f"live_snapshot_{cache_stem}.jpg"
+        output_path = get_active_cache_dir(self.cfg.cache_dir) / (
+            f"live_snapshot_{cache_stem}.jpg"
+        )
         if output_path.is_file() and output_path.stat().st_size > 0:
             return output_path
 
@@ -1152,7 +1155,9 @@ class DouyinParser(BaseParser):
         )
         cache_key = f"{image_url}|{video_url}"
         cache_stem = Path(generate_file_name(cache_key)).stem
-        output_path = self.cfg.cache_dir / f"motion_{cache_stem}.jpg"
+        output_path = get_active_cache_dir(self.cfg.cache_dir) / (
+            f"motion_{cache_stem}.jpg"
+        )
         # 需要发送效果视频的模式不能因为已有封装缓存而跳过动态片段下载。
         if output_path.exists() and mode == "livephoto_only":
             return MotionPhotoAssets(motion_photo=output_path)

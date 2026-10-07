@@ -10,6 +10,7 @@ from msgspec import convert
 from astrbot.api import logger
 
 from ...config import PluginConfig
+from ...cache import get_active_cache_dir
 from ...data import ImageContent, MediaContent, Platform
 from ...exception import DownloadException, DurationLimitException
 from ..base import (
@@ -172,7 +173,9 @@ class BilibiliParser(BaseParser):
 
         # 视频下载 task
         async def download_video():
-            output_path = self.cfg.cache_dir / f"{video_info.bvid}-{page_num}.mp4"
+            output_path = get_active_cache_dir(self.cfg.cache_dir) / (
+                f"{video_info.bvid}-{page_num}.mp4"
+            )
             if output_path.exists():
                 return output_path
             v_url, a_url = await self.extract_download_urls(

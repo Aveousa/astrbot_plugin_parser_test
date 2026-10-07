@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from astrbot.api import logger
 
+from .cache import get_active_cache_dir
 from .config import PluginConfig
 from .data import (
     AudioContent,
@@ -1175,7 +1176,13 @@ class Renderer:
         try:
             context = await self._result_context(result)
             html = self.render_html(result, context)
-            target = self.cfg.cache_dir / f"card_{uuid.uuid4().hex}.png"
+            cache_dir = (
+                Path(result.cache_dir)
+                if result.cache_dir is not None
+                else get_active_cache_dir(self.cfg.cache_dir)
+            )
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            target = cache_dir / f"card_{uuid.uuid4().hex}.png"
             rendered = await self._render_playwright_png(
                 html,
                 target,

@@ -931,6 +931,34 @@ def test_custom_jinja_template_uses_playwright_png(
     assert calls and calls[0][2] == str(config.template_dir)
 
 
+def test_render_card_uses_parse_result_cache_directory(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    config.card_template = "apple"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    parse_dir = tmp_path / "cache" / "parse_20261007_demo"
+    parse_dir.mkdir(parents=True)
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    result = ParseResult(
+        platform=Platform("qishui", "汽水音乐"),
+        title="单曲",
+        cache_dir=parse_dir,
+    )
+
+    output = asyncio.run(renderer.render_card(result))
+
+    assert output is not None
+    assert output.parent == parse_dir
+    assert output.name.startswith("card_")
+
+
 def test_playwright_screenshot_uses_headless_shell_and_removes_temp_html(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
