@@ -433,6 +433,219 @@ def test_netease_cookie_is_applied_to_official_detail_and_media_requests():
     )
 
 
+def test_qq_track_route_extracts_media_mid_from_share_url():
+    url = (
+        "https://i.y.qq.com/v8/playsong.html?media_mid=002OvI0G0XlMaO&"
+        "songid=453455745&source=qq"
+    )
+
+    keyword, searched = QQMusicParser.search_url(url)
+
+    assert keyword == "i.y.qq.com/v8/playsong"
+    assert QQMusicParser._track_mid_from_match(searched) == "002OvI0G0XlMaO"
+
+
+def test_qq_track_route_strips_trailing_punctuation_from_song_id():
+    _, searched = QQMusicParser.search_url(
+        "https://i.y.qq.com/v8/playsong.html?songid=453455745。"
+    )
+
+    assert QQMusicParser._track_mid_from_match(searched) == "453455745"
+
+
+def test_qq_track_uses_numeric_songid_when_media_mid_has_no_metadata():
+    async def build():
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.cfg = SimpleNamespace(
+            parser=SimpleNamespace(
+                qqmusic=SimpleNamespace(use_proxy=False, return_audio=False)
+            )
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        requested = []
+
+        async def fetch_song_details(song_ids):
+            requested.extend(song_ids)
+            if song_ids == ["002OvI0G0XlMaO"]:
+                return [{"mid": "", "name": "", "singer": []}]
+            return [
+                {
+                    "mid": "002ymWx23tnFk",
+                    "name": "Beanie",
+                    "singer": [{"name": "Test artist"}],
+                    "interval": 180,
+                }
+            ]
+
+        parser._fetch_song_details = fetch_song_details
+        _, searched = QQMusicParser.search_url(
+            "https://i.y.qq.com/v8/playsong.html?media_mid=002OvI0G0XlMaO&"
+            "songid=453455745"
+        )
+        result = await parser._handle_track(searched)
+        return requested, result
+
+    requested, result = asyncio.run(build())
+
+    assert requested == ["002OvI0G0XlMaO", "453455745"]
+    assert result.title == "Beanie"
+    assert result.extra["track_id"] == "002ymWx23tnFk"
+
+
+def test_qq_vkey_audio_url_uses_cookie_and_expands_sip_prefix():
+    async def resolve():
+        requests = []
+
+        class _Response:
+            status = 200
+            url = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return json.dumps(
+                    {
+                        "req_1": {
+                            "code": 0,
+                            "data": {
+                                "sip": ["https://dl.stream.qqmusic.qq.com/"],
+                                "midurlinfo": [
+                                    {
+                                        "songmid": "002OvI0G0XlMaO",
+                                        "filename": "M800002OvI0G0XlMaO.mp3",
+                                        "purl": "M800002OvI0G0XlMaO.mp3?vkey=test",
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                )
+
+        class _Session:
+            closed = False
+
+            def request(self, method, url, **kwargs):
+                requests.append((method, url, kwargs))
+                return _Response()
+
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.headers = {"User-Agent": "test"}
+        parser._session = _Session()
+        parser.cookiejar = SimpleNamespace(
+            cookies_str="uin=12345; qqmusic_key=key; fqm_pvqid=pvid"
+        )
+
+        result = await parser._resolve_qq_audio_url("002OvI0G0XlMaO")
+        return result, requests
+
+    result, requests = asyncio.run(resolve())
+
+    assert result == (
+        "https://dl.stream.qqmusic.qq.com/"
+        "M800002OvI0G0XlMaO.mp3?vkey=test"
+    )
+    assert len(requests) == 1
+    method, url, kwargs = requests[0]
+    assert method == "POST"
+    assert url == "https://u.y.qq.com/cgi-bin/musicu.fcg"
+    assert kwargs["headers"]["Cookie"] == (
+        "uin=12345; qqmusic_key=key; fqm_pvqid=pvid"
+    )
+    payload = json.loads(kwargs["data"])
+    assert payload["req_1"]["param"]["songmid"] == [
+        "002OvI0G0XlMaO",
+        "002OvI0G0XlMaO",
+    ]
+    assert payload["req_1"]["param"]["filename"] == [
+        "M800002OvI0G0XlMaO.mp3",
+        "M500002OvI0G0XlMaO.mp3",
+    ]
+    assert payload["comm"]["g_tk"] == QQMusicParser._qq_g_tk("key")
+
+
+def test_qq_single_track_audio_switch_can_disable_audio_resolution():
+    async def build():
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.cfg = SimpleNamespace(
+            parser=SimpleNamespace(
+                qqmusic=SimpleNamespace(use_proxy=False, return_audio=False)
+            )
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser._fetch_song_details = lambda _song_ids: None
+
+        async def fail_if_called(_song_mid):
+            raise AssertionError("vkey resolution should be disabled")
+
+        parser._resolve_qq_audio_url = fail_if_called
+        async def fetch_song_details(_song_ids):
+            return [
+                {
+                    "mid": "002OvI0G0XlMaO",
+                    "name": "Test song",
+                    "singer": [{"name": "Test artist"}],
+                    "interval": 180,
+                }
+            ]
+
+        parser._fetch_song_details = fetch_song_details
+        _, searched = QQMusicParser.search_url(
+            "https://i.y.qq.com/v8/playsong.html?media_mid=002OvI0G0XlMaO"
+        )
+        return await parser._handle_track(searched)
+
+    result = asyncio.run(build())
+
+    assert result.audio_contents == []
+    assert result.extra.get("audio_as_voice") is not True
+
+
+def test_qq_cookie_check_reports_profile_authentication():
+    async def check(status):
+        class _Response:
+            def __init__(self):
+                self.status = status
+                self.headers = {"Location": "https://y.qq.com/login"} if status == 302 else {}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+        class _Session:
+            closed = False
+
+            def get(self, url, **kwargs):
+                requests.append((url, kwargs))
+                return _Response()
+
+        requests = []
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.headers = {"User-Agent": "test"}
+        parser._session = _Session()
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: "uin=12345; qqmusic_key=key"
+        )
+        return await parser.check_cookie(), requests
+
+    valid, valid_requests = asyncio.run(check(200))
+    invalid, invalid_requests = asyncio.run(check(302))
+
+    assert valid is True
+    assert invalid is False
+    assert valid_requests[0][1]["headers"]["Cookie"] == (
+        "uin=12345; qqmusic_key=key"
+    )
+    assert invalid_requests[0][1]["allow_redirects"] is False
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [(132, 132.0), (146000, 146.0), ("02:46", 166.0), ("3:58", 238.0)],

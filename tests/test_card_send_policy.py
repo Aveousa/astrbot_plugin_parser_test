@@ -288,6 +288,36 @@ def test_netease_audio_uses_remote_url_for_onebot_and_keeps_local_download(
     ]
 
 
+def test_qqmusic_audio_uses_remote_url_for_onebot(sender_module):
+    actions = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            actions.append((action, kwargs))
+
+    result = ParseResult(
+        platform=Platform("qqmusic", "QQ音乐"),
+        contents=[AudioContent(Path("song.mp3"))],
+        extra={
+            "audio_as_voice": True,
+            "audio_send_url": "https://aqqmusic.tc.qq.com/song.mp3?vkey=test",
+        },
+    )
+    event = _Event()
+    event.bot = _Bot()
+    sender = sender_module.MessageSender(_card_config(audio_to_file=True), _Renderer())
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert actions[0][0] == "send_group_msg"
+    assert actions[0][1]["message"] == [
+        {
+            "type": "record",
+            "data": {"file": "https://aqqmusic.tc.qq.com/song.mp3?vkey=test"},
+        }
+    ]
+
+
 def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
     cover = ImageContent(Path("playlist-cover.png"))
     result = ParseResult(

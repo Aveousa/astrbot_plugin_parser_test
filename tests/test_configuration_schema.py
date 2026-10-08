@@ -297,6 +297,25 @@ def test_netease_exposes_audio_api_and_optional_cookie_settings():
     assert netease_defaults["cookies"] == ""
 
 
+def test_qqmusic_exposes_single_track_audio_and_cookie_settings():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    items = schema["parsers_template"]["templates"]["qqmusic"]["items"]
+    assert items["return_audio"]["type"] == "bool"
+    assert items["return_audio"]["default"] is True
+    assert items["return_audio"]["description"]
+    assert items["return_audio"]["hint"]
+    assert items["cookies"]["default"] == ""
+    assert items["cookies"]["secret"] is True
+
+    qq_defaults = next(
+        item for item in defaults if item["__template_key"] == "qqmusic"
+    )
+    assert qq_defaults["return_audio"] is True
+    assert qq_defaults["cookies"] == ""
+
+
 def test_bilibili_exposes_ai_summary_switch():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -332,6 +351,11 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
                 {
                     "__template_key": "netease",
                     "cookies": "netease-vip-cookie",
+                },
+                {
+                    "__template_key": "qqmusic",
+                    "cookies": "qq-music-cookie",
+                    "return_audio": False,
                 },
                 {"__template_key": "qzone", "enable": True},
             ]
@@ -381,4 +405,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     netease = raw["parsers_template"][5]
     assert netease["cookies"] == "netease-vip-cookie"
     assert netease["audio_api_base"] == "https://api.qijieya.cn/meting/"
+    qqmusic = raw["parsers_template"][4]
+    assert qqmusic["cookies"] == "qq-music-cookie"
+    assert qqmusic["return_audio"] is False
     assert raw.save_calls == 1

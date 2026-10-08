@@ -20,7 +20,7 @@ from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
-from .core.parsers import BaseParser, BilibiliParser
+from .core.parsers import BaseParser, BilibiliParser, QQMusicParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
@@ -59,6 +59,29 @@ class ParserPlugin(Star):
         await self.renderer.start()
         # 注册解析器
         self._register_parser()
+        await self._check_qqmusic_cookie()
+
+    async def _check_qqmusic_cookie(self):
+        """Check the QQ Music Cookie once after enabled parsers are registered."""
+
+        qq_parsers = {
+            parser
+            for parser in self.parser_map.values()
+            if isinstance(parser, QQMusicParser)
+        }
+        for parser in qq_parsers:
+            if not parser.has_cookie():
+                logger.info("[QQ音乐] 未配置 Cookie，跳过 Cookie 可用性检查")
+                continue
+            try:
+                available = await parser.check_cookie()
+            except Exception as exc:
+                logger.warning(f"[QQ音乐] Cookie 检查失败: {exc}")
+                continue
+            if available:
+                logger.info("[QQ音乐] Cookie 检查通过，可用于受限歌曲音频")
+            else:
+                logger.warning("[QQ音乐] Cookie 检查未通过，受限歌曲可能无法获取音频")
 
     async def terminate(self):
         """插件卸载时触发"""

@@ -482,7 +482,7 @@ class MessageSender:
             self._resolve_groups(result, omit_playlist_cover=card_sent),
         )
 
-        # 网易云单曲仍先下载到本次解析目录，但 OneBot 发送时传媒体 URL，
+        # 音乐单曲仍先下载到本次解析目录，但 OneBot 发送时传媒体 URL，
         # 让 Napcat 自行拉取并转码，避免本地 Record 被编码成超大 WebSocket 帧。
         direct_audio_url = result.extra.get("audio_send_url")
         direct_audio_content: AudioContent | None = None
@@ -541,7 +541,7 @@ class MessageSender:
                     or sent
                 )
             except Exception as exc:
-                logger.error(f"网易云语音 URL 发送失败：{exc}")
+                logger.error(f"音乐语音 URL 发送失败：{exc}")
                 # 已经尝试发送语音，不再追加一条与原消息无关的文本兜底。
                 sent = True
 

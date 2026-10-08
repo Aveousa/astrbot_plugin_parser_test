@@ -956,21 +956,216 @@ class AppleMusicParser(PlaylistParserBase):
         )
 
 class QQMusicParser(PlaylistParserBase):
+    _QQ_PROFILE_URL = "https://y.qq.com/n/ryqq/profile"
+    _QQ_VKEY_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+    _QQ_BROWSER_USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+
+    def __init__(self, config, downloader):
+        super().__init__(config, downloader)
+        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
+        self.cookiejar = (
+            CookieJar(self.cfg, parser_config, domain="y.qq.com")
+            if parser_config is not None
+            else None
+        )
+
+    def _qq_cookie_header(self, url: str) -> str:
+        cookiejar = getattr(self, "cookiejar", None)
+        getter = getattr(cookiejar, "get_cookie_header_for_url", None)
+        if callable(getter):
+            return str(getter(url) or "")
+        return str(getattr(cookiejar, "cookies_str", "") or "")
+
+    def _qq_cookie_values(self) -> dict[str, str]:
+        cookie_header = self._qq_cookie_header(self._QQ_VKEY_URL)
+        values: dict[str, str] = {}
+        for item in cookie_header.split(";"):
+            if "=" not in item:
+                continue
+            name, value = item.split("=", 1)
+            if name.strip():
+                values[name.strip()] = value.strip()
+        return values
+
+    def has_cookie(self) -> bool:
+        return bool(self._qq_cookie_header(self._QQ_PROFILE_URL))
+
+    def _return_audio_enabled(self) -> bool:
+        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
+        value = getattr(parser_config, "return_audio", None)
+        return True if value is None else bool(value)
+
+    @staticmethod
+    def _track_ids_from_match(searched) -> list[str]:
+        raw_url = searched.group(0)
+        parsed = urlparse(
+            raw_url
+            if raw_url.startswith(("http://", "https://"))
+            else f"https://{raw_url}"
+        )
+        query = parse_qs(parsed.query)
+        identifiers: list[str] = []
+        for key in ("media_mid", "songmid", "song_mid", "mid", "songid"):
+            values = query.get(key)
+            if values and values[0].strip():
+                identifier = values[0].strip().rstrip(
+                    ".,!?;:)]}，。！？；："
+                )
+                if not identifier:
+                    continue
+                if identifier not in identifiers:
+                    identifiers.append(identifier)
+        path_parts = [part for part in parsed.path.rstrip("/").split("/") if part]
+        if path_parts and path_parts[-2:-1] == ["songDetail"]:
+            identifier = path_parts[-1]
+            if identifier not in identifiers:
+                identifiers.append(identifier)
+        return identifiers
+
+    @classmethod
+    def _track_mid_from_match(cls, searched) -> str:
+        identifiers = cls._track_ids_from_match(searched)
+        if not identifiers:
+            raise ParseException("QQ Music link does not contain a song ID")
+        return identifiers[0]
+
+    @staticmethod
+    def _qq_g_tk(value: str) -> int:
+        result = 5381
+        for char in value:
+            result += (result << 5) + ord(char)
+        return result & 2_147_483_647
+
+    async def _resolve_qq_audio_url(
+        self,
+        song_mid: str,
+        *,
+        media_mid: str | None = None,
+    ) -> str | None:
+        """Request a signed QQ Music playback URL through the official vkey API."""
+
+        cookie_header = self._qq_cookie_header(self._QQ_VKEY_URL)
+        cookies = self._qq_cookie_values()
+        uin = cookies.get("uin") or cookies.get("ptui_loginuin") or "0"
+        filename_mid = media_mid or song_mid
+        filenames = [
+            f"M800{filename_mid}.mp3",
+            f"M500{filename_mid}.mp3",
+        ]
+        params: dict[str, object] = {
+            "guid": str(int(time.time() * 1000) % 10_000_000_000),
+            "songmid": [song_mid] * len(filenames),
+            "songtype": [0] * len(filenames),
+            "uin": uin,
+            "loginflag": 1,
+            "platform": "20",
+            "filename": filenames,
+        }
+        payload = {
+            "comm": {
+                "cv": 0,
+                "ct": 24,
+                "format": "json",
+                "uin": uin,
+                "g_tk": self._qq_g_tk(cookies.get("qqmusic_key", "")),
+                "platform": "yqq.json",
+                "needNewCode": 1,
+            },
+            "req_1": {
+                "module": "vkey.GetVkeyServer",
+                "method": "CgiGetVkey",
+                "param": params,
+            },
+        }
+        headers = dict(self.headers)
+        headers["User-Agent"] = self._QQ_BROWSER_USER_AGENT
+        headers["Referer"] = "https://y.qq.com/"
+        headers["Content-Type"] = "application/json"
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        try:
+            body = await self._json_request(
+                self._QQ_VKEY_URL,
+                method="POST",
+                headers=headers,
+                data=json.dumps(payload, separators=(",", ":")),
+            )
+        except (ClientError, ParseException, TimeoutError):
+            return None
+
+        request = body.get("req_1") if isinstance(body, Mapping) else None
+        data = request.get("data") if isinstance(request, Mapping) else None
+        if not isinstance(data, Mapping):
+            return None
+        if _as_int(request.get("code")) not in (None, 0):
+            return None
+        prefixes = data.get("sip")
+        prefixes = prefixes if isinstance(prefixes, list) else []
+        rows = data.get("midurlinfo")
+        rows = rows if isinstance(rows, list) else []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            purl = _first_text(row, "purl")
+            row_mid = _first_text(row, "songmid")
+            if not purl or row_mid not in (None, song_mid):
+                continue
+            if purl.startswith(("http://", "https://")):
+                return purl
+            for prefix in prefixes:
+                if isinstance(prefix, str) and prefix.strip():
+                    return urljoin(prefix, purl)
+            return purl
+        return None
+
+    async def check_cookie(self) -> bool:
+        """Check whether the configured QQ Music Cookie reaches the profile page."""
+
+        cookie_header = self._qq_cookie_header(self._QQ_PROFILE_URL)
+        if not cookie_header:
+            return False
+        headers = dict(self.headers)
+        headers["User-Agent"] = self._QQ_BROWSER_USER_AGENT
+        headers["Referer"] = "https://y.qq.com/"
+        headers["Cookie"] = cookie_header
+        for attempt in range(3):
+            try:
+                async with self.session.get(
+                    self._QQ_PROFILE_URL,
+                    params={"_parser_cookie_check": str(int(time.time() * 1000) + attempt)},
+                    headers=headers,
+                    allow_redirects=False,
+                ) as response:
+                    if 200 <= response.status < 300:
+                        return True
+            except (ClientError, TimeoutError):
+                continue
+        return False
+
     platform = Platform(name="qqmusic", display_name="QQ音乐")
 
     async def _fetch_song_details(self, song_ids: list[str]) -> list[Mapping[str, Any]]:
         """补充 QQ 歌单接口只返回 songids 时的歌曲元数据。"""
 
         async def fetch(song_id: str) -> Mapping[str, Any] | None:
-            numeric_id = _as_int(song_id)
-            if numeric_id is None:
+            song_id = str(song_id).strip()
+            if not song_id:
                 return None
+            numeric_id = _as_int(song_id)
+            identifier = (
+                {"song_id": numeric_id}
+                if numeric_id is not None
+                else {"song_mid": song_id, "song_type": 0}
+            )
             payload = {
                 "comm": {"ct": 24, "cv": 0},
                 "song": {
                     "method": "get_song_detail_yqq",
                     "module": "music.pf_song_detail_svr",
-                    "param": {"song_id": numeric_id},
+                    "param": identifier,
                 },
             }
             api_url = (
@@ -983,9 +1178,12 @@ class QQMusicParser(PlaylistParserBase):
                 )
             )
             try:
+                detail_headers = {"Referer": "https://y.qq.com/"}
+                if cookie := self._qq_cookie_header(api_url):
+                    detail_headers["Cookie"] = cookie
                 body = await self._json_request(
                     api_url,
-                    headers={"Referer": "https://y.qq.com/"},
+                    headers=detail_headers,
                 )
             except ParseException:
                 return None
@@ -1008,39 +1206,71 @@ class QQMusicParser(PlaylistParserBase):
 
     @handle(
         "i.y.qq.com/v8/playsong",
-        r"i\.y\.qq\.com/v8/playsong\.html\?(?:[^&\s]*&)*songid=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+        r"i\.y\.qq\.com/v8/playsong\.html\?[^\s<>]+",
     )
     @handle(
         "i2.y.qq.com/n3/other/pages/playsong",
-        r"i2\.y\.qq\.com/n3/other/pages/playsong/index\.html\?(?:[^&\s]*&)*songid=(?P<song_id>\d+)(?=[&\s]|$)[^\s<>]*",
+        r"i2\.y\.qq\.com/n3/other/pages/playsong/index\.html\?[^\s<>]+",
     )
     @handle(
         "y.qq.com/n/ryqq_v2/songDetail",
-        r"y\.qq\.com/n/ryqq_v2/songDetail/(?P<song_id>\d+)(?:\?[^\s<>]*)?",
+        r"y\.qq\.com/n/ryqq_v2/songDetail/[0-9A-Za-z]+(?:\?[^\s<>]*)?",
+    )
+    @handle(
+        "y.qq.com/n/ryqq/songDetail",
+        r"y\.qq\.com/n/ryqq/songDetail/[0-9A-Za-z]+(?:\?[^\s<>]*)?",
     )
     async def _handle_track(self, searched):
         url = searched.group(0)
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        tracks = await self._fetch_song_details([searched.group("song_id")])
-        track = tracks[0] if tracks else None
+        requested_ids = self._track_ids_from_match(searched)
+        if not requested_ids:
+            raise ParseException("QQ Music link does not contain a song ID")
+        requested_id = requested_ids[0]
+        track = None
+        for candidate_id in requested_ids:
+            tracks = await self._fetch_song_details([candidate_id])
+            candidate = tracks[0] if tracks else None
+            if candidate and (_track_title(candidate) or _first_text(candidate, "mid")):
+                requested_id = candidate_id
+                track = candidate
+                break
         if not track:
             raise ParseException("QQ音乐歌曲不存在或暂时无法访问")
 
         artist_names = _track_artist_names(track)
-        return self._single_track_result(
+        song_mid = _first_text(track, "mid") or requested_id
+        audio_url = None
+        if self._return_audio_enabled():
+            media_mid = None
+            file_info = track.get("file")
+            if isinstance(file_info, Mapping):
+                media_mid = _first_text(file_info, "media_mid")
+            if media_mid:
+                audio_url = await self._resolve_qq_audio_url(
+                    song_mid,
+                    media_mid=media_mid,
+                )
+            else:
+                audio_url = await self._resolve_qq_audio_url(song_mid)
+            if audio_url is None and isinstance(file_info, Mapping):
+                audio_url = _first_text(file_info, "url")
+        result = self._single_track_result(
             title=_track_title(track) or "未命名歌曲",
             artist_name=" / ".join(artist_names) or "未知艺术家",
             album_name=_track_album_name(track),
             cover=_track_cover_url(track),
             duration=track.get("interval"),
             url=url,
-            identifier=_first_text(track, "mid") or searched.group("song_id"),
+            identifier=song_mid,
             timestamp=_date_timestamp(track.get("time_public")),
-            audio_url=_first_text(track.get("file"), "url")
-            if isinstance(track.get("file"), Mapping)
-            else None,
+            audio_url=audio_url,
         )
+        if audio_url:
+            result.extra["audio_as_voice"] = True
+            result.extra["audio_send_url"] = audio_url
+        return result
 
     @handle(
         "y.qq.com/n/ryqq",

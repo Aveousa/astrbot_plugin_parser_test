@@ -227,6 +227,19 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "return_audio": {
+            "description": "解析单曲时返回音频",
+            "hint": "解析 QQ 音乐单曲时尝试获取并发送语音；需要有效的歌曲播放权限。",
+            "type": "bool",
+            "default": true
+          },
+          "cookies": {
+            "description": "QQ音乐 Cookie",
+            "hint": "可选的 QQ 音乐 Cookie，用于获取需要登录权限的歌曲音频。",
+            "type": "text",
+            "default": "",
+            "secret": true
+          },
           "show_playlist_cover": {
             "description": "显示歌单封面",
             "hint": "关闭后歌单信息卡片不再显示歌单封面，但仍保留歌曲专辑缩略图",

@@ -37,6 +37,8 @@
     "__template_key": "qqmusic",
     "enable": true,
     "use_proxy": false,
+    "return_audio": true,
+    "cookies": "",
     "show_playlist_cover": true,
     "show_playlist_url": true
   },
