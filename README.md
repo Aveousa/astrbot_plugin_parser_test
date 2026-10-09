@@ -83,6 +83,7 @@ python -m playwright install chromium-headless-shell
 | `开启解析` | ADMIN | 开启当前会话解析 |
 | `关闭解析` | ADMIN | 关闭当前会话解析 |
 | `blogin` | ADMIN | Bilibili 扫码登录 |
+| `qqlogin` | ADMIN | QQ 音乐扫码登录（发送 Apple 风格登录卡片） |
 
 ## 流程
 

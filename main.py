@@ -292,3 +292,19 @@ class ParserPlugin(Star):
         yield event.chain_result([Image.fromBytes(qrcode)])
         async for msg in parser.login.check_qr_state():
             yield event.plain_result(msg)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("登录QQ音乐", alias={"qqlogin", "登录qq音乐"})
+    async def login_qqmusic(self, event: AstrMessageEvent):
+        """扫码登录QQ音乐"""
+        parser: QQMusicParser = self._get_parser_by_type(QQMusicParser)  # type: ignore
+        qrcode = await parser.login.login_with_qrcode()
+        card_path = await self.renderer.render_qqmusic_login_card(qrcode)
+        if card_path is not None:
+            yield event.chain_result([Image.fromFileSystem(str(card_path))])
+        else:
+            # Keep login usable when Playwright/Jinja2 is unavailable, just as
+            # the original command did before the designed card was added.
+            yield event.chain_result([Image.fromBytes(qrcode)])
+        async for msg in parser.login.check_qr_state():
+            yield event.plain_result(msg)

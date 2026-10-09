@@ -25,6 +25,7 @@ from ..cookie import CookieJar
 from ..data import ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
 from .base import BaseParser, handle
+from .qqmusic_login import QQMusicLogin
 
 
 class _JavaScriptReference:
@@ -971,6 +972,7 @@ class QQMusicParser(PlaylistParserBase):
             if parser_config is not None
             else None
         )
+        self.login = QQMusicLogin(self)
 
     def _qq_cookie_header(self, url: str) -> str:
         cookiejar = getattr(self, "cookiejar", None)

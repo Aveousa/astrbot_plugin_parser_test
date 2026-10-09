@@ -137,6 +137,14 @@ class CookieJar:
         """将 cookies 字符串转换为字典"""
         return self.get()
 
+    def replace_from_cookies_str(self, cookies_str: str) -> None:
+        """Replace the current cookie set and persist it to the plugin data dir."""
+        self.raw_cookies = cookies_str
+        self.cookies = []
+        self.cookies_str = ""
+        self._load_from_cookies_str(cookies_str)
+        self.save_to_file()
+
     # ---------------- persistence ----------------
 
     @staticmethod

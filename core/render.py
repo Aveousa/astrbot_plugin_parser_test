@@ -110,6 +110,7 @@ class Renderer:
         "compact",
         "apple",
     )
+    _QQMUSIC_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qqmusic_login.html"
     _TEMPLATES_DIR: ClassVar[Path] = Path(__file__).with_name("templates")
     _RESOURCES_DIR: ClassVar[Path] = Path(__file__).with_name("resources")
     _CARD_FONT_PATH: ClassVar[Path] = _RESOURCES_DIR / "douyin_sans.otf"
@@ -386,6 +387,9 @@ class Renderer:
         names: set[str] = set(self.BUILTIN_TEMPLATE_NAMES)
         for directory in self.template_dirs:
             names.update(path.stem for path in directory.glob("*.html"))
+        # The QR login template is an internal command surface, not a parser
+        # result template that users should select in card configuration.
+        names.discard(self._QQMUSIC_LOGIN_TEMPLATE_NAME.removesuffix(".html"))
         return sorted(names)
 
     @staticmethod
@@ -1167,6 +1171,81 @@ class Renderer:
                 temporary_html.unlink(missing_ok=True)
             except OSError as exc:
                 self._log_warning(f"清理卡片临时 HTML 失败: {exc}")
+
+    async def render_qqmusic_login_card(self, qrcode: bytes) -> Path | None:
+        """Render a styled QQ Music QR login card."""
+        if not qrcode:
+            return None
+        if not self.environment:
+            self._log_warning("Jinja2 is unavailable; skipping QQ Music login card")
+            return None
+
+        qr_path: Path | None = None
+        target: Path | None = None
+        try:
+            cache_dir = get_active_cache_dir(self.cfg.cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            token = uuid.uuid4().hex
+            qr_path = cache_dir / f".qqmusic_login_qr_{token}.png"
+            target = cache_dir / f"qqmusic_login_{token}.png"
+            qr_path.write_bytes(qrcode)
+
+            try:
+                template = self.environment.get_template(
+                    self._QQMUSIC_LOGIN_TEMPLATE_NAME
+                )
+            except TemplateNotFound as exc:
+                self._log_exception(
+                    f"QQ Music login card template is missing: "
+                    f"{self._QQMUSIC_LOGIN_TEMPLATE_NAME}: {exc}"
+                )
+                return None
+
+            html = template.render(
+                qrcode_uri=self._file_uri(qr_path),
+                qqmusic_logo_uri=self._file_uri(
+                    self._RESOURCES_DIR / "logos" / "qqmusic.png"
+                ),
+                card_font_uri=self._file_uri(self._CARD_FONT_PATH),
+            )
+            template_base_dir = next(
+                (
+                    directory
+                    for directory in self.template_dirs
+                    if (directory / self._QQMUSIC_LOGIN_TEMPLATE_NAME).is_file()
+                ),
+                self._TEMPLATES_DIR,
+            )
+            rendered = await self._render_playwright_png(
+                html,
+                target,
+                # Keep a concrete base URL so user-overridden copies can still
+                # reference local assets alongside their template.
+                base_url=str(template_base_dir),
+            )
+            if not rendered:
+                if target is not None:
+                    target.unlink(missing_ok=True)
+                return None
+            return target
+        except Exception as exc:
+            if target is not None:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    self._log_warning(
+                        f"Failed to clean QQ Music login card: {cleanup_error}"
+                    )
+            self._log_exception(f"QQ Music login card rendering failed: {exc}")
+            return None
+        finally:
+            if qr_path is not None:
+                try:
+                    qr_path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    self._log_warning(
+                        f"Failed to clean temporary QQ Music QR image: {cleanup_error}"
+                    )
 
     async def render_card(self, result: ParseResult) -> Path | None:
         """将解析实体渲染为缓存 PNG；失败只返回 ``None``，不影响媒体发送。"""

@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    {% if card_font_uri %}
+    @font-face {
+      font-family: "Douyin Sans";
+      src: url("{{ card_font_uri }}") format("opentype");
+      font-style: normal;
+      font-weight: normal;
+      font-display: block;
+    }
+    {% endif %}
+
+    @page { size: 760px 2000px; margin: 0; }
+
+    :root {
+      color-scheme: light;
+      font-family: "Douyin Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --page-bg: #f5f5f7;
+      --card-bg: #ffffff;
+      --text: #1d1d1f;
+      --secondary: #515154;
+      --muted: #6e6e73;
+      --divider: #e8e8ed;
+      --accent: #13a866;
+      --accent-deep: #087a49;
+      --accent-soft: #effbf4;
+      --accent-warm: #ffda2e;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 760px;
+      margin: 0;
+      padding: 24px;
+      background: var(--page-bg);
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .login-card {
+      position: relative;
+      width: 712px;
+      overflow: hidden;
+      background: var(--card-bg);
+      border: 1px solid rgba(0, 0, 0, .08);
+      border-radius: 30px;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, .10), 0 2px 8px rgba(0, 0, 0, .04);
+    }
+
+    .login-card__top {
+      position: relative;
+      padding: 29px 40px 27px;
+      background:
+        radial-gradient(circle at 91% 0%, rgba(19, 168, 102, .13), transparent 35%),
+        linear-gradient(145deg, #f2fcf6 0%, #ffffff 76%);
+      border-bottom: 1px solid rgba(19, 168, 102, .11);
+    }
+
+    .login-card__top::after {
+      position: absolute;
+      right: 40px;
+      bottom: -4px;
+      width: 8px;
+      height: 8px;
+      content: "";
+      background: var(--accent-warm);
+      border: 2px solid #fff;
+      border-radius: 50%;
+    }
+
+    .brand-line {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 34px;
+    }
+
+    .brand-logo {
+      display: block;
+      width: auto;
+      height: 34px;
+      max-width: 142px;
+      object-fit: contain;
+    }
+
+    .brand-label {
+      display: inline-flex;
+      align-items: center;
+      height: 25px;
+      padding: 0 10px;
+      color: var(--accent-deep);
+      background: rgba(19, 168, 102, .09);
+      border: 1px solid rgba(19, 168, 102, .15);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+
+    .login-title {
+      margin: 26px 0 6px;
+      color: var(--text);
+      font-size: 31px;
+      font-weight: 720;
+      line-height: 1.14;
+      letter-spacing: -.035em;
+    }
+
+    .login-lead {
+      margin: 0;
+      color: var(--secondary);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .login-card__body {
+      display: flex;
+      align-items: center;
+      flex-direction: column;
+      padding: 31px 40px 32px;
+      text-align: center;
+    }
+
+    .qr-frame {
+      display: grid;
+      place-items: center;
+      width: 342px;
+      height: 342px;
+      padding: 20px;
+      background: #fff;
+      border: 1px solid #e6e6eb;
+      border-radius: 25px;
+      box-shadow: 0 13px 30px rgba(29, 29, 31, .09), 0 2px 8px rgba(29, 29, 31, .04);
+    }
+
+    .qr-image {
+      display: block;
+      width: 300px;
+      height: 300px;
+      object-fit: contain;
+      image-rendering: pixelated;
+    }
+
+    .login-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 19px;
+      color: var(--accent-deep);
+      font-size: 15px;
+      font-weight: 650;
+      letter-spacing: .01em;
+    }
+
+    .state-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(19, 168, 102, .12);
+    }
+
+    .login-hint {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .login-steps {
+      display: flex;
+      justify-content: center;
+      gap: 29px;
+      width: 100%;
+      margin-top: 25px;
+      padding-top: 22px;
+      border-top: 1px solid var(--divider);
+    }
+
+    .login-step {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--secondary);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .step-number {
+      display: inline-grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      color: var(--accent-deep);
+      background: var(--accent-soft);
+      border: 1px solid rgba(19, 168, 102, .15);
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .login-card__footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 0 40px;
+      padding: 18px 0 23px;
+      color: var(--muted);
+      border-top: 1px solid var(--divider);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .privacy-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 520px;
+    }
+
+    .privacy-note svg {
+      flex: 0 0 auto;
+      width: 15px;
+      height: 15px;
+      color: var(--accent-deep);
+    }
+
+    .footer-mark {
+      flex: 0 0 auto;
+      color: #9a9aa0;
+      font-size: 11px;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+
+    @media (prefers-reduced-transparency: reduce) {
+      .login-card__top { background: #f2fcf6; }
+      .brand-label,
+      .step-number { background: #e6f8ee; }
+    }
+
+    @media (prefers-contrast: more) {
+      .login-card,
+      .qr-frame { border-color: rgba(0, 0, 0, .35); }
+      .login-lead,
+      .login-hint,
+      .login-step,
+      .privacy-note { color: #3d3d42; }
+    }
+  </style>
+</head>
+<body>
+<main class="login-card" data-card-root aria-label="QQ 音乐扫码登录">
+  <section class="login-card__top">
+    <div class="brand-line">
+      {% if qqmusic_logo_uri %}<img class="brand-logo" src="{{ qqmusic_logo_uri }}" alt="QQ 音乐">{% endif %}
+      <span class="brand-label">安全登录</span>
+    </div>
+    <h1 class="login-title">登录 QQ 音乐</h1>
+    <p class="login-lead">使用 QQ 音乐或 QQ 扫描二维码，完成安全登录</p>
+  </section>
+
+  <section class="login-card__body">
+    <div class="qr-frame">
+      <img class="qr-image" src="{{ qrcode_uri }}" alt="QQ 音乐登录二维码">
+    </div>
+    <div class="login-state"><span class="state-dot" aria-hidden="true"></span><span>等待扫码</span></div>
+    <p class="login-hint">二维码有效期有限，请在手机上确认登录</p>
+
+    <div class="login-steps" aria-label="登录步骤">
+      <div class="login-step"><span class="step-number">1</span><span>打开 QQ 音乐或 QQ</span></div>
+      <div class="login-step"><span class="step-number">2</span><span>扫一扫并确认登录</span></div>
+    </div>
+  </section>
+
+  <footer class="login-card__footer">
+    <div class="privacy-note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+        <path d="M8 10V7.5a4 4 0 0 1 8 0V10"></path>
+      </svg>
+      <span>登录凭据仅保存在插件本地 Cookie 文件中，请勿转发二维码</span>
+    </div>
+    <span class="footer-mark">Parser</span>
+  </footer>
+</main>
+</body>
+</html>
