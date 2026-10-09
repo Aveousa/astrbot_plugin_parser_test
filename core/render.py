@@ -113,6 +113,7 @@ class Renderer:
     _QQMUSIC_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qqmusic_login.html"
     _TEMPLATES_DIR: ClassVar[Path] = Path(__file__).with_name("templates")
     _RESOURCES_DIR: ClassVar[Path] = Path(__file__).with_name("resources")
+    _PLUGIN_LOGO_PATH: ClassVar[Path] = _TEMPLATES_DIR.parent.parent / "logo.png"
     _CARD_FONT_PATH: ClassVar[Path] = _RESOURCES_DIR / "douyin_sans.otf"
     _STAT_ICON_NAMES: ClassVar[dict[str, str]] = {
         "likes": "like.png",
@@ -1203,6 +1204,7 @@ class Renderer:
 
             html = template.render(
                 qrcode_uri=self._file_uri(qr_path),
+                plugin_logo_uri=self._file_uri(self._PLUGIN_LOGO_PATH),
                 qqmusic_logo_uri=self._file_uri(
                     self._RESOURCES_DIR / "logos" / "qqmusic.png"
                 ),

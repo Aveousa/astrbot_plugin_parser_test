@@ -931,6 +931,29 @@ def test_custom_jinja_template_uses_playwright_png(
     assert calls and calls[0][2] == str(config.template_dir)
 
 
+def test_qqmusic_login_card_embeds_plugin_logo_in_apple_style_header(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    captured_html: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured_html.append(html)
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+
+    output = asyncio.run(renderer.render_qqmusic_login_card(b"qr-image"))
+
+    assert output is not None
+    assert captured_html
+    plugin_logo_uri = (Path(__file__).resolve().parents[1] / "logo.png").as_uri()
+    assert plugin_logo_uri in captured_html[0]
+    assert 'class="brand-avatar"' in captured_html[0]
+
+
 def test_render_card_uses_parse_result_cache_directory(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

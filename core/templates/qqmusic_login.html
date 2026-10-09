@@ -80,15 +80,60 @@
     .brand-line {
       display: flex;
       align-items: center;
-      gap: 12px;
-      min-height: 34px;
+      gap: 13px;
+      min-height: 46px;
+    }
+
+    .brand-avatar {
+      display: block;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 46px;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid rgba(0, 0, 0, .08);
+      border-radius: 14px;
+      box-shadow: 0 6px 15px rgba(29, 29, 31, .12), 0 1px 4px rgba(29, 29, 31, .05);
+      object-fit: cover;
+    }
+
+    .brand-identity {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .brand-name {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 680;
+      line-height: 1.2;
+      letter-spacing: -.01em;
+    }
+
+    .brand-subtitle {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand-badges {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-left: auto;
+      flex: 0 0 auto;
     }
 
     .brand-logo {
       display: block;
       width: auto;
-      height: 34px;
-      max-width: 142px;
+      height: 24px;
+      max-width: 116px;
       object-fit: contain;
     }
 
@@ -264,8 +309,15 @@
 <main class="login-card" data-card-root aria-label="QQ 音乐扫码登录">
   <section class="login-card__top">
     <div class="brand-line">
-      {% if qqmusic_logo_uri %}<img class="brand-logo" src="{{ qqmusic_logo_uri }}" alt="QQ 音乐">{% endif %}
-      <span class="brand-label">安全登录</span>
+      {% if plugin_logo_uri %}<img class="brand-avatar" src="{{ plugin_logo_uri }}" alt="Parser">{% endif %}
+      <div class="brand-identity">
+        <span class="brand-name">Parser</span>
+        <span class="brand-subtitle">QQ 音乐扫码登录</span>
+      </div>
+      <div class="brand-badges">
+        {% if qqmusic_logo_uri %}<img class="brand-logo" src="{{ qqmusic_logo_uri }}" alt="QQ 音乐">{% endif %}
+        <span class="brand-label">安全登录</span>
+      </div>
     </div>
     <h1 class="login-title">登录 QQ 音乐</h1>
     <p class="login-lead">使用 QQ 音乐或 QQ 扫描二维码，完成安全登录</p>
