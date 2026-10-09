@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from aiohttp import ClientError
 from astrbot.api import logger
+from yarl import URL
 
 from ..cookie import CookieJar
 
@@ -36,6 +37,7 @@ class QQMusicLogin:
     _REFERER = "https://y.qq.com/"
     _STATUS_RE = re.compile(r"ptuiCB\((.*?)\)")
     _ARGS_RE = re.compile(r"'((?:\\.|[^'])*)'")
+    _P_SKEY_COOKIE_NAMES = ("p_skey", "p-skey", "pskey", "skey")
     _SIGN_PART_1 = (23, 14, 6, 36, 16, 7, 19)
     _SIGN_PART_2 = (16, 1, 32, 12, 19, 27, 8, 5)
     _SIGN_SCRAMBLE = (
@@ -68,11 +70,17 @@ class QQMusicLogin:
         return f"zzc{first}{middle}{second}".lower()
 
     @staticmethod
-    def _response_cookies(response) -> dict[str, str]:
+    def _cookie_values(cookie_mapping) -> dict[str, str]:
         cookies: dict[str, str] = {}
-        response_cookies = getattr(response, "cookies", {}) or {}
-        for name, morsel in response_cookies.items():
-            cookies[name] = str(getattr(morsel, "value", morsel))
+        for name, morsel in (cookie_mapping or {}).items():
+            value = str(getattr(morsel, "value", morsel)).strip()
+            if value:
+                cookies[str(name)] = value
+        return cookies
+
+    @classmethod
+    def _response_cookies(cls, response) -> dict[str, str]:
+        cookies = cls._cookie_values(getattr(response, "cookies", {}) or {})
         # Some aiohttp-compatible test doubles expose only raw Set-Cookie headers.
         headers = getattr(response, "headers", {})
         raw_headers = getattr(headers, "getall", lambda *_args, **_kwargs: [])(
@@ -81,8 +89,38 @@ class QQMusicLogin:
         for header in raw_headers:
             parsed = SimpleCookie()
             parsed.load(header)
-            cookies.update({name: morsel.value for name, morsel in parsed.items()})
+            cookies.update(cls._cookie_values(parsed))
         return cookies
+
+    def _authorization_cookies(self, response) -> dict[str, str]:
+        """Collect authorization cookies from both the response and session jar."""
+
+        cookies: dict[str, str] = {}
+        cookie_jar = getattr(self.parser.session, "cookie_jar", None)
+        filter_cookies = getattr(cookie_jar, "filter_cookies", None)
+        if callable(filter_cookies):
+            for url in (self._CHECK_SIG_URL, self._OAUTH_URL):
+                try:
+                    session_cookies = filter_cookies(URL(url))
+                except (TypeError, ValueError):
+                    continue
+                for name, value in self._cookie_values(session_cookies).items():
+                    cookies.setdefault(name, value)
+
+        # Cookies set by the current check_sig response must override stale
+        # values that may already be present in the long-lived session jar.
+        cookies.update(self._response_cookies(response))
+        return cookies
+
+    @classmethod
+    def _p_skey_from_cookies(cls, cookies: Mapping[str, str]) -> str | None:
+        """Return the QQ authorization key across known cookie name variants."""
+
+        for name in cls._P_SKEY_COOKIE_NAMES:
+            value = str(cookies.get(name) or "").strip()
+            if value:
+                return value
+        return None
 
     @staticmethod
     def _ensure_success(response) -> None:
@@ -197,10 +235,15 @@ class QQMusicLogin:
             allow_redirects=False,
         ) as response:
             self._ensure_success(response)
-            cookies = self._response_cookies(response)
-        p_skey = cookies.get("p_skey")
+            cookies = self._authorization_cookies(response)
+            check_status = getattr(response, "status", "unknown")
+        p_skey = self._p_skey_from_cookies(cookies)
         if not p_skey:
-            raise RuntimeError("QQ 授权未返回 p_skey")
+            cookie_names = ", ".join(sorted(cookies)) or "none"
+            raise RuntimeError(
+                "QQ 授权未返回可用的 p_skey "
+                f"(HTTP {check_status}, Cookie 字段: {cookie_names})"
+            )
 
         oauth_params = {
             "response_type": "code",
