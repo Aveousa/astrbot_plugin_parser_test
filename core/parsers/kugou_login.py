@@ -284,6 +284,7 @@ class KugouMusicLogin:
                 "clienttime": now_ms // 1000,
                 "dev": "web",
                 "userid": user_id,
+                "plat": self._PLATFORM,
                 "clienttime_ms": now_ms,
                 "pk": rsa_payload,
                 "params": encrypted_token,

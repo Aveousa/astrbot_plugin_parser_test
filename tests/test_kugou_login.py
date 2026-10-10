@@ -171,6 +171,7 @@ def test_kugou_qr_login_persists_exchange_cookies(monkeypatch):
     exchange_params = session.post_calls[0][1]
     assert exchange_params["userid"] == "12345"
     assert exchange_params["dev"] == "web"
+    assert exchange_params["plat"] == "4"
     assert exchange_params["params"]
     assert exchange_params["pk"]
     unsigned_params = dict(exchange_params)
