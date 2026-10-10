@@ -316,6 +316,20 @@ def test_qqmusic_exposes_single_track_audio_and_cookie_settings():
     assert qq_defaults["cookies"] == ""
 
 
+def test_kugou_exposes_optional_cookie_setting():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    items = schema["parsers_template"]["templates"]["kugou"]["items"]
+    assert items["cookies"]["default"] == ""
+    assert items["cookies"]["secret"] is True
+
+    kugou_defaults = next(
+        item for item in defaults if item["__template_key"] == "kugou"
+    )
+    assert kugou_defaults["cookies"] == ""
+
+
 def test_bilibili_exposes_ai_summary_switch():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -405,6 +419,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     netease = raw["parsers_template"][5]
     assert netease["cookies"] == "netease-vip-cookie"
     assert netease["audio_api_base"] == "https://api.qijieya.cn/meting/"
+    assert raw["parsers_template"][6]["cookies"] == ""
     qqmusic = raw["parsers_template"][4]
     assert qqmusic["cookies"] == "qq-music-cookie"
     assert qqmusic["return_audio"] is False

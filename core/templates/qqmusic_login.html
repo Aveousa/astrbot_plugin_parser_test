@@ -306,32 +306,32 @@
   </style>
 </head>
 <body>
-<main class="login-card" data-card-root aria-label="QQ 音乐扫码登录">
+<main class="login-card" data-card-root aria-label="{{ platform_display_name }}扫码登录">
   <section class="login-card__top">
     <div class="brand-line">
       {% if plugin_logo_uri %}<img class="brand-avatar" src="{{ plugin_logo_uri }}" alt="Parser">{% endif %}
       <div class="brand-identity">
         <span class="brand-name">Parser</span>
-        <span class="brand-subtitle">QQ 音乐扫码登录</span>
+        <span class="brand-subtitle">{{ platform_display_name }}扫码登录</span>
       </div>
       <div class="brand-badges">
-        {% if qqmusic_logo_uri %}<img class="brand-logo" src="{{ qqmusic_logo_uri }}" alt="QQ 音乐">{% endif %}
+        {% if platform_logo_uri %}<img class="brand-logo" src="{{ platform_logo_uri }}" alt="{{ platform_display_name }}">{% endif %}
         <span class="brand-label">安全登录</span>
       </div>
     </div>
-    <h1 class="login-title">登录 QQ 音乐</h1>
-    <p class="login-lead">使用 QQ 音乐或 QQ 扫描二维码，完成安全登录</p>
+    <h1 class="login-title">登录 {{ platform_display_name }}</h1>
+    <p class="login-lead">使用 {{ scan_app_name }} 扫描二维码，完成安全登录</p>
   </section>
 
   <section class="login-card__body">
     <div class="qr-frame">
-      <img class="qr-image" src="{{ qrcode_uri }}" alt="QQ 音乐登录二维码">
+      <img class="qr-image" src="{{ qrcode_uri }}" alt="{{ platform_display_name }}登录二维码">
     </div>
     <div class="login-state"><span class="state-dot" aria-hidden="true"></span><span>等待扫码</span></div>
     <p class="login-hint">二维码有效期有限，请在手机上确认登录</p>
 
     <div class="login-steps" aria-label="登录步骤">
-      <div class="login-step"><span class="step-number">1</span><span>打开 QQ 音乐或 QQ</span></div>
+      <div class="login-step"><span class="step-number">1</span><span>打开 {{ scan_app_name }}</span></div>
       <div class="login-step"><span class="step-number">2</span><span>扫一扫并确认登录</span></div>
     </div>
   </section>

@@ -25,6 +25,7 @@ from ..cookie import CookieJar
 from ..data import ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
 from .base import BaseParser, handle
+from .kugou_login import KugouMusicLogin
 from .qqmusic_login import QQMusicLogin
 
 
@@ -1558,6 +1559,23 @@ class KugouMusicParser(PlaylistParserBase):
     _KUGOU_SECRET = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
     _MOBILE_REFERER = "https://m.kugou.com/"
 
+    def __init__(self, config, downloader):
+        super().__init__(config, downloader)
+        parser_config = getattr(getattr(self.cfg, "parser", None), "kugou", None)
+        self.cookiejar = (
+            CookieJar(self.cfg, parser_config, domain="kugou.com")
+            if parser_config is not None
+            else None
+        )
+        self.login = KugouMusicLogin(self)
+
+    def _kugou_cookie_header(self, url: str) -> str:
+        cookiejar = getattr(self, "cookiejar", None)
+        getter = getattr(cookiejar, "get_cookie_header_for_url", None)
+        if callable(getter):
+            return str(getter(url) or "")
+        return str(getattr(cookiejar, "cookies_str", "") or "")
+
     @staticmethod
     def _signature(params: Mapping[str, object], body: str = "") -> str:
         ordered = "".join(f"{key}={params[key]}" for key in sorted(params))
@@ -1610,11 +1628,17 @@ class KugouMusicParser(PlaylistParserBase):
         return _clean_text(text)
 
     async def _fetch_kugou_song_info(self, song_hash: str) -> Mapping[str, Any]:
+        request_url = (
+            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
+            + song_hash
+        )
+        headers = {"Referer": self._MOBILE_REFERER}
+        if cookie := self._kugou_cookie_header(request_url):
+            headers["Cookie"] = cookie
         try:
             payload = await self._json_request(
-                "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
-                + song_hash,
-                headers={"Referer": self._MOBILE_REFERER},
+                request_url,
+                headers=headers,
             )
         except ParseException:
             return {}
@@ -1654,7 +1678,10 @@ class KugouMusicParser(PlaylistParserBase):
             or fallback.get("timelength")
         )
         audio_url = _first_text(info, "url", "play_url")
-        return self._single_track_result(
+        audio_headers = dict(self.headers)
+        if audio_url and (cookie := self._kugou_cookie_header(audio_url)):
+            audio_headers["Cookie"] = cookie
+        result = self._single_track_result(
             title=title,
             artist_name=artist_name,
             album_name=album_name or _first_text(info, "album_name"),
@@ -1668,8 +1695,15 @@ class KugouMusicParser(PlaylistParserBase):
             ),
             author_avatar=_cover_url(info.get("imgUrl"), size=165),
             audio_url=audio_url,
+            audio_headers=audio_headers,
             stats={},
         )
+        if audio_url and audio_url.startswith(("http://", "https://")):
+            # Match QQ Music and NetEase: always send resolved tracks as voice,
+            # and let OneBot fetch the playable URL instead of uploading MP3 bytes.
+            result.extra["audio_as_voice"] = True
+            result.extra["audio_send_url"] = audio_url
+        return result
 
     @handle(
         "m.kugou.com/share",

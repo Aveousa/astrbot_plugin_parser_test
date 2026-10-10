@@ -292,6 +292,13 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "cookies": {
+            "description": "酷狗音乐 Cookie（可选）",
+            "hint": "尝试将登录 Cookie 用于酷狗播放信息请求及同域音频下载；会员歌曲能否播放仍由酷狗接口权限决定。",
+            "type": "text",
+            "default": "",
+            "secret": true
+          },
           "show_playlist_cover": {
             "description": "显示歌单封面",
             "hint": "关闭后歌单信息卡片不再显示歌单封面，但仍保留歌曲专辑缩略图",

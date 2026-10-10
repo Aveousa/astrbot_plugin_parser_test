@@ -55,6 +55,7 @@
     "__template_key": "kugou",
     "enable": true,
     "use_proxy": false,
+    "cookies": "",
     "show_playlist_cover": true,
     "show_playlist_url": true
   },

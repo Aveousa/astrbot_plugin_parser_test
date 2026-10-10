@@ -20,7 +20,7 @@ from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
-from .core.parsers import BaseParser, BilibiliParser, QQMusicParser
+from .core.parsers import BaseParser, BilibiliParser, KugouMusicParser, QQMusicParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
@@ -305,6 +305,20 @@ class ParserPlugin(Star):
         else:
             # Keep login usable when Playwright/Jinja2 is unavailable, just as
             # the original command did before the designed card was added.
+            yield event.chain_result([Image.fromBytes(qrcode)])
+        async for msg in parser.login.check_qr_state():
+            yield event.plain_result(msg)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("登录酷狗音乐", alias={"kugoulogin", "登录酷狗"})
+    async def login_kugou(self, event: AstrMessageEvent):
+        """扫码登录酷狗音乐"""
+        parser: KugouMusicParser = self._get_parser_by_type(KugouMusicParser)  # type: ignore
+        qrcode = await parser.login.login_with_qrcode()
+        card_path = await self.renderer.render_kugou_login_card(qrcode)
+        if card_path is not None:
+            yield event.chain_result([Image.fromFileSystem(str(card_path))])
+        else:
             yield event.chain_result([Image.fromBytes(qrcode)])
         async for msg in parser.login.check_qr_state():
             yield event.plain_result(msg)

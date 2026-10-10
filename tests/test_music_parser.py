@@ -758,6 +758,53 @@ def test_kugou_mobile_songlist_payload_is_decoded():
     assert payload["encode_src_gid"] == "gcid_demo"
 
 
+def test_kugou_track_uses_cookie_and_marks_audio_as_onebot_voice():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(kugou=SimpleNamespace(use_proxy=False)),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {"User-Agent": "test"}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda url: (
+                "KUGOUID=member-session" if "kugou.com" in url else ""
+            )
+        )
+        requests = []
+
+        async def get_song_info(url, **kwargs):
+            requests.append((url, kwargs))
+            return {
+                "songName": "VIP track",
+                "author_name": "Test artist",
+                "url": "https://cdn.kugou.com/song.mp3",
+                "timeLength": 180,
+            }
+
+        parser._json_request = get_song_info
+        result = await parser._kugou_single_result(
+            source_url="https://www.kugou.com/mixsong/test.html",
+            song_hash="test-hash",
+        )
+        audio = next(
+            content for content in result.contents if isinstance(content, AudioContent)
+        )
+        await audio.get_path()
+        return parser, result, requests
+
+    parser, result, requests = asyncio.run(build())
+
+    assert result.title == "VIP track"
+    assert result.extra["audio_as_voice"] is True
+    assert result.extra["audio_send_url"] == "https://cdn.kugou.com/song.mp3"
+    assert requests[0][1]["headers"]["Cookie"] == "KUGOUID=member-session"
+    assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == (
+        "KUGOUID=member-session"
+    )
+
+
 def test_kuwo_nuxt_payload_is_decoded():
     html = (
         '<script>window.__NUXT__=(function(a,b){return '

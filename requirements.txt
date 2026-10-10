@@ -7,3 +7,5 @@ apilmoji>=0.3.0,<1.0.0
 Jinja2>=3.1.4,<4.0.0
 playwright>=1.50.0,<2.0.0
 bilibili-api-python>=17.4.1,<18.0.0
+cryptography>=42.0.0,<51.0.0
+qrcode[pil]>=7.4.2,<9.0.0

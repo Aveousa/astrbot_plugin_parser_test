@@ -1175,10 +1175,34 @@ class Renderer:
 
     async def render_qqmusic_login_card(self, qrcode: bytes) -> Path | None:
         """Render a styled QQ Music QR login card."""
+        return await self._render_music_login_card(
+            qrcode,
+            platform_key="qqmusic",
+            platform_display_name="QQ 音乐",
+            scan_app_name="QQ 音乐或 QQ",
+        )
+
+    async def render_kugou_login_card(self, qrcode: bytes) -> Path | None:
+        """Render a styled Kugou Music QR login card."""
+        return await self._render_music_login_card(
+            qrcode,
+            platform_key="kugou",
+            platform_display_name="酷狗音乐",
+            scan_app_name="酷狗音乐 App",
+        )
+
+    async def _render_music_login_card(
+        self,
+        qrcode: bytes,
+        *,
+        platform_key: str,
+        platform_display_name: str,
+        scan_app_name: str,
+    ) -> Path | None:
         if not qrcode:
             return None
         if not self.environment:
-            self._log_warning("Jinja2 is unavailable; skipping QQ Music login card")
+            self._log_warning("Jinja2 is unavailable; skipping music login card")
             return None
 
         qr_path: Path | None = None
@@ -1187,8 +1211,8 @@ class Renderer:
             cache_dir = get_active_cache_dir(self.cfg.cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
             token = uuid.uuid4().hex
-            qr_path = cache_dir / f".qqmusic_login_qr_{token}.png"
-            target = cache_dir / f"qqmusic_login_{token}.png"
+            qr_path = cache_dir / f".{platform_key}_login_qr_{token}.png"
+            target = cache_dir / f"{platform_key}_login_{token}.png"
             qr_path.write_bytes(qrcode)
 
             try:
@@ -1197,17 +1221,23 @@ class Renderer:
                 )
             except TemplateNotFound as exc:
                 self._log_exception(
-                    f"QQ Music login card template is missing: "
+                    f"Music login card template is missing: "
                     f"{self._QQMUSIC_LOGIN_TEMPLATE_NAME}: {exc}"
                 )
                 return None
 
+            platform_logo_uri = self._file_uri(
+                self._RESOURCES_DIR / "logos" / f"{platform_key}.png"
+            )
             html = template.render(
                 qrcode_uri=self._file_uri(qr_path),
                 plugin_logo_uri=self._file_uri(self._PLUGIN_LOGO_PATH),
-                qqmusic_logo_uri=self._file_uri(
-                    self._RESOURCES_DIR / "logos" / "qqmusic.png"
-                ),
+                platform_key=platform_key,
+                platform_display_name=platform_display_name,
+                platform_logo_uri=platform_logo_uri,
+                scan_app_name=scan_app_name,
+                # Retain the previous context key for user-overridden QQ cards.
+                qqmusic_logo_uri=platform_logo_uri,
                 card_font_uri=self._file_uri(self._CARD_FONT_PATH),
             )
             template_base_dir = next(
@@ -1236,9 +1266,12 @@ class Renderer:
                     target.unlink(missing_ok=True)
                 except OSError as cleanup_error:
                     self._log_warning(
-                        f"Failed to clean QQ Music login card: {cleanup_error}"
+                        f"Failed to clean {platform_display_name} login card: "
+                        f"{cleanup_error}"
                     )
-            self._log_exception(f"QQ Music login card rendering failed: {exc}")
+            self._log_exception(
+                f"{platform_display_name} login card rendering failed: {exc}"
+            )
             return None
         finally:
             if qr_path is not None:
@@ -1246,7 +1279,8 @@ class Renderer:
                     qr_path.unlink(missing_ok=True)
                 except OSError as cleanup_error:
                     self._log_warning(
-                        f"Failed to clean temporary QQ Music QR image: {cleanup_error}"
+                        f"Failed to clean temporary {platform_display_name} QR image: "
+                        f"{cleanup_error}"
                     )
 
     async def render_card(self, result: ParseResult) -> Path | None:
