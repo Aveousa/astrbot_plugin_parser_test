@@ -38,6 +38,7 @@
     "enable": true,
     "use_proxy": false,
     "return_audio": true,
+    "parse_lyrics": false,
     "cookies": "",
     "show_playlist_cover": true,
     "show_playlist_url": true
@@ -47,6 +48,7 @@
     "enable": true,
     "use_proxy": false,
     "audio_api_base": "https://api.qijieya.cn/meting/",
+    "parse_lyrics": false,
     "cookies": "",
     "show_playlist_cover": true,
     "show_playlist_url": true

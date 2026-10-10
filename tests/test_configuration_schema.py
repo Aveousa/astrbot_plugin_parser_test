@@ -289,12 +289,15 @@ def test_netease_exposes_audio_api_and_optional_cookie_settings():
     assert "https://api.ames.cc.cd" in items["audio_api_base"]["options"]
     assert items["cookies"]["default"] == ""
     assert items["cookies"]["secret"] is True
+    assert items["parse_lyrics"]["type"] == "bool"
+    assert items["parse_lyrics"]["default"] is False
 
     netease_defaults = next(
         item for item in defaults if item["__template_key"] == "netease"
     )
     assert netease_defaults["audio_api_base"] == "https://api.qijieya.cn/meting/"
     assert netease_defaults["cookies"] == ""
+    assert netease_defaults["parse_lyrics"] is False
 
 
 def test_qqmusic_exposes_single_track_audio_and_cookie_settings():
@@ -308,12 +311,15 @@ def test_qqmusic_exposes_single_track_audio_and_cookie_settings():
     assert items["return_audio"]["hint"]
     assert items["cookies"]["default"] == ""
     assert items["cookies"]["secret"] is True
+    assert items["parse_lyrics"]["type"] == "bool"
+    assert items["parse_lyrics"]["default"] is False
 
     qq_defaults = next(
         item for item in defaults if item["__template_key"] == "qqmusic"
     )
     assert qq_defaults["return_audio"] is True
     assert qq_defaults["cookies"] == ""
+    assert qq_defaults["parse_lyrics"] is False
 
 
 def test_kugou_exposes_optional_cookie_setting():

@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    {% if card_font_uri %}
+    @font-face {
+      font-family: "Douyin Sans";
+      src: url("{{ card_font_uri }}") format("opentype");
+      font-style: normal;
+      font-weight: normal;
+      font-display: block;
+    }
+    {% endif %}
+
+    @page { size: 760px 3200px; margin: 0; }
+
+    :root {
+      color-scheme: light;
+      font-family: "Douyin Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --page-bg: #f5f5f7;
+      --card-bg: #ffffff;
+      --text: #1d1d1f;
+      --secondary: #515154;
+      --muted: #6e6e73;
+      --divider: #e8e8ed;
+      --accent: {{ accent_color or '#e93345' }};
+      --accent-deep: {{ accent_deep or '#b81f32' }};
+      --accent-soft: {{ accent_soft or '#fff1f3' }};
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 760px;
+      margin: 0;
+      padding: 24px;
+      background: var(--page-bg);
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .lyrics-card {
+      position: relative;
+      width: 712px;
+      overflow: hidden;
+      background: var(--card-bg);
+      border: 1px solid rgba(0, 0, 0, .08);
+      border-radius: 30px;
+      box-shadow: 0 18px 42px rgba(0, 0, 0, .10), 0 2px 8px rgba(0, 0, 0, .04);
+    }
+
+    .lyrics-card > * { position: relative; z-index: 1; }
+
+    .card-top {
+      padding: 26px 40px 30px;
+      background:
+        radial-gradient(circle at 96% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 35%),
+        linear-gradient(145deg, #fff7f8 0%, #ffffff 76%);
+      border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
+    .brand-line {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      min-height: 46px;
+    }
+
+    .brand-avatar {
+      display: block;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 46px;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid rgba(0, 0, 0, .08);
+      border-radius: 14px;
+      box-shadow: 0 6px 15px rgba(29, 29, 31, .12), 0 1px 4px rgba(29, 29, 31, .05);
+      object-fit: cover;
+    }
+
+    .brand-identity {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand-name {
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 680;
+      line-height: 1.2;
+      letter-spacing: -.01em;
+    }
+
+    .brand-subtitle {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand-badges {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+
+    .brand-logo {
+      display: block;
+      width: auto;
+      height: 24px;
+      max-width: 116px;
+      object-fit: contain;
+    }
+
+    .brand-label {
+      display: inline-flex;
+      align-items: center;
+      height: 25px;
+      padding: 0 10px;
+      color: var(--accent-deep);
+      background: color-mix(in srgb, var(--accent) 9%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+
+    .song-summary {
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 24px;
+      align-items: center;
+      margin-top: 28px;
+    }
+
+    .song-summary--no-cover { grid-template-columns: minmax(0, 1fr); }
+
+    .cover {
+      display: block;
+      width: 160px;
+      height: 160px;
+      object-fit: cover;
+      border-radius: 23px;
+      box-shadow: 0 14px 28px rgba(29, 29, 31, .16), 0 2px 8px rgba(29, 29, 31, .06);
+    }
+
+    .song-copy { min-width: 0; }
+
+    .song-title {
+      display: -webkit-box;
+      margin: 0;
+      overflow: hidden;
+      color: var(--text);
+      font-size: 29px;
+      font-weight: 720;
+      line-height: 1.13;
+      letter-spacing: -.035em;
+      overflow-wrap: anywhere;
+      text-overflow: ellipsis;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+
+    .song-artists {
+      margin-top: 11px;
+      overflow: hidden;
+      color: var(--secondary);
+      font-size: 16px;
+      font-weight: 560;
+      line-height: 1.42;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .song-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .song-meta__item + .song-meta__item::before {
+      margin-right: 12px;
+      color: #b6b6bc;
+      content: "·";
+    }
+
+    .source-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 19px;
+      color: var(--accent-deep);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: .01em;
+    }
+
+    .source-note__dot {
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+
+    .lyrics-section {
+      padding: 29px 40px 31px;
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 0 17px;
+    }
+
+    .section-heading__title {
+      margin: 0;
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -.015em;
+    }
+
+    .section-heading__hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+
+    .lyric-sheet {
+      padding: 21px 24px 23px;
+      background: rgba(245, 245, 247, .78);
+      border: 1px solid rgba(0, 0, 0, .06);
+      border-radius: 23px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .72);
+      backdrop-filter: blur(18px) saturate(120%);
+      -webkit-backdrop-filter: blur(18px) saturate(120%);
+    }
+
+    .lyric-line {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 14px;
+      align-items: baseline;
+      min-height: 29px;
+      color: var(--secondary);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .lyric-line--stanza { margin-top: 13px; }
+
+    .lyric-time {
+      color: #a1a1a8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: .01em;
+      text-align: right;
+    }
+
+    .lyric-text {
+      overflow-wrap: anywhere;
+    }
+
+    .lyric-line--credit .lyric-text {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 0 40px;
+      padding: 18px 0 23px;
+      color: var(--muted);
+      border-top: 1px solid var(--divider);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .footer-source {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .footer-mark {
+      flex: 0 0 auto;
+      color: #9a9aa0;
+      font-size: 11px;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+
+    @media (prefers-reduced-transparency: reduce) {
+      .lyric-sheet { background: #f5f5f7; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    }
+
+    @media (prefers-contrast: more) {
+      .lyrics-card,
+      .lyric-sheet { border-color: rgba(0, 0, 0, .35); }
+      .song-artists,
+      .song-meta,
+      .lyric-time,
+      .footer-source { color: #4d4d52; }
+    }
+  </style>
+</head>
+<body>
+<main class="lyrics-card" data-card-root aria-label="{{ platform_display_name }}歌词卡片">
+  <section class="card-top">
+    <div class="brand-line">
+      {% if plugin_logo_uri %}<img class="brand-avatar" src="{{ plugin_logo_uri }}" alt="Parser">{% endif %}
+      <div class="brand-identity">
+        <span class="brand-name">Parser</span>
+        <span class="brand-subtitle">{{ platform_display_name }}歌词</span>
+      </div>
+      <div class="brand-badges">
+        {% if platform_logo_uri %}<img class="brand-logo" src="{{ platform_logo_uri }}" alt="{{ platform_display_name }}">{% endif %}
+        <span class="brand-label">歌词</span>
+      </div>
+    </div>
+
+    <div class="song-summary{% if not cover_uri %} song-summary--no-cover{% endif %}">
+      {% if cover_uri %}<img class="cover" src="{{ cover_uri }}" alt="{{ song_title }}封面">{% endif %}
+      <div class="song-copy">
+        <h1 class="song-title">{{ song_title }}</h1>
+        {% if artists %}<div class="song-artists">{{ artists }}</div>{% endif %}
+        <div class="song-meta">
+          {% if album %}<span class="song-meta__item">{{ album }}</span>{% endif %}
+          {% if duration_text %}<span class="song-meta__item">{{ duration_text }}</span>{% endif %}
+          {% if release_text %}<span class="song-meta__item">{{ release_text }}</span>{% endif %}
+        </div>
+        <div class="source-note"><span class="source-note__dot" aria-hidden="true"></span><span>歌词已解析</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="lyrics-section">
+    <div class="section-heading">
+      <h2 class="section-heading__title">歌词</h2>
+      <span class="section-heading__hint">{{ lyric_count }} 行</span>
+    </div>
+    <div class="lyric-sheet">
+      {% for line in lyrics_lines %}
+      <div class="lyric-line{% if line.stanza_break %} lyric-line--stanza{% endif %}{% if line.is_credit %} lyric-line--credit{% endif %}">
+        <span class="lyric-time">{{ line.timestamp }}</span>
+        <span class="lyric-text">{{ line.text }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <footer class="card-footer">
+    <span class="footer-source">{{ source_label }}</span>
+    <span class="footer-mark">Parser</span>
+  </footer>
+</main>
+</body>
+</html>

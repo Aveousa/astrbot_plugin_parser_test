@@ -233,6 +233,12 @@
             "type": "bool",
             "default": true
           },
+          "parse_lyrics": {
+            "description": "解析单曲时同时解析歌词",
+            "hint": "开启后，解析 QQ 音乐单曲链接时会尝试获取并发送歌词卡片。",
+            "type": "bool",
+            "default": false
+          },
           "cookies": {
             "description": "QQ音乐 Cookie",
             "hint": "可选的 QQ 音乐 Cookie，用于获取需要登录权限的歌曲音频。",
@@ -259,6 +265,12 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "parse_lyrics": {
+            "description": "解析单曲时同时解析歌词",
+            "hint": "开启后，解析网易云音乐单曲链接时会尝试获取并发送歌词卡片。",
+            "type": "bool",
+            "default": false
+          },
           "audio_api_base": {
             "description": "单曲音源 API",
             "hint": "Meting API 用于按歌曲 ID 获取播放地址；需要 Cookie 播放 VIP 歌曲时，选择支持 Cookie 的网易云兼容 API。Cookie 会按域名用于网易云请求，并转发给所配置的兼容 API。",

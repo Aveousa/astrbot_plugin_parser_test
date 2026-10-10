@@ -954,6 +954,43 @@ def test_qqmusic_login_card_embeds_plugin_logo_in_apple_style_header(
     assert 'class="brand-avatar"' in captured_html[0]
 
 
+def test_lyrics_card_renders_song_metadata_and_normalized_lrc(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    captured_html: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured_html.append(html)
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:00.000]作词：测试\n[00:07.120]第一句\n[00:10.250]第二句",
+            platform_key="netease",
+            platform_display_name="网易云音乐",
+            song_title="测试歌曲",
+            artists="测试歌手",
+            album="测试专辑",
+            duration_seconds=217,
+            source_label="歌词来源：网易云音乐 · 歌曲 ID 1",
+        )
+    )
+
+    assert output is not None
+    assert captured_html
+    html = captured_html[0]
+    assert "测试歌曲" in html
+    assert "测试歌手" in html
+    assert "3:37" in html
+    assert "00:07" in html
+    assert "第一句" in html
+    assert "lyrics_card" not in renderer.available_templates()
+
+
 def test_kugou_login_card_uses_kugou_branding(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

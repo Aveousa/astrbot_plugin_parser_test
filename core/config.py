@@ -167,6 +167,7 @@ class ParserItem(ConfigNode):
     show_playlist_cover: bool | None
     show_playlist_url: bool | None
     return_audio: bool | None
+    parse_lyrics: bool | None
     audio_api_base: str | None
     max_page: int | None
 

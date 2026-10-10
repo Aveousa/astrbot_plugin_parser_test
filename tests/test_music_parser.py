@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -1013,3 +1014,47 @@ def test_apple_music_server_data_is_decoded():
     payload = AppleMusicParser._decode_server_data(html)
 
     assert payload["data"][0]["data"]["sections"][0]["items"][0]["title"] == "Mix"
+
+
+def test_netease_lyrics_are_read_from_lyric_endpoint():
+    async def run():
+        parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
+        parser._netease_cookie_header = lambda _url: "MUSIC_U=test"
+        requested = {}
+
+        async def json_request(url, *, headers):
+            requested["url"] = url
+            requested["headers"] = headers
+            return {"lrc": {"lyric": "[00:01.00]Hello\n[00:02.00]world"}}
+
+        parser._json_request = json_request
+        lyrics = await parser._fetch_netease_lyrics("3395393731")
+        return lyrics, requested
+
+    lyrics, request = asyncio.run(run())
+    assert lyrics == "[00:01.00]Hello\n[00:02.00]world"
+    assert "id=3395393731" in request["url"]
+    assert request["headers"]["Cookie"] == "MUSIC_U=test"
+
+
+def test_qqmusic_lyrics_decode_base64_from_official_response():
+    async def run():
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser._qq_cookie_values = lambda: {"uin": "123"}
+        parser._qq_cookie_header = lambda _url: "uin=123; qqmusic_key=key"
+        requested = {}
+
+        async def json_request(url, *, headers):
+            requested["url"] = url
+            requested["headers"] = headers
+            lyric = base64.b64encode("[00:01.00]你好".encode()).decode()
+            return {"req_1": {"data": {"lyric": lyric}}}
+
+        parser._json_request = json_request
+        lyrics = await parser._fetch_qq_lyrics("song-mid")
+        return lyrics, requested
+
+    lyrics, request = asyncio.run(run())
+    assert lyrics == "[00:01.00]你好"
+    assert "PlayLyricInfo" in request["url"]
+    assert request["headers"]["Cookie"] == "uin=123; qqmusic_key=key"

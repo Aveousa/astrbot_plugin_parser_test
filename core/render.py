@@ -78,6 +78,24 @@ _EMOJI_RE = re.compile(
     rf"(?:[\U0001F1E6-\U0001F1FF]{{2}}|{_EMOJI_CHARACTER}(?:\u200d{_EMOJI_CHARACTER})*)"
 )
 _EMPTY_DESCRIPTION_RE = re.compile(r"^(?:简介\s*[:：]\s*)?[-—–]+$")
+_LRC_LINE_RE = re.compile(
+    r"^\[(?P<minutes>\d{1,3}):(?P<seconds>\d{2}(?:[.:]\d{1,3})?)\](?P<text>.*)$"
+)
+_LYRIC_CREDIT_PREFIXES = (
+    "出品",
+    "演唱",
+    "作词",
+    "作曲",
+    "词曲",
+    "编曲",
+    "制作",
+    "录音",
+    "混音",
+    "母带",
+    "吉他",
+    "监制",
+    "人声",
+)
 # Some platforms (notably Xiaohongshu) serialize adjacent topics as
 # ``#topic[话题]##next-topic[话题]#``.  Keep the generic extractor permissive
 # enough to recognize the second ``#`` while consuming the optional closing
@@ -111,6 +129,7 @@ class Renderer:
         "apple",
     )
     _QQMUSIC_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qqmusic_login.html"
+    _LYRICS_TEMPLATE_NAME: ClassVar[str] = "lyrics_card.html"
     _TEMPLATES_DIR: ClassVar[Path] = Path(__file__).with_name("templates")
     _RESOURCES_DIR: ClassVar[Path] = Path(__file__).with_name("resources")
     _PLUGIN_LOGO_PATH: ClassVar[Path] = _TEMPLATES_DIR.parent.parent / "logo.png"
@@ -133,6 +152,23 @@ class Renderer:
         "qishui": "qishui.png",
         "kuwo": "kuwo.png",
         "applemusic": "applemusic.png",
+    }
+    _LYRICS_PLATFORM_THEMES: ClassVar[dict[str, dict[str, str]]] = {
+        "netease": {
+            "accent_color": "#e93345",
+            "accent_deep": "#b81f32",
+            "accent_soft": "#fff1f3",
+        },
+        "qqmusic": {
+            "accent_color": "#13a866",
+            "accent_deep": "#087a49",
+            "accent_soft": "#effbf4",
+        },
+        "kugou": {
+            "accent_color": "#1597e5",
+            "accent_deep": "#0875b7",
+            "accent_soft": "#edf8ff",
+        },
     }
     _LIVE_PHOTO_ICON_NAME: ClassVar[str] = "livep.png"
     _LIVE_STREAM_ICON_NAME: ClassVar[str] = "live.png"
@@ -391,6 +427,7 @@ class Renderer:
         # The QR login template is an internal command surface, not a parser
         # result template that users should select in card configuration.
         names.discard(self._QQMUSIC_LOGIN_TEMPLATE_NAME.removesuffix(".html"))
+        names.discard(self._LYRICS_TEMPLATE_NAME.removesuffix(".html"))
         return sorted(names)
 
     @staticmethod
@@ -962,7 +999,9 @@ class Renderer:
         if card_extra_info is None:
             card_extra_info = result.extra_info
         card_extra = {
-            key: value for key, value in result.extra.items() if key != "playlist_tracks"
+            key: value
+            for key, value in result.extra.items()
+            if key not in {"playlist_tracks", "lyrics"}
         }
         card_url = result.url
         if result.extra.get("show_playlist_url") is False:
@@ -1172,6 +1211,158 @@ class Renderer:
                 temporary_html.unlink(missing_ok=True)
             except OSError as exc:
                 self._log_warning(f"清理卡片临时 HTML 失败: {exc}")
+
+    @staticmethod
+    def _lyrics_lines(lyrics: str) -> list[dict[str, Any]]:
+        """Normalize LRC text into the small, presentation-only line model."""
+
+        lines: list[dict[str, Any]] = []
+        previous_seconds: float | None = None
+        for raw_line in str(lyrics or "").replace("\r\n", "\n").splitlines():
+            raw_line = raw_line.strip().lstrip("\ufeff")
+            if not raw_line:
+                continue
+            match = _LRC_LINE_RE.match(raw_line)
+            if match:
+                text = match.group("text").strip()
+                if not text:
+                    continue
+                minutes = int(match.group("minutes"))
+                seconds = float(match.group("seconds").replace(":", "."))
+                absolute_seconds = minutes * 60 + seconds
+                timestamp = f"{minutes:02d}:{int(seconds):02d}"
+                stanza_break = (
+                    previous_seconds is not None
+                    and absolute_seconds - previous_seconds >= 6
+                )
+                previous_seconds = absolute_seconds
+            else:
+                # Ignore LRC metadata such as [ti:], [ar:] and [offset:].
+                if raw_line.startswith("[") and "]" in raw_line:
+                    continue
+                text = raw_line
+                timestamp = ""
+                stanza_break = False
+
+            lines.append(
+                {
+                    "timestamp": timestamp,
+                    "text": text,
+                    "stanza_break": stanza_break,
+                    "is_credit": text.startswith(_LYRIC_CREDIT_PREFIXES),
+                }
+            )
+        return lines
+
+    async def render_lyrics_card(
+        self,
+        lyrics: str,
+        *,
+        platform_key: str,
+        platform_display_name: str,
+        song_title: str,
+        artists: str | None = None,
+        album: str | None = None,
+        duration_seconds: float | None = None,
+        release_text: str | None = None,
+        cover_path: Path | None = None,
+        source_label: str | None = None,
+        target_path: Path | None = None,
+    ) -> Path | None:
+        """Render a platform-colored Apple-style lyrics card."""
+
+        lyrics_lines = self._lyrics_lines(lyrics)
+        if not lyrics_lines:
+            self._log_warning("歌词为空，跳过歌词卡片渲染")
+            return None
+        if not self.environment:
+            self._log_warning("Jinja2 不可用，跳过歌词卡片渲染")
+            return None
+
+        platform_key = str(platform_key or "").strip().lower()
+        theme = self._LYRICS_PLATFORM_THEMES.get(
+            platform_key,
+            self._LYRICS_PLATFORM_THEMES["netease"],
+        )
+        duration_text = None
+        if duration_seconds is not None:
+            try:
+                duration_value = max(0, int(float(duration_seconds)))
+            except (TypeError, ValueError, OverflowError):
+                duration_value = 0
+            if duration_value:
+                minutes, seconds = divmod(duration_value, 60)
+                duration_text = f"{minutes}:{seconds:02d}"
+
+        target = target_path
+        try:
+            if target is None:
+                cache_dir = get_active_cache_dir(self.cfg.cache_dir)
+                target = cache_dir / f"lyrics_{platform_key}_{uuid.uuid4().hex}.png"
+            target = Path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                template = self.environment.get_template(self._LYRICS_TEMPLATE_NAME)
+            except TemplateNotFound as exc:
+                self._log_exception(
+                    f"歌词卡片模板不存在: {self._LYRICS_TEMPLATE_NAME}: {exc}"
+                )
+                return None
+
+            logo_name = self._PLATFORM_LOGO_NAMES.get(platform_key)
+            platform_logo_uri = (
+                self._file_uri(self._RESOURCES_DIR / "logos" / logo_name)
+                if logo_name
+                else None
+            )
+            resolved_cover = (
+                Path(cover_path)
+                if cover_path is not None and Path(cover_path).is_file()
+                else None
+            )
+            html = template.render(
+                plugin_logo_uri=self._file_uri(self._PLUGIN_LOGO_PATH),
+                platform_key=platform_key,
+                platform_display_name=platform_display_name,
+                platform_logo_uri=platform_logo_uri,
+                song_title=song_title,
+                artists=artists,
+                album=album,
+                duration_text=duration_text,
+                release_text=release_text,
+                cover_uri=self._file_uri(resolved_cover),
+                lyrics_lines=lyrics_lines,
+                lyric_count=len(lyrics_lines),
+                source_label=source_label or f"歌词来源：{platform_display_name}",
+                card_font_uri=self._file_uri(self._CARD_FONT_PATH),
+                **theme,
+            )
+            template_base_dir = next(
+                (
+                    directory
+                    for directory in self.template_dirs
+                    if (directory / self._LYRICS_TEMPLATE_NAME).is_file()
+                ),
+                self._TEMPLATES_DIR,
+            )
+            rendered = await self._render_playwright_png(
+                html,
+                target,
+                base_url=str(template_base_dir),
+            )
+            if not rendered:
+                target.unlink(missing_ok=True)
+                return None
+            return target
+        except Exception as exc:
+            if target is not None:
+                try:
+                    Path(target).unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    self._log_warning(f"清理歌词卡片失败: {cleanup_error}")
+            self._log_exception(f"歌词卡片渲染失败: {exc}")
+            return None
 
     async def render_qqmusic_login_card(self, qrcode: bytes) -> Path | None:
         """Render a styled QQ Music QR login card."""

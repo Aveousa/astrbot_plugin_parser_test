@@ -8,6 +8,7 @@ media URL can be resolved.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import re
@@ -1001,6 +1002,69 @@ class QQMusicParser(PlaylistParserBase):
         value = getattr(parser_config, "return_audio", None)
         return True if value is None else bool(value)
 
+    def _lyrics_enabled(self) -> bool:
+        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
+        return bool(getattr(parser_config, "parse_lyrics", False))
+
+    async def _fetch_qq_lyrics(
+        self,
+        song_mid: str,
+        song_id: int | str | None = None,
+    ) -> str | None:
+        """Fetch QQ Music LRC lyrics from its song lyric API."""
+
+        cookies = self._qq_cookie_values()
+        uin = cookies.get("uin") or cookies.get("ptui_loginuin") or "0"
+        payload = {
+            "comm": {
+                "cv": 0,
+                "ct": 24,
+                "format": "json",
+                "inCharset": "utf-8",
+                "outCharset": "utf-8",
+                "notice": 0,
+                "platform": "yqq.json",
+                "needNewCode": 1,
+                "uin": uin,
+            },
+            "req_1": {
+                "module": "music.musichallSong.PlayLyricInfo",
+                "method": "GetPlayLyricInfo",
+                "param": {
+                    "songMID": song_mid,
+                    "songID": _as_int(song_id) or 0,
+                    "songType": 0,
+                    "crypt": 0,
+                    "roma": 0,
+                },
+            },
+        }
+        query = urlencode(
+            {
+                "format": "json",
+                "inCharset": "utf-8",
+                "outCharset": "utf-8",
+                "data": json.dumps(payload, separators=(",", ":")),
+            }
+        )
+        headers = {"Referer": "https://y.qq.com/", "Origin": "https://y.qq.com"}
+        if cookie := self._qq_cookie_header(self._QQ_VKEY_URL):
+            headers["Cookie"] = cookie
+        try:
+            body = await self._json_request(f"{self._QQ_VKEY_URL}?{query}", headers=headers)
+        except (ParseException, ClientError, TimeoutError):
+            return None
+        request = body.get("req_1") if isinstance(body, Mapping) else None
+        data = request.get("data") if isinstance(request, Mapping) else None
+        encoded = _first_text(data, "lyric") if isinstance(data, Mapping) else None
+        if not encoded:
+            return None
+        try:
+            decoded = base64.b64decode(encoded, validate=True).decode("utf-8-sig")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return decoded if decoded.strip() else None
+
     @staticmethod
     def _track_ids_from_match(searched) -> list[str]:
         raw_url = searched.group(0)
@@ -1273,6 +1337,20 @@ class QQMusicParser(PlaylistParserBase):
         if audio_url:
             result.extra["audio_as_voice"] = True
             result.extra["audio_send_url"] = audio_url
+        if self._lyrics_enabled():
+            lyrics = await self._fetch_qq_lyrics(
+                song_mid,
+                track.get("id") or track.get("songid"),
+            )
+            if lyrics:
+                result.extra["lyrics"] = {
+                    "text": lyrics,
+                    "title": _track_title(track) or "未知歌曲",
+                    "artists": " / ".join(artist_names),
+                    "album": _track_album_name(track),
+                "duration_seconds": _duration_seconds(track.get("interval")),
+                    "release_text": _first_text(track, "time_public"),
+                }
         return result
 
     @handle(
@@ -1361,6 +1439,28 @@ class NetEaseMusicParser(PlaylistParserBase):
         parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
         configured = getattr(parser_config, "audio_api_base", None)
         return str(configured or self._DEFAULT_METING_API).strip().rstrip("/")
+
+    def _lyrics_enabled(self) -> bool:
+        parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
+        return bool(getattr(parser_config, "parse_lyrics", False))
+
+    async def _fetch_netease_lyrics(self, song_id: str) -> str | None:
+        lyric_url = "https://music.163.com/api/song/lyric"
+        headers = {"Referer": "https://music.163.com/"}
+        if cookie := self._netease_cookie_header(lyric_url):
+            headers["Cookie"] = cookie
+        try:
+            body = await self._json_request(
+                f"{lyric_url}?{urlencode({'id': song_id, 'lv': 1, 'kv': 1, 'tv': -1})}",
+                headers=headers,
+            )
+        except (ParseException, ClientError, TimeoutError):
+            return None
+        if not isinstance(body, Mapping):
+            return None
+        lyric = body.get("lrc")
+        text = _first_text(lyric, "lyric") if isinstance(lyric, Mapping) else None
+        return text if text and text.strip() else None
 
     async def _resolve_netease_audio_url(self, song_id: str) -> str | None:
         """按 MomoTune 的 NcmClient 约定请求 Meting 或网易云兼容 API。"""
@@ -1501,6 +1601,19 @@ class NetEaseMusicParser(PlaylistParserBase):
         # 大型本地音频编码进反向 WebSocket 消息。
         result.extra["audio_as_voice"] = True
         result.extra["audio_send_url"] = audio_url
+        if self._lyrics_enabled():
+            lyrics = await self._fetch_netease_lyrics(song_id)
+            if lyrics:
+                result.extra["lyrics"] = {
+                    "text": lyrics,
+                    "title": _track_title(track) or "未知歌曲",
+                    "artists": " / ".join(artists),
+                    "album": _track_album_name(track),
+                    "duration_seconds": _duration_seconds(
+                        track.get("duration") or track.get("dt")
+                    ),
+                    "release_text": _first_text(track, "publishTime"),
+                }
         return result
 
     @handle(

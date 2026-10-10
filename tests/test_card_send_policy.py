@@ -191,6 +191,42 @@ def test_disabled_card_switch_skips_direct_render_attempt(sender_module):
     assert not renderer.calls
 
 
+@pytest.mark.parametrize("platform_name", ["netease", "qqmusic"])
+def test_lyrics_card_is_sent_after_regular_result_and_uses_platform_logo(
+    sender_module, tmp_path: Path, platform_name: str
+):
+    order = []
+
+    class LyricsRenderer:
+        async def render_lyrics_card(self, lyrics, **kwargs):
+            order.append(("render", kwargs["platform_key"], lyrics))
+            return tmp_path / f"{platform_name}.png"
+
+    config = _card_config(
+        parser=SimpleNamespace(**{platform_name: SimpleNamespace(parse_lyrics=True)})
+    )
+    sender = sender_module.MessageSender(config, LyricsRenderer())
+    async def regular_result(_event, _result):
+        order.append(("regular",))
+
+    sender._send_parse_result = regular_result
+    result = ParseResult(
+        platform=Platform(platform_name, platform_name),
+        title="Song",
+        extra={
+            "music_type": "track",
+            "lyrics": {"text": "[00:01.00]Line", "title": "Song"},
+        },
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert order == [("regular",), ("render", platform_name, "[00:01.00]Line")]
+    assert len(event.sent) == 1
+    assert event.sent[0][0].path.endswith(f"{platform_name}.png")
+
+
 @pytest.mark.parametrize("platform_name", ["bilibili", "douyin", "xhs", "pixiv"])
 def test_global_card_is_sent_once_for_every_platform(
     sender_module, platform_name: str

@@ -458,6 +458,57 @@ class MessageSender:
         # 激活结果目录，确保卡片、发送过程中新建的临时资源也归档到同一处。
         with cache_dir_scope(result.cache_dir):
             await self._send_parse_result(event, result)
+            await self._send_lyrics_card(event, result)
+
+    async def _send_lyrics_card(
+        self,
+        event: AstrMessageEvent,
+        result: ParseResult,
+    ) -> None:
+        """Send an optional lyrics card after the regular single-track result."""
+
+        if result.extra.get("music_type") != "track":
+            return
+        platform_key = result.platform.name
+        if platform_key not in {"netease", "qqmusic"}:
+            return
+        parser_config = getattr(getattr(self.cfg, "parser", None), platform_key, None)
+        if not bool(getattr(parser_config, "parse_lyrics", False)):
+            return
+        lyrics = result.extra.get("lyrics")
+        if not isinstance(lyrics, dict) or not lyrics.get("text"):
+            return
+        render = getattr(self.renderer, "render_lyrics_card", None)
+        if not callable(render):
+            return
+
+        cover_path = None
+        for content in result.contents:
+            if isinstance(content, ImageContent):
+                try:
+                    cover_path = await content.get_path()
+                except Exception:
+                    cover_path = None
+                break
+        try:
+            image_path = await render(
+                lyrics["text"],
+                platform_key=platform_key,
+                platform_display_name=result.platform.display_name,
+                song_title=str(lyrics.get("title") or result.title or "未知歌曲"),
+                artists=lyrics.get("artists")
+                or (result.author.name if result.author else None),
+                album=lyrics.get("album"),
+                duration_seconds=lyrics.get("duration_seconds"),
+                release_text=lyrics.get("release_text"),
+                cover_path=cover_path,
+            )
+            if image_path:
+                await event.send(
+                    event.chain_result([self._image_from_path(Path(image_path))])
+                )
+        except Exception as exc:
+            logger.error(f"歌词卡片生成或发送失败，已跳过: {exc}")
 
     async def _send_parse_result(
         self,
