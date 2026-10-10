@@ -1627,13 +1627,32 @@ class KugouMusicParser(PlaylistParserBase):
         text = re.sub(r"<[^>]+>", "", match.group(1))
         return _clean_text(text)
 
-    async def _fetch_kugou_song_info(self, song_hash: str) -> Mapping[str, Any]:
+    async def _fetch_kugou_song_info(
+        self,
+        song_hash: str,
+        *,
+        encode_album_audio_id: str | None = None,
+        album_id: str | None = None,
+        album_audio_id: str | None = None,
+        referer: str | None = None,
+    ) -> Mapping[str, Any]:
         request_url = (
-            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
-            + song_hash
+            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=" + song_hash
         )
+        cookie = self._kugou_cookie_header(request_url)
+        web_info = await self._fetch_kugou_web_song_info(
+            song_hash,
+            cookie=cookie,
+            encode_album_audio_id=encode_album_audio_id,
+            album_id=album_id,
+            album_audio_id=album_audio_id,
+            referer=referer,
+        )
+        if web_info:
+            return web_info
+
         headers = {"Referer": self._MOBILE_REFERER}
-        if cookie := self._kugou_cookie_header(request_url):
+        if cookie:
             headers["Cookie"] = cookie
         try:
             payload = await self._json_request(
@@ -1644,6 +1663,118 @@ class KugouMusicParser(PlaylistParserBase):
             return {}
         return payload if isinstance(payload, Mapping) else {}
 
+    @staticmethod
+    def _kugou_nested_cookie_values(value: str) -> dict[str, str]:
+        """Read the account fields embedded in Kugou's ``KuGoo`` cookie."""
+
+        nested = value
+        values: dict[str, list[str]] = {}
+        for _ in range(3):
+            nested = re.sub(r"%3[dD]", "=", nested)
+            nested = re.sub(r"%26", "&", nested, flags=re.IGNORECASE)
+            values = parse_qs(nested, keep_blank_values=True)
+            if "KugooID" in values or "t" in values:
+                break
+            nested = re.sub(r"%25", "%", nested, flags=re.IGNORECASE)
+        return {key: items[0] for key, items in values.items() if items}
+
+    @classmethod
+    def _kugou_web_play_params(
+        cls,
+        cookie: str,
+        *,
+        song_hash: str,
+        encode_album_audio_id: str | None = None,
+        album_id: str | None = None,
+        album_audio_id: str | None = None,
+    ) -> dict[str, str] | None:
+        """Build the signed web-player request from the browser cookies."""
+
+        cookies: dict[str, str] = {}
+        for item in cookie.split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name:
+                cookies.setdefault(name, value)
+        account = cls._kugou_nested_cookie_values(cookies.get("KuGoo", ""))
+        user_id = account.get("KugooID") or cookies.get("KugooID", "")
+        token = account.get("t") or cookies.get("t", "")
+        if not user_id and not token:
+            return None
+
+        mid = cookies.get("kg_mid") or str(int(time.time() * 1000))
+        identifiers: dict[str, object] = {}
+        if encode_album_audio_id:
+            # The desktop player prefers this encoded ID over hash/album IDs.
+            identifiers["encode_album_audio_id"] = encode_album_audio_id
+        else:
+            if song_hash:
+                identifiers["hash"] = song_hash
+            if album_id:
+                identifiers["album_id"] = album_id
+            if album_audio_id:
+                identifiers["album_audio_id"] = album_audio_id
+
+        return cls._signed_params(
+            {
+                "appid": 1014,
+                "dfid": cookies.get("kg_dfid") or "-",
+                "mid": mid,
+                "uuid": mid,
+                "token": token,
+                "userid": user_id or "0",
+                "platid": 4,
+                **identifiers,
+            }
+        )
+
+    async def _fetch_kugou_web_song_info(
+        self,
+        song_hash: str,
+        *,
+        cookie: str,
+        encode_album_audio_id: str | None = None,
+        album_id: str | None = None,
+        album_audio_id: str | None = None,
+        referer: str | None = None,
+    ) -> Mapping[str, Any]:
+        if not cookie:
+            return {}
+        params = self._kugou_web_play_params(
+            cookie,
+            song_hash=song_hash,
+            encode_album_audio_id=encode_album_audio_id,
+            album_id=album_id,
+            album_audio_id=album_audio_id,
+        )
+        if not params:
+            return {}
+
+        request_url = "https://wwwapi.kugou.com/play/songinfo?" + urlencode(params)
+        try:
+            payload = await self._json_request(
+                request_url,
+                headers={
+                    "Referer": referer or "https://www.kugou.com/",
+                    "Cookie": cookie,
+                },
+            )
+        except ParseException:
+            return {}
+        if not isinstance(payload, Mapping):
+            return {}
+        if str(payload.get("status")) != "1" or str(payload.get("err_code", 0)) != "0":
+            return {}
+
+        data = payload.get("data")
+        if not isinstance(data, Mapping):
+            return {}
+        play_url = _first_text(data, "play_url", "url")
+        if not play_url:
+            return {}
+        info = dict(data)
+        info.setdefault("url", play_url)
+        return info
+
     async def _kugou_single_result(
         self,
         *,
@@ -1653,9 +1784,15 @@ class KugouMusicParser(PlaylistParserBase):
         album_name: str | None = None,
     ) -> ParseResult:
         fallback = fallback if isinstance(fallback, Mapping) else {}
-        info = await self._fetch_kugou_song_info(song_hash)
+        info = await self._fetch_kugou_song_info(
+            song_hash,
+            encode_album_audio_id=_first_text(fallback, "encode_album_audio_id"),
+            album_id=_first_text(fallback, "album_id"),
+            album_audio_id=_first_text(fallback, "album_audio_id"),
+            referer=source_url,
+        )
         title = (
-            _first_text(info, "songName", "fileName")
+            _first_text(info, "songName", "song_name", "fileName", "audio_name")
             or _first_text(fallback, "song_name", "audio_name")
             or "未命名歌曲"
         )
@@ -1667,17 +1804,20 @@ class KugouMusicParser(PlaylistParserBase):
         cover = _cover_url(
             info.get("album_img")
             or info.get("imgUrl")
+            or info.get("img")
+            or info.get("sizable_cover")
             or fallback.get("album_img")
         )
         extra = info.get("extra")
         extra = extra if isinstance(extra, Mapping) else {}
         duration = (
             info.get("timeLength")
+            or info.get("timelength")
             or extra.get("320timelength")
             or extra.get("128timelength")
             or fallback.get("timelength")
         )
-        audio_url = _first_text(info, "url", "play_url")
+        audio_url = _first_text(info, "url", "play_url", "play_backup_url")
         audio_headers = dict(self.headers)
         if audio_url and (cookie := self._kugou_cookie_header(audio_url)):
             audio_headers["Cookie"] = cookie
@@ -1689,7 +1829,7 @@ class KugouMusicParser(PlaylistParserBase):
             duration=duration,
             url=source_url,
             identifier=(
-                _first_text(info, "album_audio_id", "audio_id")
+                _first_text(info, "encode_album_audio_id", "album_audio_id", "audio_id")
                 or _first_text(fallback, "mixsongid", "encode_album_audio_id")
                 or song_hash
             ),

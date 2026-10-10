@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -802,6 +803,117 @@ def test_kugou_track_uses_cookie_and_marks_audio_as_onebot_voice():
     assert requests[0][1]["headers"]["Cookie"] == "KUGOUID=member-session"
     assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == (
         "KUGOUID=member-session"
+    )
+
+
+def test_kugou_member_cookie_uses_signed_web_player_endpoint():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(kugou=SimpleNamespace(use_proxy=False)),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {"User-Agent": "test"}
+        cookie = (
+            "kg_mid=test-mid; kg_dfid=test-dfid; "
+            "KuGoo=KugooID%3D12345%26t%3Dmember-token%26NickName%3D%ZZ"
+        )
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: cookie
+        )
+        requests = []
+
+        async def get_song_info(url, **kwargs):
+            requests.append((url, kwargs))
+            return {
+                "status": 1,
+                "err_code": 0,
+                "data": {
+                    "song_name": "Member track",
+                    "author_name": "Member artist",
+                    "play_url": "https://cdn.kugou.com/member-song.mp3",
+                    "timelength": 180,
+                },
+            }
+
+        parser._json_request = get_song_info
+        source_url = "https://www.kugou.com/mixsong/test.html"
+        result = await parser._kugou_single_result(
+            source_url=source_url,
+            song_hash="test-hash",
+            fallback={
+                "encode_album_audio_id": "encoded-member-id",
+                "album_id": "test-album",
+            },
+        )
+        return parser, cookie, source_url, result, requests
+
+    parser, cookie, source_url, result, requests = asyncio.run(build())
+
+    assert len(requests) == 1
+    request_url, request_kwargs = requests[0]
+    assert request_url.startswith("https://wwwapi.kugou.com/play/songinfo?")
+    params = parse_qs(urlparse(request_url).query)
+    assert params["appid"] == ["1014"]
+    assert params["platid"] == ["4"]
+    assert params["userid"] == ["12345"]
+    assert params["token"] == ["member-token"]
+    assert params["dfid"] == ["test-dfid"]
+    assert params["mid"] == ["test-mid"]
+    assert params["encode_album_audio_id"] == ["encoded-member-id"]
+    assert "hash" not in params
+    unsigned = {key: values[0] for key, values in params.items() if key != "signature"}
+    assert params["signature"] == [KugouMusicParser._signature(unsigned)]
+    assert request_kwargs["headers"]["Cookie"] == cookie
+    assert request_kwargs["headers"]["Referer"] == source_url
+    assert result.title == "Member track"
+    assert result.extra["audio_as_voice"] is True
+    assert result.extra["audio_send_url"] == "https://cdn.kugou.com/member-song.mp3"
+    assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == cookie
+
+
+def test_kugou_web_player_without_audio_falls_back_to_legacy_endpoint():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(kugou=SimpleNamespace(use_proxy=False)),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {"User-Agent": "test"}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: (
+                "KuGoo=KugooID%3D12345%26t%3Dmember-token"
+            )
+        )
+        requests = []
+
+        async def get_song_info(url, **kwargs):
+            requests.append(url)
+            if url.startswith("https://wwwapi.kugou.com/"):
+                return {"status": 1, "err_code": 0, "data": {"song_name": "Track"}}
+            return {
+                "songName": "Track",
+                "url": "https://cdn.kugou.com/fallback.mp3",
+            }
+
+        parser._json_request = get_song_info
+        result = await parser._kugou_single_result(
+            source_url="https://www.kugou.com/mixsong/test.html",
+            song_hash="test-hash",
+            fallback={"encode_album_audio_id": "encoded-id"},
+        )
+        return parser, result, requests
+
+    parser, result, requests = asyncio.run(build())
+
+    assert len(requests) == 2
+    assert requests[0].startswith("https://wwwapi.kugou.com/play/songinfo?")
+    assert requests[1].startswith("https://m.kugou.com/app/i/getSongInfo.php?")
+    assert result.extra["audio_send_url"] == "https://cdn.kugou.com/fallback.mp3"
+    assert parser.downloader.audio_requests[0]["url"] == (
+        "https://cdn.kugou.com/fallback.mp3"
     )
 
 
