@@ -19,12 +19,12 @@
       color-scheme: light;
       font-family: "Douyin Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display",
         "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      --page-bg: #f5f5f7;
-      --card-bg: #ffffff;
-      --text: #1d1d1f;
-      --secondary: #515154;
-      --muted: #6e6e73;
-      --divider: #e8e8ed;
+      --page-bg: #F6F6F6;
+      --card-bg: #F6F6F6;
+      --text: #393747;
+      --secondary: #5F5D73;
+      --muted: #6F6D85;
+      --divider: #FFC7C7;
       --accent: {{ accent_color or '#e93345' }};
       --accent-deep: {{ accent_deep or '#b81f32' }};
       --accent-soft: {{ accent_soft or '#fff1f3' }};
@@ -61,8 +61,8 @@
       padding: 26px 40px 30px;
       background:
         radial-gradient(circle at 96% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 35%),
-        linear-gradient(145deg, #fff7f8 0%, #ffffff 76%);
-      border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, transparent);
+        linear-gradient(145deg, #FFE2E2 0%, #F6F6F6 76%);
+      border-bottom: 1px solid #FFC7C7;
     }
 
     .brand-line {
@@ -78,7 +78,7 @@
       width: 46px;
       height: 46px;
       overflow: hidden;
-      background: #fff;
+      background: #F6F6F6;
       border: 1px solid rgba(0, 0, 0, .08);
       border-radius: 14px;
       box-shadow: 0 6px 15px rgba(29, 29, 31, .12), 0 1px 4px rgba(29, 29, 31, .05);
@@ -130,9 +130,9 @@
       align-items: center;
       height: 25px;
       padding: 0 10px;
-      color: var(--accent-deep);
-      background: color-mix(in srgb, var(--accent) 9%, transparent);
-      border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
+      color: #4D4B63;
+      background: #FFC7C7;
+      border: 1px solid #FFC7C7;
       border-radius: 999px;
       font-size: 12px;
       font-weight: 650;
@@ -208,7 +208,7 @@
       align-items: center;
       gap: 7px;
       margin-top: 19px;
-      color: var(--accent-deep);
+      color: #5F5D73;
       font-size: 13px;
       font-weight: 650;
       letter-spacing: .01em;
@@ -217,9 +217,9 @@
     .source-note__dot {
       width: 8px;
       height: 8px;
-      background: var(--accent);
+      background: #8785A2;
       border-radius: 50%;
-      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+      box-shadow: 0 0 0 4px #FFE2E2;
     }
 
     .lyrics-section {
@@ -252,8 +252,8 @@
 
     .lyric-sheet {
       padding: 21px 24px 23px;
-      background: rgba(245, 245, 247, .78);
-      border: 1px solid rgba(0, 0, 0, .06);
+      background: #FFE2E2;
+      border: 1px solid #FFC7C7;
       border-radius: 23px;
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, .72);
       backdrop-filter: blur(18px) saturate(120%);
@@ -274,7 +274,7 @@
     .lyric-line--stanza { margin-top: 13px; }
 
     .lyric-time {
-      color: #a1a1a8;
+      color: #6F6D85;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 10px;
       font-variant-numeric: tabular-nums;
@@ -320,7 +320,7 @@
     }
 
     @media (prefers-reduced-transparency: reduce) {
-      .lyric-sheet { background: #f5f5f7; backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .lyric-sheet { background: #FFE2E2; backdrop-filter: none; -webkit-backdrop-filter: none; }
     }
 
     @media (prefers-contrast: more) {

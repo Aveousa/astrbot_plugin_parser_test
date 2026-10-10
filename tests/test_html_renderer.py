@@ -988,6 +988,13 @@ def test_lyrics_card_renders_song_metadata_and_normalized_lrc(
     assert "3:37" in html
     assert "00:07" in html
     assert "第一句" in html
+    assert "--page-bg: #F6F6F6" in html
+    assert "linear-gradient(145deg, #FFE2E2 0%, #F6F6F6 76%)" in html
+    assert "background: #FFE2E2" in html
+    assert (
+        "radial-gradient(circle at 96% 0%, "
+        "color-mix(in srgb, var(--accent) 13%, transparent), transparent 35%)"
+    ) in html
     assert "lyrics_card" not in renderer.available_templates()
 
 
