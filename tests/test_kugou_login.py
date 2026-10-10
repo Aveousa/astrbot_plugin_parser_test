@@ -103,15 +103,18 @@ def _response(status: str, data: dict, *, set_cookie: list[str] | None = None):
 
 def test_kugou_aes_token_encryption_matches_web_format():
     key, encrypted = KugouMusicLogin._aes_encrypt_token("secret-token", "0123456789ABCDEF")
+    key_digest = hashlib.md5(key.encode("ascii")).hexdigest()
 
     decryptor = Cipher(
-        algorithms.AES(key.encode("ascii")), modes.CBC(key.encode("ascii"))
+        algorithms.AES(key_digest.encode("ascii")),
+        modes.CBC(key_digest[-16:].encode("ascii")),
     ).decryptor()
     padded = decryptor.update(bytes.fromhex(encrypted)) + decryptor.finalize()
     unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
     plaintext = unpadder.update(padded) + unpadder.finalize()
 
     assert json.loads(plaintext) == {"token": "secret-token"}
+    assert encrypted == "c2700fbdc232e744c23768c2e5f80ff594b5996e084cce1fbb8e1519b184d0f2"
 
 
 def test_kugou_rsa_uses_web_clients_no_padding_byte_layout():

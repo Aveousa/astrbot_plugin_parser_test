@@ -190,16 +190,22 @@ class KugouMusicLogin:
 
     @classmethod
     def _aes_encrypt_token(cls, token: str, key: str | None = None) -> tuple[str, str]:
-        """Match Kugou's AES-CBC/PKCS7 token wrapper (key is also the IV)."""
+        """Match the AES key/IV derivation used by Kugou's web login client."""
 
         key = key or "".join(secrets.choice(cls._KEY_ALPHABET) for _ in range(16))
         key_bytes = key.encode("ascii")
+        # The official wrapper hashes the random key with MD5, then passes
+        # the 32-character hex digest through CryptoJS Latin1.parse for the
+        # AES-256 key; its final 16 characters are the CBC IV.
+        key_digest = hashlib.md5(key_bytes).hexdigest()
+        aes_key = key_digest.encode("ascii")
+        iv = key_digest[-16:].encode("ascii")
         if len(key_bytes) != 16:
             raise ValueError("酷狗登录 AES key 必须是 16 个 ASCII 字符")
         plaintext = json.dumps({"token": token}, separators=(",", ":")).encode("utf-8")
         padder = padding.PKCS7(algorithms.AES.block_size).padder()
         padded = padder.update(plaintext) + padder.finalize()
-        encryptor = Cipher(algorithms.AES(key_bytes), modes.CBC(key_bytes)).encryptor()
+        encryptor = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).encryptor()
         ciphertext = encryptor.update(padded) + encryptor.finalize()
         return key, ciphertext.hex()
 
