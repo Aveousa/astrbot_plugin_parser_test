@@ -1558,6 +1558,14 @@ class KugouMusicParser(PlaylistParserBase):
     platform = Platform(name="kugou", display_name="酷狗音乐")
     _KUGOU_SECRET = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
     _MOBILE_REFERER = "https://m.kugou.com/"
+    _WEB_PLAY_URL = "https://wwwapi.kugou.com/play/songinfo"
+    # This restricted track is used only for a lightweight, read-only startup
+    # check of the web-player credentials; media bytes are never downloaded.
+    _COOKIE_CHECK_TRACK = {
+        "hash": "DEC2BFFC693EFC0895809F0952244048",
+        "album_id": "631501",
+        "album_audio_id": "h8z8288",
+    }
 
     def __init__(self, config, downloader):
         super().__init__(config, downloader)
@@ -1575,6 +1583,73 @@ class KugouMusicParser(PlaylistParserBase):
         if callable(getter):
             return str(getter(url) or "")
         return str(getattr(cookiejar, "cookies_str", "") or "")
+
+    @classmethod
+    def _kugou_account_credentials(cls, cookie: str) -> tuple[str, str]:
+        cookies: dict[str, str] = {}
+        for item in cookie.split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name:
+                cookies.setdefault(name, value)
+        account = cls._kugou_nested_cookie_values(cookies.get("KuGoo", ""))
+        user_id = account.get("KugooID") or cookies.get("KugooID", "")
+        token = account.get("t") or cookies.get("t", "")
+        return user_id.strip(), token.strip()
+
+    def has_cookie(self) -> bool:
+        """Whether any Kugou Cookie was configured for the web player."""
+
+        return bool(self._kugou_cookie_header(self._WEB_PLAY_URL))
+
+    def has_auth_credentials(self) -> bool:
+        """Whether the Cookie contains both account identity and auth token."""
+
+        cookie = self._kugou_cookie_header(self._WEB_PLAY_URL)
+        user_id, token = self._kugou_account_credentials(cookie)
+        return bool(user_id and token)
+
+    async def check_cookie(self) -> bool | None:
+        """Check whether Kugou's signed web-player API accepts the account token.
+
+        ``True`` means the service returned a playable URL for the restricted
+        track probe, ``False`` means the request was rejected or no playable
+        URL was granted, and ``None`` means the endpoint could not be checked
+        (for example, a transient network or response-format error).
+        """
+
+        cookie = self._kugou_cookie_header(self._WEB_PLAY_URL)
+        params = self._kugou_web_play_params(
+            cookie,
+            song_hash=self._COOKIE_CHECK_TRACK["hash"],
+            album_id=self._COOKIE_CHECK_TRACK["album_id"],
+            album_audio_id=self._COOKIE_CHECK_TRACK["album_audio_id"],
+        )
+        if not params:
+            return False
+
+        try:
+            payload = await self._json_request(
+                self._WEB_PLAY_URL + "?" + urlencode(params),
+                headers={
+                    "Referer": "https://m.kugou.com/share/",
+                    "Cookie": cookie,
+                },
+            )
+        except ParseException:
+            return None
+
+        if not isinstance(payload, Mapping):
+            return None
+        status = str(payload.get("status", ""))
+        error_code = str(payload.get("err_code", ""))
+        if status == "1" and error_code == "0":
+            data = payload.get("data")
+            return isinstance(data, Mapping) and bool(
+                _first_text(data, "play_url", "url")
+            )
+        if status in {"0", "-1"} or (error_code and error_code != "0"):
+            return False
+        return None
 
     @staticmethod
     def _signature(params: Mapping[str, object], body: str = "") -> str:
@@ -1695,10 +1770,8 @@ class KugouMusicParser(PlaylistParserBase):
             name, separator, value = item.strip().partition("=")
             if separator and name:
                 cookies.setdefault(name, value)
-        account = cls._kugou_nested_cookie_values(cookies.get("KuGoo", ""))
-        user_id = account.get("KugooID") or cookies.get("KugooID", "")
-        token = account.get("t") or cookies.get("t", "")
-        if not user_id and not token:
+        user_id, token = cls._kugou_account_credentials(cookie)
+        if not user_id or not token:
             return None
 
         mid = cookies.get("kg_mid") or str(int(time.time() * 1000))

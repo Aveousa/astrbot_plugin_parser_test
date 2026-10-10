@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from core.data import AudioContent
+from core.exception import ParseException
 from core.parsers.music import (
     AppleMusicParser,
     KugouMusicParser,
@@ -871,6 +872,71 @@ def test_kugou_member_cookie_uses_signed_web_player_endpoint():
     assert result.extra["audio_as_voice"] is True
     assert result.extra["audio_send_url"] == "https://cdn.kugou.com/member-song.mp3"
     assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == cookie
+
+
+def test_kugou_cookie_check_uses_signed_restricted_track_probe():
+    async def check(payload):
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        cookie = (
+            "kg_mid=test-mid; kg_dfid=test-dfid; "
+            "KuGoo=KugooID%3D12345%26t%3Dmember-token"
+        )
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: cookie
+        )
+        requests = []
+
+        async def json_request(url, *, headers):
+            requests.append((url, headers))
+            return payload
+
+        parser._json_request = json_request
+        result = await parser.check_cookie()
+        return parser, cookie, result, requests
+
+    parser, cookie, accepted, requests = asyncio.run(
+        check({"status": 1, "err_code": 0, "data": {"play_url": "ignored"}})
+    )
+    _, _, rejected, rejected_requests = asyncio.run(
+        check({"status": 0, "err_code": 30020})
+    )
+    _, _, no_audio, _ = asyncio.run(
+        check({"status": 1, "err_code": 0, "data": {"song_name": "Track"}})
+    )
+
+    assert parser.has_cookie() is True
+    assert parser.has_auth_credentials() is True
+    assert accepted is True
+    assert rejected is False
+    assert no_audio is False
+    request_url, headers = requests[0]
+    assert request_url.startswith("https://wwwapi.kugou.com/play/songinfo?")
+    params = parse_qs(urlparse(request_url).query)
+    assert params["userid"] == ["12345"]
+    assert params["token"] == ["member-token"]
+    assert params["hash"] == [KugouMusicParser._COOKIE_CHECK_TRACK["hash"]]
+    unsigned = {key: values[0] for key, values in params.items() if key != "signature"}
+    assert params["signature"] == [KugouMusicParser._signature(unsigned)]
+    assert headers["Cookie"] == cookie
+    assert rejected_requests[0][1]["Cookie"] == cookie
+
+
+def test_kugou_cookie_check_does_not_treat_transport_failure_as_invalid_cookie():
+    async def check():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: (
+                "KuGoo=KugooID%3D12345%26t%3Dmember-token"
+            )
+        )
+
+        async def fail_request(_url, *, headers):
+            raise ParseException("offline")
+
+        parser._json_request = fail_request
+        return await parser.check_cookie()
+
+    assert asyncio.run(check()) is None
 
 
 def test_kugou_web_player_without_audio_falls_back_to_legacy_endpoint():

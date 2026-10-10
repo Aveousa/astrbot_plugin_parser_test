@@ -179,3 +179,27 @@ def test_matching_creates_a_parse_cache_directory(tmp_path: Path):
     assert result.cache_dir is not None
     assert result.cache_dir.parent == tmp_path / "cache"
     assert result.cache_dir.is_dir()
+
+
+def test_initialize_checks_kugou_cookie_after_registering_parsers(monkeypatch):
+    main_module = _load_main_module()
+    calls: list[str] = []
+
+    async def complete(name: str):
+        calls.append(name)
+
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    plugin.cleaner = SimpleNamespace(
+        clean_stale_playwright_profiles=lambda: complete("clean")
+    )
+    plugin.renderer = SimpleNamespace(start=lambda: complete("renderer"))
+    plugin._register_parser = lambda: calls.append("register")
+    plugin._check_qqmusic_cookie = lambda: complete("qq-cookie")
+    plugin._check_kugou_cookie = lambda: complete("kugou-cookie")
+    monkeypatch.setattr(
+        main_module.Renderer, "load_resources", staticmethod(lambda: None)
+    )
+
+    asyncio.run(plugin.initialize())
+
+    assert calls == ["clean", "renderer", "register", "qq-cookie", "kugou-cookie"]

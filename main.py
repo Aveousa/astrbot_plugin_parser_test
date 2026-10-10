@@ -60,6 +60,7 @@ class ParserPlugin(Star):
         # 注册解析器
         self._register_parser()
         await self._check_qqmusic_cookie()
+        await self._check_kugou_cookie()
 
     async def _check_qqmusic_cookie(self):
         """Check the QQ Music Cookie once after enabled parsers are registered."""
@@ -82,6 +83,41 @@ class ParserPlugin(Star):
                 logger.info("[QQ音乐] Cookie 检查通过，可用于受限歌曲音频")
             else:
                 logger.warning("[QQ音乐] Cookie 检查未通过，受限歌曲可能无法获取音频")
+
+    async def _check_kugou_cookie(self):
+        """Check configured Kugou account credentials after parser registration."""
+
+        kugou_parsers = {
+            parser
+            for parser in self.parser_map.values()
+            if isinstance(parser, KugouMusicParser)
+        }
+        for parser in kugou_parsers:
+            if not parser.has_cookie():
+                logger.info("[酷狗音乐] 未配置 Cookie，跳过 Cookie 可用性检查")
+                continue
+            if not parser.has_auth_credentials():
+                logger.warning(
+                    "[酷狗音乐] Cookie 缺少账号字段；会员播放至少需要 KugooID 和 t（通常位于 KuGoo 内）"
+                )
+                continue
+            try:
+                available = await parser.check_cookie()
+            except Exception:
+                # Do not log request exceptions here: a third-party error may
+                # contain the signed URL, which includes the account token.
+                logger.warning("[酷狗音乐] Cookie 检查请求异常，暂时无法确认账号状态")
+                continue
+            if available is True:
+                logger.info(
+                    "[酷狗音乐] Cookie 检查通过，酷狗服务端接受了会员播放请求"
+                )
+            elif available is False:
+                logger.warning(
+                    "[酷狗音乐] Cookie 检查未通过；请检查登录是否过期及账号会员权限"
+                )
+            else:
+                logger.warning("[酷狗音乐] Cookie 检查暂不可用，无法确认登录状态")
 
     async def terminate(self):
         """插件卸载时触发"""
