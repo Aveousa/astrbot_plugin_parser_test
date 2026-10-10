@@ -374,6 +374,82 @@ def test_aweme_detail_schema_decodes_motion_photo_metadata():
     assert image.video.play_addr_h264.uri == "live-video-id"
 
 
+def test_mobile_aweme_detail_endpoint_parses_motion_photo_response():
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class Headers:
+        def getall(self, _name: str, default=None):
+            return [] if default is None else default
+
+    class Response:
+        status = 200
+        headers = Headers()
+
+        async def read(self) -> bytes:
+            return msgspec.json.encode(
+                {
+                    "status_code": 0,
+                    "aweme_detail": {
+                        "create_time": 0,
+                        "author": {"nickname": "tester"},
+                        "desc": "live photo",
+                        "images": [
+                            {
+                                "clip_type": 5,
+                                "url_list": ["https://example.com/cover.jpeg"],
+                                "video": {
+                                    "duration": 2500,
+                                    "play_addr_h264": {
+                                        "uri": "live-video-id",
+                                        "url_list": ["https://example.com/live.mp4"],
+                                    },
+                                },
+                            }
+                        ],
+                    },
+                }
+            )
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Session:
+        closed = False
+
+        def get(self, url: str, *, headers: dict[str, str]):
+            calls.append((url, headers))
+            return Response()
+
+    parser = object.__new__(DouyinParser)
+    parser.mycfg = SimpleNamespace(
+        worker_proxy_enabled=False,
+        worker_proxy_url="",
+    )
+    parser.android_headers = {"User-Agent": "android-agent"}
+    parser._session = Session()
+    parser.cookiejar = SimpleNamespace(
+        get_cookie_header_for_url=lambda _url: "sessionid=test-cookie",
+        update_from_response=lambda _headers: None,
+    )
+    parser._set_cookies = lambda: None
+
+    detail = asyncio.run(parser._fetch_mobile_aweme_detail("1234567890123456789"))
+
+    assert detail is not None
+    assert detail.images[0].clip_type == 5
+    assert detail.images[0].video.play_addr_h264.uri == "live-video-id"
+    assert len(calls) == 1
+    url, headers = calls[0]
+    assert url.startswith("https://www.douyin.com/aweme/v1/aweme/detail/?")
+    assert "aweme_id=1234567890123456789" in url
+    assert "a_bogus=" not in url
+    assert headers["Cookie"] == "sessionid=test-cookie"
+    assert headers["User-Agent"] == "android-agent"
+
+
 def test_slides_dynamic_urls_exclude_motion_photo_clips():
     live = SlidesImage(
         clip_type=5,

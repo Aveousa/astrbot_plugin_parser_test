@@ -782,6 +782,71 @@ class DouyinParser(BaseParser):
             }
         return {}
 
+    async def _fetch_mobile_aweme_detail(self, aweme_id: str):
+        """Fetch rich image metadata through Douyin's compatible detail API.
+
+        The signed desktop endpoint can be rejected by Argus even when a
+        browser Cookie is present (for example, ``Uifid Not Found``). This
+        endpoint returns the same ``aweme_detail`` structure and includes the
+        per-image ``clip_type`` and live-photo video fields.
+        """
+        from .video import AwemeDetailRes
+
+        target_url = "https://www.douyin.com/aweme/v1/aweme/detail/"
+        params = {
+            "aweme_id": aweme_id,
+            "device_platform": "webapp",
+            "aid": "6383",
+        }
+        request_url, via_worker = self._worker_api_request_url(
+            f"{target_url}?{urlencode(params)}"
+        )
+
+        headers = self.android_headers.copy()
+        headers.pop("Cookie", None)
+        headers.update(
+            {
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"https://www.douyin.com/note/{aweme_id}",
+            }
+        )
+        if cookie_header := self.cookiejar.get_cookie_header_for_url(target_url):
+            headers["Cookie"] = cookie_header
+
+        try:
+            async with self.session.get(request_url, headers=headers) as resp:
+                status = resp.status
+                body = await resp.read()
+                if via_worker and status < 400:
+                    body = self._decode_worker_api_body(body)
+                elif not via_worker:
+                    self.cookiejar.update_from_response(
+                        resp.headers.getall("Set-Cookie", [])
+                    )
+                    self._set_cookies()
+        except (ClientError, TimeoutError, TypeError, ValueError) as exc:
+            logger.info(f"[抖音] 兼容详情接口请求失败: {exc}")
+            return None
+
+        if status >= 400 or not body:
+            logger.info(f"[抖音] 兼容详情接口返回 HTTP {status}")
+            return None
+
+        try:
+            response = msgspec.json.decode(body, type=AwemeDetailRes)
+        except msgspec.DecodeError as exc:
+            logger.info(f"[抖音] 兼容详情接口响应无法解析: {exc}")
+            return None
+
+        if response.status_code == 0 and response.aweme_detail:
+            return response.aweme_detail
+
+        logger.info(
+            "[抖音] 兼容详情接口无作品数据: "
+            f"status_code={response.status_code}"
+        )
+        return None
+
     async def fetch_signed_aweme_detail(self, aweme_id: str):
         """使用已配置的登录 Cookie 获取完整图文与实况媒体字段。"""
         desktop_url = "https://www.douyin.com/"
@@ -890,6 +955,9 @@ class DouyinParser(BaseParser):
                 failure_reason = f"无作品数据, status_code={response.status_code}"
 
             if attempt == 0:
+                if mobile_detail := await self._fetch_mobile_aweme_detail(aweme_id):
+                    logger.info("[抖音] 已通过兼容详情接口补全图文媒体数据")
+                    return mobile_detail
                 logger.info(
                     f"[抖音] 登录详情接口返回{failure_reason}，"
                     "尝试初始化 Web 会话后重试"
@@ -898,6 +966,10 @@ class DouyinParser(BaseParser):
                     continue
                 logger.info("[抖音] Web 会话初始化失败，保留分享页静态数据")
                 return None
+
+            if mobile_detail := await self._fetch_mobile_aweme_detail(aweme_id):
+                logger.info("[抖音] 已通过兼容详情接口补全图文媒体数据")
+                return mobile_detail
 
             logger.info(
                 f"[抖音] 登录详情接口重试后仍返回{failure_reason}，"
