@@ -15,6 +15,8 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
+from .core.apple_music_backend import AppleMusicBackend
+from .core.apple_music_web import AppleMusicWeb
 from .core.cache import cache_dir_scope, create_parse_cache_dir
 from .core.clean import CacheCleaner
 from .core.config import PluginConfig
@@ -46,6 +48,8 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
+        self.apple_music_backend = AppleMusicBackend(self.cfg)
+        self.apple_music_web = AppleMusicWeb(self.apple_music_backend, self.cfg._plugin_name)
 
     async def initialize(self):
         """加载、重载插件时触发"""
@@ -59,6 +63,9 @@ class ParserPlugin(Star):
         await self.renderer.start()
         # 注册解析器
         self._register_parser()
+        web = getattr(self, "apple_music_web", None)
+        if web is not None and not web.register(self.context):
+            logger.info("[Apple Music] 当前 AstrBot 未提供 Plugin Pages Web API，保留信息卡片解析")
         await self._check_qqmusic_cookie()
         await self._check_kugou_cookie()
 
@@ -121,6 +128,8 @@ class ParserPlugin(Star):
 
     async def terminate(self):
         """插件卸载时触发"""
+        await self.apple_music_web.close()
+        await self.apple_music_backend.close()
         # 关下载器里的会话
         await self.downloader.close()
         # 关所有解析器里的会话 (去重后的实例)
@@ -153,6 +162,8 @@ class ParserPlugin(Star):
 
             # 一个平台一个 parser 实例
             parser = cls(self.cfg, self.downloader)
+            if platform_name == "applemusic":
+                parser.apple_music_backend = getattr(self, "apple_music_backend", None)
 
             # 关键词 → parser
             for keyword, _ in cls._key_patterns:

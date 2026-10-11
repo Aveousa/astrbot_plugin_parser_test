@@ -79,6 +79,12 @@
     "__template_key": "applemusic",
     "enable": true,
     "use_proxy": false,
+    "backend_enabled": false,
+    "return_audio": false,
+    "wrapper_url": "http://127.0.0.1:80",
+    "wrapper_decrypt_host": "127.0.0.1",
+    "wrapper_decrypt_port": 10020,
+    "gamdl_python": "",
     "show_playlist_cover": true,
     "show_playlist_url": true
   }

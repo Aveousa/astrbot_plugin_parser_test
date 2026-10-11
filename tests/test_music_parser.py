@@ -1044,7 +1044,8 @@ def _apple_music_html(sections, structured_data=None):
     return html
 
 
-def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=True):
+def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=True,
+                           backend=None, return_audio=False, metadata_only=False):
     async def build():
         requests = []
 
@@ -1071,18 +1072,44 @@ def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=
         parser.cfg = SimpleNamespace(
             card_enabled=True,
             parser=SimpleNamespace(
-                applemusic=SimpleNamespace(use_proxy=False, show_playlist_url=show_url)
+                applemusic=SimpleNamespace(use_proxy=False, show_playlist_url=show_url,
+                                           return_audio=return_audio)
             ),
         )
         parser.headers = {"User-Agent": "test"}
         parser.downloader = _Downloader()
         parser._session = _Session()
+        parser.apple_music_backend = backend
         keyword, searched = parser.search_url(url)
-        result = await parser.parse(keyword, searched)
+        result = (await parser._handle_track(searched, metadata_only=True)
+                  if metadata_only else await parser.parse(keyword, searched))
         await asyncio.gather(*(content.get_path() for content in result.contents))
         return parser, result, requests
 
     return asyncio.run(build())
+
+
+@pytest.mark.parametrize("enabled,return_audio,metadata_only,expected", [
+    (True, True, False, True), (False, True, False, False),
+    (True, False, False, False), (True, True, True, False),
+])
+def test_apple_music_optional_backend_preserves_default_cards(enabled, return_audio, metadata_only, expected):
+    calls = []
+    def download_task(url, duration):
+        calls.append((url, duration))
+        async def complete():
+            return Path("track.m4a")
+        return asyncio.create_task(complete())
+    backend = SimpleNamespace(settings=SimpleNamespace(enabled=enabled), download_task=download_task)
+    _, result, _ = _parse_apple_music_html(
+        _apple_music_html([], _apple_music_json_ld()),
+        backend=backend, return_audio=return_audio, metadata_only=metadata_only,
+    )
+    assert bool(calls) is expected
+    assert any(isinstance(content, AudioContent) for content in result.contents) is expected
+    assert result.extra["duration"] == 306
+    if metadata_only:
+        assert result.contents == []
 
 
 @pytest.mark.parametrize(

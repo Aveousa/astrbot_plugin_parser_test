@@ -169,6 +169,11 @@ class ParserItem(ConfigNode):
     return_audio: bool | None
     parse_lyrics: bool | None
     audio_api_base: str | None
+    backend_enabled: bool | None
+    wrapper_url: str | None
+    wrapper_decrypt_host: str | None
+    wrapper_decrypt_port: int | None
+    gamdl_python: str | None
     max_page: int | None
 
     @property

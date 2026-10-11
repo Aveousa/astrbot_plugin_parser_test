@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 from aiohttp import ClientError
 
 from ..cookie import CookieJar
-from ..data import ImageContent, ParseResult, Platform
+from ..data import AudioContent, ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
@@ -635,13 +635,14 @@ class PlaylistParserBase(BaseParser):
         audio_url: str | None = None,
         audio_headers: Mapping[str, str] | None = None,
         stats: Mapping[str, object] | None = None,
+        download_cover: bool = True,
     ) -> ParseResult:
         """Build the common card/audio representation for a single song."""
 
         duration_value = _duration_seconds(duration)
 
         contents = (
-            self.create_image_contents([cover], headers=self.headers) if cover else []
+            self.create_image_contents([cover], headers=self.headers) if cover and download_cover else []
         )
         if audio_url and audio_url.startswith(("http://", "https://")):
             contents.append(
@@ -685,6 +686,7 @@ class PlaylistParserBase(BaseParser):
                 "card_info": "\n".join(info_lines),
                 "music_type": "track",
                 "track_id": identifier,
+                "duration": duration_value,
                 "card_preview_only": bool(cover),
                 "show_playlist_url": self._show_playlist_url(),
             },
@@ -968,7 +970,7 @@ class AppleMusicParser(PlaylistParserBase):
                 }
         return {}
 
-    async def _handle_track(self, searched):
+    async def _handle_track(self, searched, *, metadata_only=False):
         track_id = searched.group("song_id") or searched.group("track_id")
         url = "https://" + searched.group(0)
         try:
@@ -1033,7 +1035,7 @@ class AppleMusicParser(PlaylistParserBase):
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
             # Apple's serialized track-list uses milliseconds, even for short songs.
             duration /= 1000
-        return self._single_track_result(
+        result = self._single_track_result(
             title=title,
             artist_name=(
                 _first_text(track, "artistName", "artists")
@@ -1062,7 +1064,20 @@ class AppleMusicParser(PlaylistParserBase):
             ),
             url=url,
             identifier=track_id,
+            download_cover=not metadata_only,
         )
+        backend = getattr(self, "apple_music_backend", None)
+        if (
+            backend is not None
+            and not metadata_only
+            and backend.settings.enabled
+            and getattr(self.cfg.parser.applemusic, "return_audio", False)
+        ):
+            result.contents.append(AudioContent(
+                backend.download_task(url, _duration_seconds(duration or fallback.get("duration"))),
+                duration=_duration_seconds(duration or fallback.get("duration")),
+            ))
+        return result
 
     async def _handle_playlist(self, searched):
         source_url = searched.group(0)

@@ -14,10 +14,15 @@ AstrBot 链接解析插件。当前支持 Bilibili、抖音、小红书和 Pixiv
 | 抖音 | 分享短链、视频/图文链接、作品 ID | 视频、图文、实况图 |
 | 小红书 | 分享短链、`explore` / `discovery` 链接 | 视频、图文 |
 | Pixiv | 作品链接、`pid`、小说链接 | 插画、漫画、动图、小说 |
-| Apple Music | `album/...?i=歌曲ID`、`song/.../歌曲ID`、歌单链接 | 歌曲/歌单信息卡片（不获取音频） |
+| Apple Music | `album/...?i=歌曲ID`、`song/.../歌曲ID`、歌单链接 | 默认歌曲/歌单信息卡片；可选账号管理与单曲音频（实验性） |
 
 Apple Music 单曲复用现有歌曲信息卡片，展示歌名、歌手、专辑、时长和封面，
 无需 Cookie。发送信息卡片需要开启“渲染并发送信息卡片”和 Apple Music 解析器。
+
+支持 Plugin Pages 的 AstrBot 可从插件详情打开 **Apple Music 账号管理**，通过
+独立 wrapper-v2 完成账号登录和双重认证，不必手动提取 Cookie。音频使用独立的
+gamdl 环境，默认关闭，不增加核心必装依赖。部署、配置和安全限制见
+[Apple Music 管理页说明](docs/APPLE_MUSIC.md)。
 
 抖音分享页未返回完整实况字段时，插件会使用抖音解析器中配置的登录
 Cookie 补全媒体信息；建议填写有效 Cookie，以保证实况图识别和下载成功率。

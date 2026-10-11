@@ -190,6 +190,21 @@ def test_supported_parser_templates_are_exposed():
     assert {item["__template_key"] for item in defaults} == supported
 
 
+def test_apple_music_backend_is_optional_and_not_a_core_dependency():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+    apple = schema["parsers_template"]["templates"]["applemusic"]["items"]
+    template = next(item for item in defaults if item["__template_key"] == "applemusic")
+    for key in ("backend_enabled", "return_audio"):
+        assert apple[key]["default"] is False
+        assert template[key] is False
+    assert apple["gamdl_python"]["default"] == ""
+    assert "password" not in apple
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert not any("gamdl" in dependency.lower() for dependency in project["project"]["dependencies"])
+    assert (ROOT / "pages" / "apple_music" / "index.html").is_file()
+
+
 def test_douyin_exposes_dedicated_worker_proxy_settings():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))

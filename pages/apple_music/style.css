@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light;
+  --background: #fff;
+  --text: #202b3d;
+  --muted: #596778;
+  --line: #e2e7ef;
+  --accent: #3662e3;
+  --accent-hover: #284fc7;
+  --soft: #f4f7fc;
+  --positive: #14704d;
+  --negative: #a33242;
+  --focus: #809cff;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #171c28;
+  --text: #e8edf5;
+  --muted: #a8b3c4;
+  --line: #343d4e;
+  --accent: #6c8eff;
+  --accent-hover: #85a1ff;
+  --soft: #222b3b;
+  --positive: #79d8ae;
+  --negative: #ff9eac;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--background); color: var(--text); font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+main { max-width: 1020px; padding: 38px 40px 28px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 24px; }
+h1 { font-size: 26px; line-height: 1.4; letter-spacing: -.4px; margin: 0 0 7px; font-weight: 650; }
+h2 { font-size: 18px; line-height: 1.5; margin: 0; font-weight: 650; }
+p { margin: 0; color: var(--muted); }
+.description { font-size: 14px; margin-top: 5px; margin-bottom: 22px; }
+.small { font-size: 13px; margin-top: 15px; line-height: 1.7; }
+.notice { border-left: 3px solid var(--accent); background: var(--soft); padding: 13px 16px; font-size: 14px; overflow-wrap: anywhere; margin-bottom: 32px; }
+.notice[data-error="true"] { border-color: var(--negative); color: var(--negative); }
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+.status-list { margin: 0; }
+.status-list > div { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-weight: 550; text-align: right; overflow-wrap: anywhere; }
+dd[data-tone="positive"] { color: var(--positive); }
+dd[data-tone="negative"] { color: var(--negative); }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+label { display: block; font-size: 14px; font-weight: 550; margin: 0 0 7px; }
+input { display: block; width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 7px; background: var(--background); color: var(--text); padding: 10px 12px; font: inherit; font-size: 14px; margin: 0 0 18px; }
+input::placeholder { color: var(--muted); opacity: .85; }
+button { border: 1px solid transparent; background: var(--accent); border-radius: 7px; color: #fff; min-height: 42px; padding: 9px 17px; font: inherit; font-size: 14px; font-weight: 550; cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { background: var(--accent-hover); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input:disabled { opacity: .6; }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.secondary { background: transparent; border-color: var(--line); color: var(--text); }
+.secondary:hover:not(:disabled) { background: var(--soft); }
+.text-button { padding: 4px 0; margin-top: 10px; background: transparent; color: var(--muted); font-size: 13px; min-height: 36px; }
+.text-button:hover:not(:disabled) { background: transparent; color: var(--negative); text-decoration: underline; }
+#two-factor-form { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 20px; }
+#code { letter-spacing: 3px; }
+.verify-section { border-top: 1px solid var(--line); margin-top: 34px; padding-top: 27px; }
+.input-row { display: flex; gap: 12px; align-items: flex-start; }
+.input-row input { margin-bottom: 0; flex: 1; min-width: 0; }
+footer { border-top: 1px solid var(--line); margin-top: 32px; padding-top: 22px; color: var(--muted); font-size: 13px; }
+footer h2 { font-size: 15px; color: var(--text); }
+ol { padding-left: 20px; margin: 12px 0; }
+li { padding-left: 3px; margin: 4px 0; }
+@media (max-width: 680px) {
+  main { padding: 24px 20px; }
+  header { align-items: flex-start; gap: 10px; }
+  h1 { font-size: 22px; }
+  header p { font-size: 13px; }
+  header button { padding: 8px 11px; font-size: 13px; }
+  .columns { grid-template-columns: 1fr; gap: 30px; }
+  .notice { margin-bottom: 25px; }
+  .input-row { flex-direction: column; }
+  .input-row input { flex: auto; }
+}
+@media (max-width: 380px) { header { flex-direction: column; } }

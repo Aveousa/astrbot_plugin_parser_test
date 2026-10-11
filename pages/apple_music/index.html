@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Apple Music 账号管理</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>Apple Music 账号管理</h1><p>在后台更新登录，不再手动复制 Cookie。</p></div>
+      <button id="refresh" type="button" class="secondary">刷新状态</button>
+    </header>
+
+    <div id="notice" class="notice" role="status" aria-live="polite">正在连接 AstrBot 后台…</div>
+
+    <div class="columns">
+      <section aria-labelledby="status-title">
+        <h2 id="status-title">连接与账号</h2>
+        <p class="description">登录、订阅和音频可用性分别检查。</p>
+        <dl class="status-list">
+          <div><dt>wrapper 服务</dt><dd id="wrapper-state">未检查</dd></div>
+          <div><dt>登录状态</dt><dd id="auth-state">未检查</dd></div>
+          <div><dt>Apple Music 订阅</dt><dd id="subscription-state">未核验</dd></div>
+          <div><dt>账号地区</dt><dd id="storefront">—</dd></div>
+          <div><dt>gamdl</dt><dd id="gamdl-state">未检查</dd></div>
+          <div><dt>FFmpeg / FFprobe</dt><dd id="ffmpeg-state">未检查</dd></div>
+          <div><dt>wrapper FPS 就绪</dt><dd id="playback-state">未检查</dd></div>
+        </dl>
+        <p id="subscription-detail" class="small">尚未核验订阅</p>
+        <p class="small">FPS 状态不等于下载成功。本版先验证 AAC 单曲，不批量下载歌单。</p>
+      </section>
+
+      <section aria-labelledby="login-title">
+        <h2 id="login-title">更新登录</h2>
+        <p class="description">账号信息只交给你配置的 wrapper 服务。</p>
+        <form id="login-form">
+          <fieldset id="login-fields" disabled>
+            <label for="username">Apple 账号</label>
+            <input id="username" name="username" type="text" autocomplete="username" maxlength="254" placeholder="邮箱或手机号" required>
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" autocomplete="off" maxlength="1024" placeholder="输入账号密码" required>
+            <button id="login" type="submit">登录账号</button>
+          </fieldset>
+        </form>
+        <form id="two-factor-form" hidden>
+          <fieldset id="two-factor-fields" disabled>
+            <label for="code">双重认证验证码</label>
+            <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="六位验证码" required>
+            <button type="submit">提交验证码</button>
+          </fieldset>
+        </form>
+        <p class="small">密码和验证码提交后立即清空，不写入插件配置。远程使用请通过 HTTPS 访问 AstrBot。</p>
+        <button id="clear-session" class="text-button" type="button" disabled>清除内存会话</button>
+      </section>
+    </div>
+
+    <section class="verify-section" aria-labelledby="verify-title">
+      <div><h2 id="verify-title">验证一首歌曲</h2><p class="description">实际生成音频，并核对格式和完整时长。验证文件仅存入插件缓存。</p></div>
+      <form id="verify-form">
+        <fieldset id="verify-fields" disabled>
+          <label for="track-url">Apple Music 单曲链接</label>
+          <div class="input-row">
+            <input id="track-url" type="url" required maxlength="2048" value="https://music.apple.com/cn/album/落日/1514034441?i=1514034916">
+            <button type="submit">验证音频</button>
+          </div>
+        </fieldset>
+      </form>
+      <p id="verification-result" class="small" role="status">尚未验证音频。登录成功不保证每首歌曲都能下载。</p>
+    </section>
+
+    <footer>
+      <h2>首次使用</h2>
+      <ol>
+        <li>自行部署兼容的 wrapper-v2（API 0.0.2），仅向本机或可信内网开放。</li>
+        <li>在插件配置的 Apple Music 解析器中启用可选后端，填写 wrapper 地址，保存并重载插件。</li>
+        <li>使用独立 Python 环境安装 gamdl 3.9.1，填写该环境的 Python 路径；FFmpeg 和 FFprobe 放入 PATH。</li>
+        <li>在本页登录并核验订阅，验证单曲后再开启「返回单曲音频」。</li>
+      </ol>
+      <p>日常只需在此刷新或重新登录。wrapper 的持久卷可保存 Apple 会话，但过期仍需重新认证。清除内存会话不会删除磁盘缓存，不是完整注销。</p>
+    </footer>
+  </main>
+</body>
+</html>
