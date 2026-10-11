@@ -54,6 +54,9 @@ window.addEventListener('message', event => {
    } else if (endpoint === 'clear-session') {
     state.auth_state='logged_out';state.subscription_active=null;state.can_submit_2fa=false;
     job={state:'complete',action:endpoint,needs_2fa:false,message:'已清除内存会话；磁盘登录缓存仍在'};
+   } else if (endpoint === 'clear-cache') {
+    state.cache={bytes:0,files:0};
+    job={state:'complete',action:endpoint,message:'缓存已清理，账号登录状态未受影响',removed_files:9,removed_bytes:7340032};
    } else if (endpoint === 'save-settings') {
     state.settings=message.body.settings;
     job={state:'complete',action:endpoint,message:'Apple Music 解析设置已保存并立即生效',settings:state.settings};
@@ -124,6 +127,11 @@ def run(output: Path):
             frame.locator("#save-settings").click()
             frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             assert page.evaluate("qaState.settings.return_audio && qaState.settings.audio_send_format === 'voice' && !qaState.settings.show_playlist_cover && qaState.settings.file_codec_priority.join(',') === 'aac-web,alac'")
+            frame.locator("#clear-cache").click()
+            frame.locator("#clear-cache").get_by_text("再次点击确认清理", exact=False).wait_for()
+            frame.locator("#clear-cache").click()
+            frame.locator("#notice").get_by_text("已清理 9 个文件", exact=False).wait_for()
+            assert frame.locator("#cache-size").get_by_text("0 B", exact=True).is_visible()
             frame.locator("#username").fill("qa@example.invalid")
             frame.locator("#password").fill("not-a-real-password")
             frame.locator("#login").click()
@@ -166,7 +174,7 @@ def run(output: Path):
             frame.locator("#wrapper-state").get_by_text("未启用").wait_for()
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["settings", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["settings", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

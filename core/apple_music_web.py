@@ -106,6 +106,14 @@ class AppleMusicWeb:
             raise
         except AppleMusicBackendError as exc:
             self._job.update(state="error", message=exc.message)
+        except OSError:
+            if self._job.get("action") == "clear-cache":
+                self._job.update(
+                    state="error",
+                    message="缓存清理未完成，部分文件可能正在使用；请刷新后检查并重试",
+                )
+            else:
+                self._job.update(state="error", message="操作失败，请稍后重试")
         except Exception:
             # Parser/third-party exception strings may include account data.
             self._job.update(state="error", message="操作失败，请检查服务配置、登录状态和歌曲可用性")

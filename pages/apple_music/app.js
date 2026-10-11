@@ -11,6 +11,8 @@
   let needs2fa = false;
   let lastOperation = "";
   let savedSettings = "";
+  let clearCacheArmed = false;
+  let clearCacheTimer = null;
   const codecOptions = [
     ["alac", "ALAC · 无损"], ["aac-web", "AAC Web"],
     ["aac-he-web", "HE-AAC Web"], ["aac", "AAC"],
@@ -184,6 +186,11 @@
       $("cache-size").textContent = "0 B";
       $("cache-files").textContent = "0 个文件";
       $("cache-meter-fill").style.width = "2%";
+      resetClearCacheConfirmation();
+      const details = Number.isFinite(Number(operation.removed_files))
+        ? ` · 已清理 ${operation.removed_files} 个文件`
+        : "";
+      notice(operation.message + details, false);
     }
     if (operation.action === "save-settings" && operation.state === "complete" && operation.settings) {
       renderSettings(operation.settings);
@@ -257,10 +264,26 @@
       submit("clear-session", { confirm: true });
     }
   });
+  function resetClearCacheConfirmation() {
+    clearCacheArmed = false;
+    clearTimeout(clearCacheTimer);
+    const button = $("clear-cache");
+    if (!button) return;
+    button.dataset.confirming = "false";
+    button.querySelector(".clear-cache-label").textContent = "一键清理缓存";
+  }
   $("clear-cache").addEventListener("click", () => {
-    if (window.confirm("将删除插件缓存中的音频、卡片和临时文件，但不会影响 Apple Music 登录。继续？")) {
-      submit("clear-cache", { confirm: true });
+    if (!clearCacheArmed) {
+      clearCacheArmed = true;
+      const button = $("clear-cache");
+      button.dataset.confirming = "true";
+      button.querySelector(".clear-cache-label").textContent = "再次点击确认清理";
+      notice("缓存清理会删除插件生成的音频、卡片和临时文件；再次点击确认。", false);
+      clearCacheTimer = setTimeout(resetClearCacheConfirmation, 5000);
+      return;
     }
+    resetClearCacheConfirmation();
+    submit("clear-cache", { confirm: true });
   });
   $("settings-form").addEventListener("change", updateSettingsState);
   $("add-codec").addEventListener("click", () => {
@@ -281,6 +304,7 @@
   });
   window.addEventListener("pagehide", () => {
     clearTimeout(timer);
+    clearTimeout(clearCacheTimer);
     $("password").value = "";
     $("code").value = "";
   });

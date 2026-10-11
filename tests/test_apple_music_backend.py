@@ -387,6 +387,7 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
         assert page.register(context)
         routes = {route.rsplit("/", 1)[-1]: handler for route, handler, _, _ in context.registered_web_apis}
         assert "save-settings" in routes
+        assert "clear-cache" in routes
         assert (await routes["status"]())[1]["status_code"] == 401
         assert (await routes["login"]())[1]["status_code"] == 401
         request.username = "admin"

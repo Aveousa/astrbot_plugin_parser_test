@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from core.cache import (
     cache_dir_scope,
     clear_cache_dir,
@@ -64,3 +66,17 @@ def test_cache_size_and_clear_do_not_follow_symlinks(tmp_path: Path):
     assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep"
     if link is not None:
         assert not link.exists()
+
+
+def test_cache_clear_reports_locked_entries(tmp_path: Path, monkeypatch):
+    cache = tmp_path / "cache"
+    nested = cache / "parse"
+    nested.mkdir(parents=True)
+    (nested / "locked.bin").write_bytes(b"still in use")
+
+    def fail_remove(_path):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr("core.cache.shutil.rmtree", fail_remove)
+    with pytest.raises(OSError, match="could not remove"):
+        clear_cache_dir(cache)

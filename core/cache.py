@@ -102,6 +102,7 @@ def clear_cache_dir(cache_root: Path | str) -> tuple[int, int]:
     root.mkdir(parents=True, exist_ok=True)
     removed_files = 0
     removed_bytes = 0
+    failures = 0
     for entry in tuple(root.iterdir()):
         if entry.is_symlink() or entry.is_file():
             try:
@@ -110,7 +111,7 @@ def clear_cache_dir(cache_root: Path | str) -> tuple[int, int]:
                 entry.unlink()
                 removed_files += 1
             except OSError:
-                continue
+                failures += 1
         elif entry.is_dir():
             size, count = get_cache_size(entry)
             try:
@@ -118,5 +119,7 @@ def clear_cache_dir(cache_root: Path | str) -> tuple[int, int]:
                 removed_files += count
                 removed_bytes += size
             except OSError:
-                continue
+                failures += 1
+    if failures:
+        raise OSError(f"could not remove {failures} cache entries")
     return removed_files, removed_bytes
