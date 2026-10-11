@@ -84,6 +84,62 @@ class _Config:
         self.plugin_dir.mkdir()
 
 
+@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+def test_apple_music_track_uses_existing_song_card_templates(
+    renderer_module, tmp_path: Path, template: str
+):
+    from core.parsers.music import AppleMusicParser
+
+    config = _Config(tmp_path)
+    config.card_template = template
+    config.parser = SimpleNamespace(applemusic=SimpleNamespace(use_proxy=False))
+    cover = tmp_path / "cover.png"
+    Image.new("RGB", (32, 32), (188, 223, 226)).save(cover)
+
+    class _CoverDownloader:
+        def download_img(self, _url, **_kwargs):
+            async def complete():
+                return cover
+
+            return asyncio.create_task(complete())
+
+    async def build_card():
+        parser = AppleMusicParser.__new__(AppleMusicParser)
+        parser.cfg = config
+        parser.headers = {}
+        parser.downloader = _CoverDownloader()
+        result = parser._single_track_result(
+            title="落日",
+            artist_name="大都会乐团",
+            album_name="晴朗日 - Single",
+            cover="https://example.com/cover.png",
+            duration=306.667,
+            url="https://music.apple.com/cn/album/1514034441?i=1514034916",
+            identifier="1514034916",
+        )
+        renderer = renderer_module.Renderer(config)
+        renderer._emoji_source = None
+        context = await renderer._result_context(result)
+        return result, context, renderer.render_html(result, context)
+
+    result, context, html = asyncio.run(build_card())
+
+    assert context["card"]["title"] == "落日"
+    assert context["card"]["author"]["name"] == "大都会乐团"
+    assert context["card"]["playlist_tracks"] == []
+    assert context["card"]["extra_info"] == "专辑: 晴朗日 - Single\n时长: 5:06"
+    assert result.audio_contents == []
+    assert result.extra["card_preview_only"] is True
+    for value in ("Apple Music", "落日", "大都会乐团"):
+        assert value in html
+    if template != "compact":
+        assert "晴朗日 - Single" in html
+        assert "5:06" in html
+    assert cover.resolve().as_uri() in html
+    logo = renderer_module.Renderer._RESOURCES_DIR / "logos" / "applemusic.png"
+    assert logo.resolve().as_uri() in html
+
+
 def test_topic_split_handles_adjacent_xhs_topics_and_preserves_punctuation(
     renderer_module, tmp_path: Path
 ):

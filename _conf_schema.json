@@ -364,7 +364,7 @@
         }
       },
       "applemusic": {
-        "name": "Apple Music 歌单解析器",
+        "name": "Apple Music 单曲/歌单解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -375,8 +375,8 @@
             "default": true
           },
           "show_playlist_url": {
-            "description": "显示歌单原始链接",
-            "hint": "关闭后信息卡片底部不显示歌单原始链接",
+            "description": "显示歌曲/歌单原始链接",
+            "hint": "关闭后信息卡片底部不显示歌曲或歌单原始链接",
             "type": "bool",
             "default": true
           }

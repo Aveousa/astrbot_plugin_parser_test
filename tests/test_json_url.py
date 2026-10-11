@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 import importlib
+import json
 import sys
 import types
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 
@@ -102,12 +103,14 @@ def test_extract_json_url_recognizes_new_music_platforms(utils_module, playlist_
         "https://m.kuwo.cn/yinyue/72057414?f=ip",
         "https://i.y.qq.com/v8/playsong.html?media_mid=x&songid=453455745",
         "https://y.music.163.com/m/song?id=3429744904",
+        "https://music.apple.com/cn/album/%E8%90%BD%E6%97%A5/1514034441?i=1514034916",
+        "https://music.apple.com/cn/song/1514034916",
     ],
 )
 def test_extract_json_url_recognizes_music_single_tracks(utils_module, track_url):
     data = {"meta": {"detail": {"url": "open " + track_url}}}
 
-    assert utils_module.extract_json_url(data) == track_url
+    assert utils_module.extract_json_url(data) == unquote(track_url)
 
 
 def test_extract_json_url_prefers_netease_song_page_over_media_url(utils_module):

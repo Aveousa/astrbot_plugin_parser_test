@@ -22,10 +22,13 @@ from core.parsers.music import (
 
 class _Downloader:
     def __init__(self):
+        self.image_urls: list[str] = []
         self.audio_urls: list[str] = []
         self.audio_requests: list[dict[str, object]] = []
 
     def download_img(self, url: str, **_kwargs):
+        self.image_urls.append(url)
+
         async def complete() -> Path:
             return Path(url.rsplit("/", 1)[-1] or "image.jpg")
 
@@ -651,7 +654,11 @@ def test_qq_cookie_check_reports_profile_authentication():
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(132, 132.0), (146000, 146.0), ("02:46", 166.0), ("3:58", 238.0)],
+    [
+        (132, 132.0), (146000, 146.0), ("02:46", 166.0), ("3:58", 238.0),
+        ("PT5M6S", 306.0), ("PT1H2M3.5S", 3723.5), ("PT12S", 12.0),
+        ("PT3H", 10800.0), ("PTbad", 0.0),
+    ],
 )
 def test_single_track_duration_is_normalized(value, expected):
     assert _duration_seconds(value) == expected
@@ -1014,6 +1021,278 @@ def test_apple_music_server_data_is_decoded():
     payload = AppleMusicParser._decode_server_data(html)
 
     assert payload["data"][0]["data"]["sections"][0]["items"][0]["title"] == "Mix"
+
+
+_APPLE_TRACK_URL = (
+    "https://music.apple.com/cn/album/"
+    "%E8%90%BD%E6%97%A5/1514034441?i=1514034916"
+)
+
+
+def _apple_music_html(sections, structured_data=None):
+    html = (
+        '<script id="serialized-server-data" type="application/json">'
+        + json.dumps({"data": [{"data": {"sections": sections}}]}, ensure_ascii=False)
+        + "</script>"
+    )
+    if structured_data is not None:
+        html += (
+            '<script type="application/ld+json">'
+            + json.dumps(structured_data, ensure_ascii=False)
+            + "</script>"
+        )
+    return html
+
+
+def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=True):
+    async def build():
+        requests = []
+
+        class _Response:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return html
+
+        class _Session:
+            closed = False
+
+            def get(self, url, **kwargs):
+                requests.append((url, kwargs))
+                response = _Response()
+                response.status = status
+                return response
+
+        parser = AppleMusicParser.__new__(AppleMusicParser)
+        parser.cfg = SimpleNamespace(
+            card_enabled=True,
+            parser=SimpleNamespace(
+                applemusic=SimpleNamespace(use_proxy=False, show_playlist_url=show_url)
+            ),
+        )
+        parser.headers = {"User-Agent": "test"}
+        parser.downloader = _Downloader()
+        parser._session = _Session()
+        keyword, searched = parser.search_url(url)
+        result = await parser.parse(keyword, searched)
+        await asyncio.gather(*(content.get_path() for content in result.contents))
+        return parser, result, requests
+
+    return asyncio.run(build())
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        _APPLE_TRACK_URL,
+        "https://music.apple.com/cn/album/1514034441?i=1514034916",
+        "https://music.apple.com/album/name/1514034441?l=en&i=1514034916&uo=4",
+        "https://music.apple.com/us/album/name/1514034441/?i=1514034916#lyrics",
+        "https://music.apple.com/cn/song/%E8%90%BD%E6%97%A5/1514034916",
+        "https://music.apple.com/cn/song/1514034916?l=en",
+        "https://music.apple.com/song/1514034916",
+    ],
+)
+def test_apple_music_track_routes_match_links_embedded_in_text(url):
+    keyword, searched = AppleMusicParser.search_url("歌曲：" + url + " 请解析")
+
+    assert keyword == "music.apple.com"
+    assert (searched.group("song_id") or searched.group("track_id")) == "1514034916"
+    assert "https://" + searched.group(0) == url
+    assert searched.group("playlist_id") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://music.apple.com/cn/album/name/1514034441",
+        "https://music.apple.com/cn/album/1514034441?other_i=1514034916",
+        "https://music.apple.com/cn/album/1514034441#?i=1514034916",
+        "https://music.apple.com/cn/album/1514034441?i=1514034916bad",
+        "https://music.apple.com/cn/album/1514034441?i=bad",
+        "https://music.apple.com/cn/song/1514034916bad",
+    ],
+)
+def test_apple_music_track_routes_do_not_parse_albums_or_invalid_ids(url):
+    with pytest.raises(ParseException):
+        AppleMusicParser.search_url(url)
+
+
+@pytest.mark.parametrize("artist_name", ["大都会乐团", None])
+@pytest.mark.parametrize("show_url", [True, False])
+def test_apple_music_album_selects_requested_track_and_reuses_card(artist_name, show_url):
+    sections = [
+        {
+            "id": "album-detail-header-section - 1514034441",
+            "items": [{
+                "title": "晴朗日 - Single",
+                "subtitleLinks": [{"title": "大都会乐团"}],
+                "artwork": {"dictionary": {"url": "https://example.com/{w}x{h}bb.{f}"}},
+            }],
+        },
+        {
+            "id": "track-list - 1514034441",
+            "items": [
+                {"title": "今日晴", "contentDescriptor": {
+                    "kind": "song", "identifiers": {"storeAdamID": "1514034455"},
+                }},
+                {
+                    "title": "落日",
+                    "artistName": artist_name,
+                    "duration": 306667,
+                    "previewUrl": "https://example.com/preview.m4a",
+                    "contentDescriptor": {
+                        "kind": "song", "identifiers": {"storeAdamID": 1514034916},
+                    },
+                },
+            ],
+        },
+        {"id": "you-might-also-like", "items": [{
+            "title": "不能选中的推荐歌曲",
+            "contentDescriptor": {"kind": "song", "identifiers": {"storeAdamID": "1514034916"}},
+        }]},
+    ]
+
+    parser, result, requests = _parse_apple_music_html(_apple_music_html(sections), show_url=show_url)
+
+    assert result.title == "落日"
+    assert result.platform.name == "applemusic"
+    assert result.author.name == "大都会乐团"
+    assert result.extra["music_type"] == "track"
+    assert result.extra["track_id"] == "1514034916"
+    assert result.extra["card_info"] == "专辑: 晴朗日 - Single\n时长: 5:06"
+    assert result.extra["card_preview_only"] is True
+    assert result.extra["show_playlist_url"] is show_url
+    assert parser.downloader.image_urls == ["https://example.com/500x500bb.jpg"]
+    assert parser.downloader.audio_urls == []
+    assert result.audio_contents == []
+    assert len(requests) == 1
+    assert requests[0][0] == _APPLE_TRACK_URL
+    assert requests[0][1]["headers"]["Referer"] == "https://music.apple.com/"
+
+
+def _apple_music_json_ld(track_id="1514034916"):
+    return {
+        "@type": "MusicComposition",
+        "name": "落日",
+        "url": "https://music.apple.com/cn/song/" + track_id,
+        "datePublished": "2020-05-20",
+        "timeRequired": "PT5M6S",
+        "audio": {
+            "@type": "MusicRecording",
+            "name": "落日",
+            "url": "https://music.apple.com/cn/song/" + track_id,
+            "duration": "PT5M6S",
+            "byArtist": [{"name": "大都会乐团"}, {"name": "嘉宾"}],
+            "inAlbum": {"name": "晴朗日 - Single", "image": "https://example.com/square.jpg"},
+            "audio": {"@type": "AudioObject", "contentUrl": "https://example.com/preview.m4a"},
+        },
+    }
+
+
+def test_apple_music_song_detail_uses_json_ld_for_missing_duration():
+    sections = [{
+        "id": "songDetail",
+        "itemKind": "songDetailHeader",
+        "items": [{
+            "title": "落日",
+            "artists": "大都会乐团",
+            "album": "晴朗日 - Single",
+            "releaseDate": "2020年5月20日",
+            "artwork": {"dictionary": {"url": "https://example.com/{w}x{h}bb.{f}"}},
+            "contentDescriptor": {"kind": "song", "identifiers": {"storeAdamID": "1514034916"}},
+        }],
+    }]
+
+    parser, result, _ = _parse_apple_music_html(
+        _apple_music_html(sections, _apple_music_json_ld()),
+        "https://music.apple.com/cn/song/1514034916",
+    )
+
+    assert result.title == "落日"
+    assert result.author.name == "大都会乐团"
+    assert result.extra["card_info"] == "专辑: 晴朗日 - Single\n时长: 5:06"
+    assert result.formatted_datetime().startswith("2020-05-20")
+    assert parser.downloader.image_urls == ["https://example.com/500x500bb.jpg"]
+    assert parser.downloader.audio_urls == []
+
+
+@pytest.mark.parametrize("server_data", ["", "null", "{bad json}", '{"data": []}'])
+def test_apple_music_track_can_fall_back_to_matching_json_ld(server_data):
+    html = (
+        '<script id="serialized-server-data">' + server_data + "</script>"
+        + '<script type="application/ld+json">{bad json}</script>'
+        + '<script type="application/ld+json">'
+        + json.dumps({"@graph": [_apple_music_json_ld("999"), _apple_music_json_ld()]})
+        + "</script>"
+    )
+
+    parser, result, _ = _parse_apple_music_html(html)
+
+    assert result.title == "落日"
+    assert result.author.name == "大都会乐团 / 嘉宾"
+    assert result.extra["card_info"] == "专辑: 晴朗日 - Single\n时长: 5:06"
+    assert parser.downloader.image_urls == ["https://example.com/square.jpg"]
+    assert parser.downloader.audio_urls == []
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<html>not found</html>",
+        _apple_music_html(None),
+        _apple_music_html([None, {"id": "track-list", "items": [None, {}]}]),
+        _apple_music_html([], _apple_music_json_ld("999")),
+    ],
+)
+def test_apple_music_missing_track_fails_instead_of_selecting_another_song(html):
+    with pytest.raises(ParseException, match="歌曲不存在或暂时无法访问"):
+        _parse_apple_music_html(html)
+
+
+def test_apple_music_track_reports_http_errors():
+    with pytest.raises(ParseException, match="歌曲请求失败: HTTP 404"):
+        _parse_apple_music_html("not found", status=404)
+
+
+def test_apple_music_track_short_duration_is_in_milliseconds():
+    html = _apple_music_html([{
+        "id": "track-list",
+        "items": [{
+            "title": "短歌",
+            "duration": 5000,
+            "contentDescriptor": {"kind": "song", "identifiers": {"storeAdamID": "1514034916"}},
+        }],
+    }])
+
+    parser, result, _ = _parse_apple_music_html(html)
+
+    assert result.extra["card_info"] == "时长: 0:05"
+    assert result.extra["card_preview_only"] is False
+    assert result.contents == []
+    assert parser.downloader.audio_urls == []
+
+
+def test_apple_music_playlist_still_dispatches_to_playlist_handler():
+    html = _apple_music_html([
+        {"id": "playlist-detail-header-section", "items": [{"title": "Mix", "trackCount": 1}]},
+        {"id": "track-list", "items": [{
+            "title": "Song", "artistName": "Artist", "contentDescriptor": {"kind": "song"},
+        }]},
+    ])
+    _, result, _ = _parse_apple_music_html(
+        html, "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=en"
+    )
+
+    assert result.title == "Mix"
+    assert result.extra["playlist_id"] == "pl.u-leyl0YAsMJgb1ro"
+    assert result.extra["playlist_track_count"] == 1
+    assert result.extra["playlist_tracks"][0]["title"] == "Song"
+    assert "music_type" not in result.extra
 
 
 def test_netease_lyrics_are_read_from_lyric_endpoint():

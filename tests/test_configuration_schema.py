@@ -269,9 +269,16 @@ def test_music_parsers_expose_playlist_url_setting():
         "type": "bool",
         "default": True,
     }
+    apple_expected = {
+        **expected,
+        "description": "显示歌曲/歌单原始链接",
+        "hint": "关闭后信息卡片底部不显示歌曲或歌单原始链接",
+    }
     music_names = {"qqmusic", "netease", "kugou", "qishui", "kuwo", "applemusic"}
     for name in music_names:
-        assert templates[name]["items"]["show_playlist_url"] == expected
+        assert templates[name]["items"]["show_playlist_url"] == (
+            apple_expected if name == "applemusic" else expected
+        )
         item = next(item for item in defaults if item["__template_key"] == name)
         assert item["show_playlist_url"] is True
 

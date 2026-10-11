@@ -262,7 +262,8 @@ def _duration_seconds(value: object) -> float:
 
     The APIs are not consistent here: QQ Music and Qishui normally return
     seconds, NetEase returns milliseconds, while some Kuwo pages expose a
-    display value such as ``02:46``.  Keeping the conversion in one place
+    display value such as ``02:46`` and Apple Music uses ISO 8601 in JSON-LD.
+    Keeping the conversion in one place
     makes the single-track card and any optional audio content use the same
     duration regardless of the source platform.
     """
@@ -273,6 +274,16 @@ def _duration_seconds(value: object) -> float:
         text = value.strip()
         if not text:
             return 0.0
+        # Apple Music's JSON-LD uses ISO 8601 durations rather than milliseconds.
+        iso_duration = re.fullmatch(
+            r"PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?",
+            text,
+        )
+        if iso_duration:
+            hours, minutes, seconds = (
+                float(part or 0) for part in iso_duration.groups()
+            )
+            return hours * 3600 + minutes * 60 + seconds
         if ":" in text:
             parts = text.split(":")
             try:
@@ -844,14 +855,28 @@ class AppleMusicParser(PlaylistParserBase):
             flags=re.DOTALL | re.IGNORECASE,
         )
         if not match:
-            raise ParseException("Apple Music 页面没有返回可识别的歌单数据")
+            raise ParseException("Apple Music 页面没有返回可识别的数据")
         try:
             payload = json.loads(match.group(1).strip().lstrip("\ufeff"))
         except json.JSONDecodeError as exc:
-            raise ParseException("Apple Music 歌单数据无法解析") from exc
+            raise ParseException("Apple Music 页面数据无法解析") from exc
         if not isinstance(payload, Mapping):
-            raise ParseException("Apple Music 页面没有返回可识别的歌单数据")
+            raise ParseException("Apple Music 页面没有返回可识别的数据")
         return payload
+
+    @staticmethod
+    def _page_data(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        data = payload.get("data")
+        root = (
+            data[0]
+            if isinstance(data, list) and data
+            else data
+            if isinstance(data, Mapping)
+            else {}
+        )
+        root = root if isinstance(root, Mapping) else {}
+        page = root.get("data")
+        return page if isinstance(page, Mapping) else root
 
     @staticmethod
     def _artwork_url(value: object, *, size: int = 500) -> str | None:
@@ -872,8 +897,173 @@ class AppleMusicParser(PlaylistParserBase):
 
     @handle(
         "music.apple.com",
-        r"music\.apple\.com/(?:(?P<storefront>[a-z]{2})/)?playlist/(?:[^/\s<>]+/)?(?P<playlist_id>pl\.[A-Za-z0-9._-]+)(?:\?[^\s<>]*)?",
+        r"music\.apple\.com/(?:(?P<storefront>[a-z]{2})/)?(?:"
+        r"playlist/(?:[^/\s<>?#]+/)?(?P<playlist_id>pl\.[A-Za-z0-9._-]+)"
+        r"|song/(?:[^/\s<>?#]+/)?(?P<song_id>\d+)"
+        r"|album/(?:[^/\s<>?#]+/)?(?P<album_id>\d+)"
+        r"(?=/?\?(?:[^#\s<>]*&)?i=(?P<track_id>\d+)(?:[&#\s<>]|$))"
+        r")/?(?=[?#\s<>]|$)(?:\?[^#\s<>]*)?(?:#[^\s<>]*)?",
     )
+    async def _handle_music(self, searched):
+        # A keyword has only one registered handler; dispatch here so adding
+        # single songs cannot override the existing playlist route.
+        if searched.group("playlist_id"):
+            return await self._handle_playlist(searched)
+        return await self._handle_track(searched)
+
+    @classmethod
+    def _json_ld_track(cls, html: str, track_id: str) -> Mapping[str, Any]:
+        """Read metadata only, and never treat Apple's preview as full audio."""
+        for match in re.finditer(
+            r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        ):
+            try:
+                nodes = [json.loads(match.group(1).strip())]
+            except json.JSONDecodeError:
+                continue
+            while nodes:
+                node = nodes.pop()
+                if isinstance(node, list):
+                    nodes.extend(reversed(node))
+                    continue
+                if not isinstance(node, Mapping):
+                    continue
+                nodes.extend([node.get("@graph"), node.get("audio")])
+                if node.get("@type") not in ("MusicComposition", "MusicRecording"):
+                    continue
+                node_url = _first_text(node, "url") or ""
+                try:
+                    if urlparse(node_url).hostname != "music.apple.com":
+                        continue
+                    _, searched = cls.search_url(node_url)
+                except (ParseException, ValueError):
+                    continue
+                if (searched.group("song_id") or searched.group("track_id")) != track_id:
+                    continue
+                recording = node.get("audio")
+                recording = (
+                    recording
+                    if isinstance(recording, Mapping)
+                    and recording.get("@type") == "MusicRecording"
+                    else node
+                )
+                album = recording.get("inAlbum")
+                album = album if isinstance(album, Mapping) else {}
+                return {
+                    "title": _first_text(recording, "name") or _first_text(node, "name"),
+                    "artist": " / ".join(
+                        _track_artist_names(
+                            {"artists": recording.get("byArtist") or node.get("byArtist")}
+                        )
+                    ),
+                    "album": _first_text(album, "name"),
+                    "cover": _cover_url(
+                        album.get("image") or recording.get("image") or node.get("image"),
+                        size=500,
+                    ),
+                    "duration": recording.get("duration") or node.get("timeRequired"),
+                    "release_date": recording.get("datePublished") or node.get("datePublished"),
+                }
+        return {}
+
+    async def _handle_track(self, searched):
+        track_id = searched.group("song_id") or searched.group("track_id")
+        url = "https://" + searched.group(0)
+        try:
+            async with self.session.get(
+                url,
+                headers={**self.headers, "Referer": "https://music.apple.com/"},
+            ) as response:
+                if getattr(response, "status", 200) >= 400:
+                    raise ParseException(f"Apple Music 歌曲请求失败: HTTP {response.status}")
+                html = await response.text()
+        except (ClientError, TimeoutError) as exc:
+            raise ParseException(f"Apple Music 歌曲请求失败: {exc}") from exc
+
+        try:
+            page = self._page_data(self._decode_server_data(html))
+        except ParseException:
+            # Public JSON-LD can still provide a card when the page state changes.
+            page = {}
+        sections = page.get("sections")
+        sections = sections if isinstance(sections, list) else []
+        album_header: Mapping[str, Any] = {}
+        track: Mapping[str, Any] = {}
+        for section in sections:
+            if not isinstance(section, Mapping):
+                continue
+            section_id = str(section.get("id") or "")
+            items = section.get("items")
+            items = items if isinstance(items, list) else []
+            if (
+                "album-detail-header" in section_id
+                and items
+                and isinstance(items[0], Mapping)
+            ):
+                album_header = items[0]
+            if not (
+                "track-list" in section_id
+                or section_id == "songDetail"
+                or section.get("itemKind") == "songDetailHeader"
+            ):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                descriptor = item.get("contentDescriptor")
+                if (
+                    not isinstance(descriptor, Mapping)
+                    or descriptor.get("kind") != "song"
+                ):
+                    continue
+                identifiers = descriptor.get("identifiers")
+                if (
+                    isinstance(identifiers, Mapping)
+                    and str(identifiers.get("storeAdamID")) == track_id
+                ):
+                    track = item
+
+        fallback = self._json_ld_track(html, track_id)
+        title = _first_text(track, "title", "name") or _first_text(fallback, "title")
+        if not title:
+            raise ParseException("Apple Music 歌曲不存在或暂时无法访问")
+        duration = track.get("duration")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            # Apple's serialized track-list uses milliseconds, even for short songs.
+            duration /= 1000
+        return self._single_track_result(
+            title=title,
+            artist_name=(
+                _first_text(track, "artistName", "artists")
+                or self._first_link_title(track.get("subtitleLinks"))
+                or self._first_link_title(track.get("artistLinks"))
+                or self._first_link_title(album_header.get("subtitleLinks"))
+                or _first_text(fallback, "artist")
+                or "未知艺术家"
+            ),
+            album_name=(
+                _first_text(track, "albumName", "album")
+                or self._first_link_title(track.get("tertiaryLinks"))
+                or self._first_link_title(track.get("albumLinks"))
+                or _first_text(album_header, "title")
+                or _first_text(fallback, "album")
+            ),
+            cover=(
+                self._artwork_url(track.get("artwork"))
+                or self._artwork_url(album_header.get("artwork"))
+                or _first_text(fallback, "cover")
+            ),
+            duration=duration or fallback.get("duration"),
+            timestamp=(
+                _date_timestamp(track.get("releaseDate"))
+                or _date_timestamp(fallback.get("release_date"))
+            ),
+            url=url,
+            identifier=track_id,
+        )
+
     async def _handle_playlist(self, searched):
         source_url = searched.group(0)
         url = source_url
@@ -887,18 +1077,7 @@ class AppleMusicParser(PlaylistParserBase):
                 raise ParseException(f"Apple Music 歌单请求失败: HTTP {response.status}")
             html = await response.text()
 
-        payload = self._decode_server_data(html)
-        data = payload.get("data")
-        root = (
-            data[0]
-            if isinstance(data, list) and data
-            else data
-            if isinstance(data, Mapping)
-            else {}
-        )
-        root = root if isinstance(root, Mapping) else {}
-        page = root.get("data")
-        page = page if isinstance(page, Mapping) else root
+        page = self._page_data(self._decode_server_data(html))
         sections = page.get("sections")
         sections = sections if isinstance(sections, list) else []
 
@@ -957,6 +1136,7 @@ class AppleMusicParser(PlaylistParserBase):
             identifier=searched.group("playlist_id"),
             tracks=tracks,
         )
+
 
 class QQMusicParser(PlaylistParserBase):
     _QQ_PROFILE_URL = "https://y.qq.com/n/ryqq/profile"
