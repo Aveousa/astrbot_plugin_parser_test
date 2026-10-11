@@ -1118,7 +1118,7 @@ def test_apple_music_optional_backend_preserves_default_cards(
     assert any(isinstance(content, AudioContent) for content in result.contents) is expected_audio
     assert result.extra.get("audio_as_voice", False) is expected_voice
     assert result.extra.get("audio_as_file", False) is expected_file
-    assert result.extra.get("audio_send_via_url", False) is expected_voice
+    assert result.extra.get("audio_send_via_url", False) is expected_audio
     assert result.extra["duration"] == 306
     if metadata_only:
         assert result.contents == []

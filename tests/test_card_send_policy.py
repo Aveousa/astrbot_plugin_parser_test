@@ -333,7 +333,68 @@ def test_apple_voice_uses_astrbot_file_url_without_local_wav_conversion(
     ]
 
 
-def test_apple_voice_without_file_service_falls_back_to_file(sender_module):
+def test_apple_file_uses_onebot_file_protocol(sender_module):
+    actions = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            actions.append((action, kwargs))
+
+    class _TokenService:
+        async def register_file(self, path, timeout=None):
+            assert path == "song.m4a"
+            return "one-shot-token"
+
+    import sys
+
+    fake_core = sys.modules["astrbot.core"]
+    fake_core.astrbot_config = {"callback_api_base": "http://astrbot:6185"}
+    fake_core.file_token_service = _TokenService()
+    result = ParseResult(
+        platform=Platform("applemusic", "Apple Music"),
+        contents=[AudioContent(Path("song.m4a"))],
+        extra={"audio_as_file": True, "audio_send_via_url": True},
+    )
+    event = _Event()
+    event.bot = _Bot()
+    sender = sender_module.MessageSender(_card_config(audio_to_file=False), _Renderer())
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1  # card only; file went directly through OneBot
+    assert actions[0][0] == "send_group_msg"
+    assert actions[0][1]["message"] == [
+        {
+            "type": "file",
+            "data": {
+                "file": "http://astrbot:6185/api/file/one-shot-token",
+                "name": "song.m4a",
+            },
+        }
+    ]
+
+
+def test_apple_audio_without_onebot_url_is_not_sent_natively(sender_module):
+    import sys
+
+    fake_core = sys.modules["astrbot.core"]
+    fake_core.astrbot_config = {"callback_api_base": ""}
+    fake_core.file_token_service = object()
+    result = ParseResult(
+        platform=Platform("applemusic", "Apple Music"),
+        contents=[AudioContent(Path("song.m4a"))],
+        extra={"audio_as_file": True, "audio_send_via_url": True},
+    )
+    event = _Event()
+    event.bot = object()
+    sender = sender_module.MessageSender(_card_config(audio_to_file=False), _Renderer())
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1  # no native AstrBot File fallback
+
+
+def test_apple_voice_without_file_service_does_not_use_native_fallback(sender_module):
     import sys
 
     fake_core = sys.modules["astrbot.core"]
@@ -349,8 +410,7 @@ def test_apple_voice_without_file_service_falls_back_to_file(sender_module):
 
     asyncio.run(sender.send_parse_result(event, result))
 
-    assert len(event.sent) == 2
-    assert event.sent[1][0].__class__.__name__ == "File"
+    assert len(event.sent) == 1
 
 
 def test_netease_audio_uses_remote_url_for_onebot_and_keeps_local_download(

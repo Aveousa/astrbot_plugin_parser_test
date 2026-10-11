@@ -201,6 +201,8 @@ def test_apple_music_backend_is_optional_and_not_a_core_dependency():
     assert apple["audio_send_format"]["options"] == ["file", "voice"]
     assert apple["audio_send_format"]["default"] == "file"
     assert template["audio_send_format"] == "file"
+    assert apple["file_codec_priority"]["default"] == ["alac", "aac-web"]
+    assert template["file_codec_priority"] == ["alac", "aac-web"]
     assert apple["gamdl_python"]["default"] == ""
     assert "password" not in apple
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))

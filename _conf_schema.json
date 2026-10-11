@@ -380,11 +380,17 @@
           },
           "audio_send_format": {
             "description": "Apple Music 音频发送格式",
-            "hint": "选择“语音”时让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频，选择“文件”时发送 m4a 文件。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",
+            "hint": "选择“语音”时使用 AAC Web 并让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频；选择“文件”时优先下载 ALAC，不可用时自动回退 AAC Web。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",
             "type": "string",
             "options": ["file", "voice"],
             "labels": ["文件", "语音"],
             "default": "file"
+          },
+          "file_codec_priority": {
+            "description": "Apple Music 文件音质优先级",
+            "hint": "按顺序填写 gamdl 支持的音质编码；首个可用编码成功后不会继续请求后面的编码。默认 ALAC，其次 AAC Web。可用值包括 alac、aac-web、aac-he-web、aac、aac-he、aac-binaural、aac-downmix、aac-he-binaural、aac-he-downmix、atmos、ac3。",
+            "type": "list",
+            "default": ["alac", "aac-web"]
           },
           "wrapper_url": {
             "description": "wrapper HTTP 地址",

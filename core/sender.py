@@ -406,8 +406,11 @@ class MessageSender:
     async def _send_audio_url_via_onebot(
         event: AstrMessageEvent,
         url: str,
+        *,
+        message_type: str = "record",
+        name: str | None = None,
     ) -> bool:
-        """让 OneBot 端按 URL 拉取语音，避免把整段音频塞进 WebSocket 帧。"""
+        """让 OneBot 端按 URL 拉取音频，避免 AstrBot 本地序列化大文件。"""
 
         bot = getattr(event, "bot", None)
         call_action = getattr(bot, "call_action", None)
@@ -417,24 +420,29 @@ class MessageSender:
         self_id = str(event.get_self_id() or "").strip()
         routing = {"self_id": int(self_id)} if self_id.isdigit() else {}
         group_id = str(event.get_group_id() or "").strip()
+        if message_type not in {"record", "file"}:
+            raise RuntimeError("无效的 OneBot 音频消息类型")
+        data = {"file": url}
+        if message_type == "file" and name:
+            data["name"] = name
         if group_id:
             if not group_id.isdigit():
-                raise RuntimeError("无效的群号，无法发送语音")
+                raise RuntimeError("无效的群号，无法发送 OneBot 音频")
             await call_action(
                 "send_group_msg",
                 group_id=int(group_id),
-                message=[{"type": "record", "data": {"file": url}}],
+                message=[{"type": message_type, "data": data}],
                 **routing,
             )
             return True
 
         user_id = str(event.get_sender_id() or "").strip()
         if not user_id.isdigit():
-            raise RuntimeError("无效的用户号，无法发送语音")
+            raise RuntimeError("无效的用户号，无法发送 OneBot 音频")
         await call_action(
             "send_private_msg",
             user_id=int(user_id),
-            message=[{"type": "record", "data": {"file": url}}],
+            message=[{"type": message_type, "data": data}],
             **routing,
         )
         return True
@@ -559,13 +567,17 @@ class MessageSender:
             self._resolve_groups(result, omit_playlist_cover=card_sent),
         )
 
-        # 音乐单曲仍先下载到本次解析目录，但 OneBot 发送时传媒体 URL，
-        # 让 Napcat 自行拉取并转码，避免本地 Record 被编码成超大 WebSocket 帧。
+        # Apple Music 单曲先保存在本次解析目录，再通过临时 URL 交由 OneBot
+        # 拉取；语音与文件都不经过 AstrBot 原生媒体组件。
         direct_audio_url = result.extra.get("audio_send_url")
         use_local_audio_url = result.extra.get("audio_send_via_url") is True
         direct_audio_content: AudioContent | None = None
+        direct_audio_name: str | None = None
         if (
-            result.extra.get("audio_as_voice") is True
+            (
+                use_local_audio_url
+                or result.extra.get("audio_as_voice") is True
+            )
             and (
                 (
                     isinstance(direct_audio_url, str)
@@ -586,7 +598,7 @@ class MessageSender:
             )
             if direct_audio_content is not None:
                 try:
-                    # 语音改走 OneBot URL 发送，但仍确保文件下载并保存在解析缓存。
+                    # OneBot URL 发送前确保文件已下载并保存在解析缓存。
                     await direct_audio_content.get_path()
                 except (
                     DownloadException,
@@ -597,6 +609,7 @@ class MessageSender:
                 ):
                     direct_audio_content = None
                 else:
+                    direct_audio_name = (await direct_audio_content.get_path()).name
                     if use_local_audio_url and not (
                         isinstance(direct_audio_url, str)
                         and direct_audio_url.startswith(("http://", "https://"))
@@ -618,11 +631,26 @@ class MessageSender:
                             for group in groups
                         ]
                     else:
-                        # No reachable AstrBot file service: send the cached
-                        # m4a as a file instead of entering local WAV conversion.
+                        # OneBot must be able to fetch the one-shot URL. Never
+                        # fall back to AstrBot's native local-file component for
+                        # Apple Music audio, which can copy/serialize large files.
                         direct_audio_content = None
-                        result.extra["audio_as_voice"] = False
-                        result.extra["audio_as_file"] = True
+
+        # Apple Music audio is intentionally OneBot-only. If URL registration
+        # or the platform action is unavailable, omit the audio rather than
+        # invoking AstrBot's native File/Record serialization path.
+        if use_local_audio_url and direct_audio_content is None:
+            groups = [
+                SendGroup(
+                    contents=[
+                        content for content in group.contents
+                        if not isinstance(content, AudioContent)
+                    ],
+                    force_merge=group.force_merge,
+                    render_card=group.render_card,
+                )
+                for group in groups
+            ]
 
         sent = False
         for group in groups:
@@ -634,15 +662,27 @@ class MessageSender:
                     await self._send_audio_url_via_onebot(
                         event,
                         direct_audio_url,
+                        message_type=(
+                            "record"
+                            if result.extra.get("audio_as_voice") is True
+                            else "file"
+                        ),
+                        name=direct_audio_name,
                     )
                     or sent
                 )
             except Exception as exc:
-                logger.error(f"音乐语音 URL 发送失败：{exc}")
-                # 已经尝试发送语音，不再追加一条与原消息无关的文本兜底。
+                logger.error(f"Apple Music OneBot 音频发送失败：{exc}")
+                # 已经尝试发送音频，不再追加一条与原消息无关的文本兜底。
                 sent = True
 
         if not sent:
+            if use_local_audio_url:
+                # Apple Music's OneBot-only audio path may intentionally omit
+                # the audio when the platform/file URL is unavailable. The
+                # song card already contains useful information; avoid a
+                # misleading generic fallback message in that case.
+                return
             # 卡片预览已发送；过滤掉独立预览图后，不再额外发送一条纯文本
             # 兜底消息，避免卡片后又出现无意义的重复内容。
             if card_sent and (

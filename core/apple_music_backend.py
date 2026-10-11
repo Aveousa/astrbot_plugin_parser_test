@@ -27,6 +27,42 @@ from .exception import DownloadException
 WRAPPER_VERSION = "0.0.2"
 GAMDL_VERSION = "3.9.1"
 
+# Keep the quality policy tied to the delivery format. AAC Web is small and
+# broadly accepted by voice adapters; files prefer lossless ALAC and fall back
+# through the user-configured gamdl codec order.
+VOICE_CODEC_PRIORITY = ("aac-web",)
+FILE_CODEC_PRIORITY = ("alac", "aac-web")
+SUPPORTED_FILE_CODECS = frozenset({
+    "alac", "aac-web", "aac-he-web", "aac", "aac-he",
+    "aac-binaural", "aac-downmix", "aac-he-binaural", "aac-he-downmix",
+    "atmos", "ac3",
+})
+
+
+def codec_priority_for_send_format(send_format: object) -> tuple[str, ...]:
+    """Return the gamdl codec order for the configured delivery format."""
+    if str(send_format or "").strip().lower() == "voice":
+        return VOICE_CODEC_PRIORITY
+    return FILE_CODEC_PRIORITY
+
+
+def normalize_file_codec_priority(value: object) -> tuple[str, ...]:
+    """Normalize the configured file codec order without passing arbitrary CLI values."""
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = ()
+    result: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            continue
+        codec = item.strip().lower()
+        if codec in SUPPORTED_FILE_CODECS and codec not in result:
+            result.append(codec)
+    return tuple(result) or FILE_CODEC_PRIORITY
+
 
 class AppleMusicBackendError(DownloadException):
     """A deliberately sanitized error safe to show in the dashboard/chat."""
@@ -366,13 +402,23 @@ class AppleMusicBackend:
                 pass
         await process.wait()
 
-    def download_task(self, url: str, duration: float) -> asyncio.Task[Path]:
-        task = asyncio.create_task(self.download(url, duration=duration))
+    def download_task(
+        self, url: str, duration: float, *, codec_priority: tuple[str, ...] | None = None
+    ) -> asyncio.Task[Path]:
+        task = asyncio.create_task(
+            self.download(url, duration=duration, codec_priority=codec_priority)
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
 
-    async def download(self, url: str, *, duration: float = 0) -> Path:
+    async def download(
+        self,
+        url: str,
+        *,
+        duration: float = 0,
+        codec_priority: tuple[str, ...] | None = None,
+    ) -> Path:
         canonical, identifier = normalize_track_url(url)
         try:
             if isinstance(duration, bool):
@@ -397,6 +443,30 @@ class AppleMusicBackend:
             probe = await self.probe_gamdl()
             if not probe["available"] or not probe["ffmpeg"] or not probe["ffprobe"]:
                 raise AppleMusicBackendError(f"请配置独立环境中的 gamdl {GAMDL_VERSION}，并安装 FFmpeg / FFprobe")
+            if codec_priority is None:
+                try:
+                    send_format = getattr(self.cfg.parser.applemusic, "audio_send_format", "file")
+                except (AttributeError, TypeError):
+                    send_format = "file"
+                if str(send_format or "").strip().lower() == "voice":
+                    codec_priority = VOICE_CODEC_PRIORITY
+                else:
+                    try:
+                        configured_priority = getattr(
+                            self.cfg.parser.applemusic, "file_codec_priority", None
+                        )
+                    except (AttributeError, TypeError):
+                        configured_priority = None
+                    codec_priority = normalize_file_codec_priority(configured_priority)
+            elif not isinstance(codec_priority, (list, tuple)):
+                raise AppleMusicBackendError("Apple Music 音质配置无效")
+            codec_priority = tuple(codec_priority)
+            if not codec_priority or any(
+                not isinstance(codec, str) or codec not in SUPPORTED_FILE_CODECS
+                for codec in codec_priority
+            ):
+                raise AppleMusicBackendError("Apple Music 音质配置无效")
+            codec_arg = ",".join(codec_priority)
             directory = create_parse_cache_dir(get_active_cache_dir(self.cfg.cache_dir), "applemusic")
             output, temporary = directory / "output", directory / "temporary"
             output.mkdir()
@@ -406,7 +476,7 @@ class AppleMusicBackend:
                 "--log-level", "ERROR", "--use-wrapper", "--wrapper-url", self.settings.validate(),
                 "--wrapper-decrypt-host", self.settings.decrypt_host,
                 "--wrapper-decrypt-port", str(self.settings.decrypt_port),
-                "--song-codec-priority", "aac-web", "--no-synced-lyrics",
+                "--song-codec-priority", codec_arg, "--no-synced-lyrics",
                 "--output-path", str(output), "--temp-path", str(temporary),
                 "--album-folder-template", "album", "--compilation-folder-template", "album",
                 "--no-album-folder-template", "album",
@@ -430,7 +500,9 @@ class AppleMusicBackend:
                 actual = float(info["format"]["duration"])
                 playable = any(
                     isinstance(s, dict) and s.get("codec_type") == "audio"
-                    and s.get("codec_name") == "aac"
+                    and s.get("codec_name") in {
+                        "aac", "alac", "ac3", "eac3", "ec-3",
+                    }
                     and s.get("codec_tag_string") != "enca"
                     for s in info["streams"]
                 )

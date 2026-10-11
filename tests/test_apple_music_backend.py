@@ -10,7 +10,9 @@ import pytest
 from aiohttp import web
 
 from core.apple_music_backend import (
-    AppleMusicBackend, AppleMusicBackendError, BackendSettings, normalize_track_url,
+    AppleMusicBackend, AppleMusicBackendError, BackendSettings,
+    codec_priority_for_send_format, normalize_file_codec_priority,
+    normalize_track_url,
 )
 from core.apple_music_web import AppleMusicWeb
 
@@ -25,6 +27,27 @@ def config(tmp_path):
         card_enabled=True, proxy=None,
         parser=SimpleNamespace(applemusic=SimpleNamespace(use_proxy=False)),
     )
+
+
+@pytest.mark.parametrize("send_format,expected", [
+    ("voice", ("aac-web",)),
+    ("VOICE", ("aac-web",)),
+    ("file", ("alac", "aac-web")),
+    (None, ("alac", "aac-web")),
+])
+def test_codec_priority_tracks_audio_send_format(send_format, expected):
+    assert codec_priority_for_send_format(send_format) == expected
+
+
+@pytest.mark.parametrize("value,expected", [
+    (["alac", "aac-web"], ("alac", "aac-web")),
+    ("aac-web,alac", ("aac-web", "alac")),
+    (["ALAC", "alac", "invalid", "aac"], ("alac", "aac")),
+    ([], ("alac", "aac-web")),
+    (None, ("alac", "aac-web")),
+])
+def test_file_codec_priority_normalizes_and_keeps_default(value, expected):
+    assert normalize_file_codec_priority(value) == expected
 
 
 @pytest.mark.parametrize("url", [TRACK, "https://music.apple.com/cn/song/落日/1514034916", "https://music.apple.com/cn/song/1514034916"])
@@ -267,7 +290,10 @@ def test_expired_two_factor_session_requires_login(tmp_path):
 ])
 def test_download_checks_file_and_full_duration(tmp_path, actual, produces, size, codec_tag, expected):
     async def run():
-        backend = AppleMusicBackend(config(tmp_path), BackendSettings(enabled=True, python=sys.executable))
+        cfg = config(tmp_path)
+        cfg.parser.applemusic.audio_send_format = "file"
+        cfg.parser.applemusic.file_codec_priority = ["aac-web", "alac"]
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=True, python=sys.executable))
         commands = []
         async def me():
             return {"auth": {"state": "authenticated"}}
@@ -292,6 +318,7 @@ def test_download_checks_file_and_full_duration(tmp_path, actual, produces, size
             assert path.is_relative_to(tmp_path / "cache")
             assert path.stat().st_size == size
         assert "--no-config-file" in commands[0]
+        assert commands[0][commands[0].index("--song-codec-priority") + 1] == "aac-web,alac"
         assert commands[0][-1] == "https://music.apple.com/cn/song/1514034916"
         assert "1514034916" in commands[0]
         await backend.close()

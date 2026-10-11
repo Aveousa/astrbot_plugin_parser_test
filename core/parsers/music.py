@@ -1082,7 +1082,11 @@ class AppleMusicParser(PlaylistParserBase):
             send_as_voice = str(send_format).strip().lower() == "voice"
             result.extra["audio_as_voice"] = send_as_voice
             result.extra["audio_as_file"] = not send_as_voice
-            result.extra["audio_send_via_url"] = send_as_voice
+            # Both Apple Music delivery modes use OneBot URL segments when
+            # available.  This keeps file delivery out of AstrBot's local
+            # component serialization path as well as avoiding WAV conversion
+            # for voice delivery.
+            result.extra["audio_send_via_url"] = True
             result.contents.append(AudioContent(
                 backend.download_task(url, _duration_seconds(duration or fallback.get("duration"))),
                 duration=_duration_seconds(duration or fallback.get("duration")),

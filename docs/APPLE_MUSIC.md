@@ -80,7 +80,8 @@ gamdl 是子进程，不会被 import 到 AstrBot；其标准输出/错误不会
 虚拟环境）。不要为了调用 gamdl 把 Docker socket 暴露给 AstrBot。wrapper 可以继续作为
 独立服务运行，但要使用 AstrBot 容器能访问的 Docker 网络服务名，而不是各自容器里的
 `127.0.0.1`。
-本版固定 AAC Web 单曲，不启用 ALAC/Atmos、整张专辑或歌单下载。
+语音发送使用 AAC Web 以降低体积；文件发送优先下载无损 ALAC，当前歌曲或账号不可用时自动回退 AAC Web。
+仍不启用 Atmos、整张专辑或歌单下载。
 
 ### 3. 插件配置
 
@@ -95,6 +96,7 @@ gamdl 是子进程，不会被 import 到 AstrBot；其标准输出/错误不会
 | 独立 gamdl 环境的 Python 路径 | Windows 为 `…\Scripts\python.exe`；Linux 为 `…/bin/python` |
 | 返回单曲音频 | 默认关闭，先在管理页验证后再开启 |
 | Apple Music 音频发送格式 | `file`（文件，默认）或 `voice`（语音） |
+| Apple Music 文件音质优先级 | 仅文件模式使用；默认 `alac`、`aac-web`，可按顺序调整 |
 
 保存并**重载插件**。gamdl 未配置时仍能使用 wrapper 登录管理，但无法验证下载。
 配置只填写非秘密的地址/路径，不能在 wrapper URL 中夹带账号密码。
@@ -107,15 +109,16 @@ gamdl 是子进程，不会被 import 到 AstrBot；其标准输出/错误不会
    插件中的验证码会话绑定当前后台用户，10 分钟内有效；失败可重试。
 4. 刷新后分别核验「已登录」「订阅有效」「gamdl 就绪」。
    订阅接口暂不可达显示「未核验」，不会误报没有订阅。
-5. 用单曲链接执行音频验证。文件大小、AAC 格式及完整时长检查通过才报告成功。
+5. 用单曲链接执行音频验证。文件大小、AAC/ALAC 格式及完整时长检查通过才报告成功。
    `gamdl` 退出码为 0 或获得试听不算成功。
 
 验证音频仅写入插件缓存，由现有缓存清理器统一清理，不在管理页暴露带账号的播放 URL。
-开启返回音频后，Bot 保留已有卡片并附加单曲音频。选择 `file` 时发送 m4a 文件；选择
-`voice` 时优先把缓存音频注册为 AstrBot 一次性文件 URL，再让 OneBot/NapCat 拉取并发送，
-避免 AstrBot 本地把整首歌曲转成 WAV。语音模式要求 AstrBot 的 `callback_api_base` 能被
-NapCat 访问；未配置或不可用时自动降级为文件，不进入本地重编码路径。目标平台是否接收
-`m4a` 语音仍由适配器决定。下载失败沿用现有下载失败提示。
+开启返回音频后，Bot 保留已有卡片并附加单曲音频。Apple Music 音频使用 OneBot v11 消息段，
+不经 AstrBot 原生 `File` / `Record` 组件发送。语音模式使用 AAC Web；文件模式按“文件音质优先级”
+的顺序请求编码，首个可用音质成功后即停止，不再请求后续编码。默认先尝试 ALAC，随后回退到
+AAC Web。两种模式都需要 AstrBot 的 `callback_api_base` 可被 OneBot 实现（例如 NapCat）访问，
+让 OneBot 直接拉取临时文件 URL；如果 OneBot 或文件 URL 服务不可用，音频会跳过发送，不会回退
+到 AstrBot 本地序列化大文件。目标平台是否接收 `m4a` 语音仍由 OneBot 实现决定。下载失败沿用现有下载失败提示。
 仍需遵守歌曲地区、订阅和账号授权限制；不保证每首歌可下载。
 
 **清除内存会话不是完整注销。**它只调用 wrapper 的 `DELETE /login`，可取消当前登录

@@ -22,7 +22,8 @@ Apple Music 单曲复用现有歌曲信息卡片，展示歌名、歌手、专�
 支持 Plugin Pages 的 AstrBot 可从插件详情打开 **Apple Music 账号管理**，通过
 独立 wrapper-v2 完成账号登录和双重认证，不必手动提取 Cookie。音频使用独立的
 gamdl 环境，默认关闭，不增加核心必装依赖；开启后可在 Apple Music 配置中选择以
-“文件”或“语音”发送。部署、配置和安全限制见
+“文件”或“语音”发送；文件模式支持配置 gamdl 音质优先级。音频发送使用 OneBot v11，
+该功能目前仅支持 aiocqhttp（OneBot v11）。部署、配置和安全限制见
 [Apple Music 管理页说明](docs/APPLE_MUSIC.md)。
 
 抖音分享页未返回完整实况字段时，插件会使用抖音解析器中配置的登录
