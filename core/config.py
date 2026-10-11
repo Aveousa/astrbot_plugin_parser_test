@@ -170,6 +170,7 @@ class ParserItem(ConfigNode):
     parse_lyrics: bool | None
     audio_api_base: str | None
     backend_enabled: bool | None
+    audio_send_format: str | None
     wrapper_url: str | None
     wrapper_decrypt_host: str | None
     wrapper_decrypt_port: int | None

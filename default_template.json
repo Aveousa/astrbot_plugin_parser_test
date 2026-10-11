@@ -81,6 +81,7 @@
     "use_proxy": false,
     "backend_enabled": false,
     "return_audio": false,
+    "audio_send_format": "file",
     "wrapper_url": "http://127.0.0.1:80",
     "wrapper_decrypt_host": "127.0.0.1",
     "wrapper_decrypt_port": 10020,

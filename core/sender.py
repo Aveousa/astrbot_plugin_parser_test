@@ -260,7 +260,10 @@ class MessageSender:
                 case AudioContent():
                     segs.append(
                         File(name=path.name, file=self._to_file_uri(path))
-                        if self.cfg.audio_to_file
+                        if (
+                            result.extra.get("audio_as_file") is True
+                            or self.cfg.audio_to_file
+                        )
                         and result.extra.get("audio_as_voice") is not True
                         else self._record_from_path(path)
                     )

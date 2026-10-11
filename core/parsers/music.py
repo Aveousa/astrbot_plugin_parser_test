@@ -1073,6 +1073,15 @@ class AppleMusicParser(PlaylistParserBase):
             and backend.settings.enabled
             and getattr(self.cfg.parser.applemusic, "return_audio", False)
         ):
+            # Keep Apple Music's send choice local to this parser.  The file
+            # mode explicitly overrides the global audio_to_file switch, while
+            # voice mode asks the sender to build a Record component.
+            send_format = getattr(
+                self.cfg.parser.applemusic, "audio_send_format", "file"
+            )
+            send_as_voice = str(send_format).strip().lower() == "voice"
+            result.extra["audio_as_voice"] = send_as_voice
+            result.extra["audio_as_file"] = not send_as_voice
             result.contents.append(AudioContent(
                 backend.download_task(url, _duration_seconds(duration or fallback.get("duration"))),
                 duration=_duration_seconds(duration or fallback.get("duration")),

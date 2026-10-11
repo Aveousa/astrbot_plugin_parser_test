@@ -378,6 +378,14 @@
             "hint": "须有有效订阅、已登录 wrapper 和独立 gamdl 环境。默认关闭；先在管理页验证一首歌曲。歌单仍只返回卡片。",
             "type": "bool", "default": false
           },
+          "audio_send_format": {
+            "description": "Apple Music 音频发送格式",
+            "hint": "选择“语音”时发送为语音消息，选择“文件”时发送 m4a 文件。默认文件；是否能显示为语音还取决于当前平台适配器。",
+            "type": "string",
+            "options": ["file", "voice"],
+            "labels": ["文件", "语音"],
+            "default": "file"
+          },
           "wrapper_url": {
             "description": "wrapper HTTP 地址",
             "hint": "例如 http://127.0.0.1:80。只能配置自己信任的服务；勿公开暴露。HTTP 管理端口与解密 TCP 端口不同。",

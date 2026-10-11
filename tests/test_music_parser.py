@@ -1045,7 +1045,8 @@ def _apple_music_html(sections, structured_data=None):
 
 
 def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=True,
-                           backend=None, return_audio=False, metadata_only=False):
+                           backend=None, return_audio=False, audio_send_format="file",
+                           metadata_only=False):
     async def build():
         requests = []
 
@@ -1073,7 +1074,8 @@ def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=
             card_enabled=True,
             parser=SimpleNamespace(
                 applemusic=SimpleNamespace(use_proxy=False, show_playlist_url=show_url,
-                                           return_audio=return_audio)
+                                           return_audio=return_audio,
+                                           audio_send_format=audio_send_format)
             ),
         )
         parser.headers = {"User-Agent": "test"}
@@ -1089,11 +1091,16 @@ def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=
     return asyncio.run(build())
 
 
-@pytest.mark.parametrize("enabled,return_audio,metadata_only,expected", [
-    (True, True, False, True), (False, True, False, False),
-    (True, False, False, False), (True, True, True, False),
+@pytest.mark.parametrize("enabled,return_audio,audio_send_format,metadata_only,expected_voice,expected_file", [
+    (True, True, "voice", False, True, False),
+    (True, True, "file", False, False, True),
+    (False, True, "voice", False, False, False),
+    (True, False, "voice", False, False, False),
+    (True, True, "voice", True, False, False),
 ])
-def test_apple_music_optional_backend_preserves_default_cards(enabled, return_audio, metadata_only, expected):
+def test_apple_music_optional_backend_preserves_default_cards(
+    enabled, return_audio, audio_send_format, metadata_only, expected_voice, expected_file
+):
     calls = []
     def download_task(url, duration):
         calls.append((url, duration))
@@ -1103,10 +1110,14 @@ def test_apple_music_optional_backend_preserves_default_cards(enabled, return_au
     backend = SimpleNamespace(settings=SimpleNamespace(enabled=enabled), download_task=download_task)
     _, result, _ = _parse_apple_music_html(
         _apple_music_html([], _apple_music_json_ld()),
-        backend=backend, return_audio=return_audio, metadata_only=metadata_only,
+        backend=backend, return_audio=return_audio,
+        audio_send_format=audio_send_format, metadata_only=metadata_only,
     )
-    assert bool(calls) is expected
-    assert any(isinstance(content, AudioContent) for content in result.contents) is expected
+    expected_audio = expected_voice or expected_file
+    assert bool(calls) is expected_audio
+    assert any(isinstance(content, AudioContent) for content in result.contents) is expected_audio
+    assert result.extra.get("audio_as_voice", False) is expected_voice
+    assert result.extra.get("audio_as_file", False) is expected_file
     assert result.extra["duration"] == 306
     if metadata_only:
         assert result.contents == []

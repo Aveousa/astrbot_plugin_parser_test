@@ -281,6 +281,21 @@ def test_audio_as_voice_overrides_global_audio_file_setting(sender_module):
     assert event.sent[1][0].__class__.__name__ == "Record"
 
 
+def test_audio_as_file_overrides_global_audio_record_setting(sender_module):
+    result = ParseResult(
+        platform=Platform("applemusic", "Apple Music"),
+        contents=[AudioContent(Path("song.m4a"))],
+        extra={"audio_as_file": True},
+    )
+    sender = sender_module.MessageSender(_card_config(audio_to_file=False), _Renderer())
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[1][0].__class__.__name__ == "File"
+
+
 def test_netease_audio_uses_remote_url_for_onebot_and_keeps_local_download(
     sender_module,
 ):
