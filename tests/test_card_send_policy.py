@@ -352,6 +352,7 @@ def test_apple_file_uses_onebot_file_protocol(sender_module):
     fake_core.file_token_service = _TokenService()
     result = ParseResult(
         platform=Platform("applemusic", "Apple Music"),
+        title="月声尽,心灯明",
         contents=[AudioContent(Path("song.m4a"))],
         extra={"audio_as_file": True, "audio_send_via_url": True},
     )
@@ -365,13 +366,21 @@ def test_apple_file_uses_onebot_file_protocol(sender_module):
     assert actions[0][0] == "send_group_msg"
     assert actions[0][1]["message"] == [
         {
-            "type": "file",
-            "data": {
-                "file": "http://astrbot:6185/api/file/one-shot-token",
-                "name": "song.m4a",
-            },
+                "type": "file",
+                "data": {
+                    "file": "http://astrbot:6185/api/file/one-shot-token",
+                    "name": "月声尽,心灯明.m4a",
+                },
         }
     ]
+
+
+def test_apple_music_attachment_filename_is_sanitized(sender_module):
+    filename = sender_module.MessageSender._apple_music_audio_filename(
+        '../bad:name?.m4a', Path('track.m4a')
+    )
+
+    assert filename == "_bad_name_.m4a"
 
 
 def test_apple_audio_without_onebot_url_is_not_sent_natively(sender_module):

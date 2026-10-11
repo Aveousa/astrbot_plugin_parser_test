@@ -1,4 +1,5 @@
 from itertools import chain
+import re
 from pathlib import Path
 
 from astrbot.api import logger
@@ -89,6 +90,22 @@ class MessageSender:
         if not path.is_absolute():
             path = path.resolve()
         return path.as_uri()
+
+    @staticmethod
+    def _apple_music_audio_filename(title: object, path: Path) -> str:
+        """Build a portable attachment filename from the Apple Music title."""
+        suffix = path.suffix or ".m4a"
+        stem = str(title or "").strip()
+        if stem.lower().endswith(suffix.lower()):
+            stem = stem[: -len(suffix)]
+        stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", stem).strip(" .")
+        if not stem:
+            stem = path.stem or "Apple Music"
+        if stem.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+            stem = f"_{stem}"
+        # Leave room for the extension even on filesystems with short limits.
+        stem = stem[: max(1, 180 - len(suffix))].rstrip(" .") or "Apple Music"
+        return f"{stem}{suffix}"
 
     @staticmethod
     def _image_from_path(path: Path) -> Image:
@@ -609,13 +626,21 @@ class MessageSender:
                 ):
                     direct_audio_content = None
                 else:
-                    direct_audio_name = (await direct_audio_content.get_path()).name
+                    audio_path = await direct_audio_content.get_path()
+                    direct_audio_name = audio_path.name
+                    if (
+                        result.platform.name.lower() == "applemusic"
+                        and result.extra.get("audio_as_voice") is not True
+                    ):
+                        direct_audio_name = self._apple_music_audio_filename(
+                            result.title, audio_path
+                        )
                     if use_local_audio_url and not (
                         isinstance(direct_audio_url, str)
                         and direct_audio_url.startswith(("http://", "https://"))
                     ):
                         direct_audio_url = await self._register_local_audio_url(
-                            await direct_audio_content.get_path()
+                            audio_path
                         )
                     if direct_audio_url:
                         groups = [

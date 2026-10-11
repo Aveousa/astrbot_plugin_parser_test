@@ -1279,6 +1279,33 @@ def test_apple_music_track_can_fall_back_to_matching_json_ld(server_data):
     assert parser.downloader.audio_urls == []
 
 
+def test_apple_music_track_reads_exact_title_from_apple_meta_fallback():
+    url = (
+        "https://music.apple.com/cn/album/月声尽-心灯明/6817316824"
+        "?i=6817316837&l=en-GB&qq_aio_chat_type=3"
+    )
+    html = (
+        '<meta property="og:title" content="月声尽,心灯明 by Wuthering Waves">'
+        '<meta name="apple:title" content="月声尽,心灯明">'
+        '<meta name="apple:content_id" content="6817316837">'
+    )
+
+    _, result, _ = _parse_apple_music_html(html, url)
+
+    assert result.title == "月声尽,心灯明"
+    assert result.extra["track_id"] == "6817316837"
+
+
+def test_apple_music_meta_title_is_ignored_for_different_track_id():
+    html = (
+        '<meta name="apple:title" content="不匹配的歌曲">'
+        '<meta name="apple:content_id" content="999">'
+    )
+
+    with pytest.raises(ParseException, match="歌曲不存在或暂时无法访问"):
+        _parse_apple_music_html(html)
+
+
 @pytest.mark.parametrize(
     "html",
     [

@@ -970,6 +970,33 @@ class AppleMusicParser(PlaylistParserBase):
                 }
         return {}
 
+    @staticmethod
+    def _apple_meta_title(html: str, track_id: str) -> str | None:
+        """Read Apple's exact song title as a last-resort metadata fallback.
+
+        Apple pages include ``apple:title`` and ``apple:content_id`` even when
+        their serialized server data changes shape.  Match the ID when present
+        so a page-level title can never be mistaken for a different track.
+        """
+        metadata: dict[str, str] = {}
+        for match in re.finditer(r"<meta\b[^>]*>", html, flags=re.IGNORECASE):
+            attributes = {
+                key.lower(): unescape(value)
+                for key, _quote, value in re.findall(
+                    r"([\w:-]+)\s*=\s*([\"'])(.*?)\2",
+                    match.group(0),
+                    flags=re.DOTALL,
+                )
+            }
+            name = attributes.get("name", "").strip().lower()
+            if name in {"apple:title", "apple:content_id"}:
+                metadata[name] = attributes.get("content", "").strip()
+        content_id = metadata.get("apple:content_id")
+        title = metadata.get("apple:title")
+        if content_id and content_id != track_id:
+            return None
+        return title or None
+
     async def _handle_track(self, searched, *, metadata_only=False):
         track_id = searched.group("song_id") or searched.group("track_id")
         url = "https://" + searched.group(0)
@@ -1028,7 +1055,11 @@ class AppleMusicParser(PlaylistParserBase):
                     track = item
 
         fallback = self._json_ld_track(html, track_id)
-        title = _first_text(track, "title", "name") or _first_text(fallback, "title")
+        title = (
+            _first_text(track, "title", "name")
+            or _first_text(fallback, "title")
+            or self._apple_meta_title(html, track_id)
+        )
         if not title:
             raise ParseException("Apple Music 歌曲不存在或暂时无法访问")
         duration = track.get("duration")

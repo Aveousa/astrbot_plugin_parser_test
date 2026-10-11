@@ -116,7 +116,8 @@ gamdl 是子进程，不会被 import 到 AstrBot；其标准输出/错误不会
 开启返回音频后，Bot 保留已有卡片并附加单曲音频。Apple Music 音频使用 OneBot v11 消息段，
 不经 AstrBot 原生 `File` / `Record` 组件发送。语音模式使用 AAC Web；文件模式按“文件音质优先级”
 的顺序请求编码，首个可用音质成功后即停止，不再请求后续编码。默认先尝试 ALAC，随后回退到
-AAC Web。两种模式都需要 AstrBot 的 `callback_api_base` 可被 OneBot 实现（例如 NapCat）访问，
+AAC Web。文件模式发送时使用歌曲标题作为附件文件名，并保留 `.m4a` 扩展名。两种模式都需要
+AstrBot 的 `callback_api_base` 可被 OneBot 实现（例如 NapCat）访问，
 让 OneBot 直接拉取临时文件 URL；如果 OneBot 或文件 URL 服务不可用，音频会跳过发送，不会回退
 到 AstrBot 本地序列化大文件。目标平台是否接收 `m4a` 语音仍由 OneBot 实现决定。下载失败沿用现有下载失败提示。
 仍需遵守歌曲地区、订阅和账号授权限制；不保证每首歌可下载。
