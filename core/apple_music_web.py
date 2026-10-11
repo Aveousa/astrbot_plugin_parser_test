@@ -35,7 +35,10 @@ class AppleMusicWeb:
     def start(self, owner: str, action: str, body: dict) -> dict:
         if self.closed:
             raise AppleMusicBackendError("管理页已关闭，请重载插件")
-        self.backend._require_enabled()
+        # Cache maintenance is a local plugin operation and remains available
+        # even when the optional Apple Music wrapper is disabled.
+        if action not in {"clear-cache", "save-settings"}:
+            self.backend._require_enabled()
         if self._task and not self._task.done() or self.backend.lock.locked():
             raise AppleMusicBackendError("已有登录或下载任务运行中，请稍后再试")
         self.backend.check_owner(owner, require_pending=action == "two-factor")
@@ -55,6 +58,14 @@ class AppleMusicWeb:
             if body.get("confirm") is not True:
                 raise AppleMusicBackendError("请确认仅清除内存会话，不删除 wrapper 磁盘登录缓存")
             coroutine = self.backend.clear_session(owner)
+        elif action == "clear-cache":
+            if body.get("confirm") is not True:
+                raise AppleMusicBackendError("请确认清除插件缓存文件")
+            coroutine = self.backend.clear_cache(owner)
+        elif action == "save-settings":
+            coroutine = self.backend.update_management_settings(
+                owner, body.get("settings")
+            )
         elif action == "verify":
             url, _ = normalize_track_url(body.get("url"))
             coroutine = self._verify(url)
@@ -164,7 +175,7 @@ class AppleMusicWeb:
             return handler
 
         routes = [("status", get_status, ["GET"]), ("operation", get_operation, ["GET"])]
-        routes += [(action, post_handler(action), ["POST"]) for action in ("login", "two-factor", "clear-session", "verify")]
+        routes += [(action, post_handler(action), ["POST"]) for action in ("login", "two-factor", "clear-session", "clear-cache", "save-settings", "verify")]
         for endpoint, handler, methods in routes:
             route = f"/{self.plugin_name}/apple-music/{endpoint}"
             context.register_web_api(route, handler, methods, "Apple Music 账号管理")

@@ -386,6 +386,7 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
         context.register_web_api = register
         assert page.register(context)
         routes = {route.rsplit("/", 1)[-1]: handler for route, handler, _, _ in context.registered_web_apis}
+        assert "save-settings" in routes
         assert (await routes["status"]())[1]["status_code"] == 401
         assert (await routes["login"]())[1]["status_code"] == 401
         request.username = "admin"
@@ -456,4 +457,66 @@ def test_native_astrbot_request_context_and_json_response(tmp_path):
             await page.close()
             await backend.close()
         assert context.registered_web_apis == []
+    asyncio.run(run())
+
+
+def test_cache_status_and_clear_work_with_optional_backend_disabled(tmp_path):
+    async def run():
+        cfg = config(tmp_path)
+        cfg.cache_dir.mkdir()
+        (cfg.cache_dir / "audio.m4a").write_bytes(b"audio")
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        page = AppleMusicWeb(backend, "test-plugin")
+        try:
+            status = await backend.status("admin")
+            assert status["cache"] == {"bytes": 5, "files": 1}
+            operation = page.start("admin", "clear-cache", {"confirm": True})
+            assert operation["state"] == "running"
+            await page._task
+            assert page.operation("admin")["state"] == "complete"
+            assert list(cfg.cache_dir.iterdir()) == []
+        finally:
+            await page.close()
+            await backend.close()
+
+    asyncio.run(run())
+
+
+def test_management_settings_are_validated_persisted_and_applied(tmp_path):
+    async def run():
+        cfg = config(tmp_path)
+        item = cfg.parser.applemusic
+        item.backend_enabled = False
+        item.return_audio = False
+        item.audio_send_format = "file"
+        item.file_codec_priority = ["alac", "aac-web"]
+        item.show_playlist_cover = True
+        item.show_playlist_url = True
+        saves = []
+        cfg.save_config = lambda: saves.append(True)
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        values = {
+            "backend_enabled": True,
+            "return_audio": True,
+            "audio_send_format": "voice",
+            "file_codec_priority": ["aac-web", "alac"],
+            "show_playlist_cover": False,
+            "show_playlist_url": False,
+        }
+        try:
+            result = await backend.update_management_settings("admin", values)
+            assert result["settings"] == values
+            assert result["message"] == "Apple Music 解析设置已保存并立即生效"
+            assert saves == [True]
+            assert backend.settings.enabled is True
+            assert item.file_codec_priority == ["aac-web", "alac"]
+            with pytest.raises(AppleMusicBackendError, match="音质优先级无效"):
+                await backend.update_management_settings(
+                    "admin", {"file_codec_priority": ["alac", "alac"]}
+                )
+            with pytest.raises(AppleMusicBackendError, match="不支持的字段"):
+                await backend.update_management_settings("admin", {"wrapper_url": "x"})
+        finally:
+            await backend.close()
+
     asyncio.run(run())

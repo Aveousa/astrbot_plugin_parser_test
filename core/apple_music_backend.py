@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import aiohttp
 
-from .cache import create_parse_cache_dir, get_active_cache_dir
+from .cache import clear_cache_dir, create_parse_cache_dir, get_active_cache_dir, get_cache_size
 from .exception import DownloadException
 
 
@@ -36,6 +36,17 @@ SUPPORTED_FILE_CODECS = frozenset({
     "alac", "aac-web", "aac-he-web", "aac", "aac-he",
     "aac-binaural", "aac-downmix", "aac-he-binaural", "aac-he-downmix",
     "atmos", "ac3",
+})
+MANAGED_BOOLEAN_SETTINGS = (
+    "backend_enabled",
+    "return_audio",
+    "show_playlist_cover",
+    "show_playlist_url",
+)
+MANAGED_SETTINGS = frozenset({
+    *MANAGED_BOOLEAN_SETTINGS,
+    "audio_send_format",
+    "file_codec_priority",
 })
 
 
@@ -176,6 +187,78 @@ class AppleMusicBackend:
             raise AppleMusicBackendError("请先在插件配置中启用 Apple Music 可选后端")
         return self.settings.validate()
 
+    def management_settings(self) -> dict:
+        """Return the small, non-secret configuration exposed to this page."""
+
+        item = self.cfg.parser.applemusic
+        return {
+            "backend_enabled": getattr(item, "backend_enabled", False) is True,
+            "return_audio": getattr(item, "return_audio", False) is True,
+            "audio_send_format": (
+                "voice"
+                if str(getattr(item, "audio_send_format", "file")).lower() == "voice"
+                else "file"
+            ),
+            "file_codec_priority": list(
+                normalize_file_codec_priority(
+                    getattr(item, "file_codec_priority", None)
+                )
+            ),
+            "show_playlist_cover": getattr(item, "show_playlist_cover", True) is not False,
+            "show_playlist_url": getattr(item, "show_playlist_url", True) is not False,
+        }
+
+    async def update_management_settings(self, owner: str, values: object) -> dict:
+        """Validate and persist only the Apple Music fields exposed by the page."""
+
+        if not isinstance(values, dict) or not values:
+            raise AppleMusicBackendError("没有可保存的 Apple Music 设置")
+        unknown = set(values) - MANAGED_SETTINGS
+        if unknown:
+            raise AppleMusicBackendError("设置中包含不支持的字段")
+        for field in MANAGED_BOOLEAN_SETTINGS:
+            if field in values and not isinstance(values[field], bool):
+                raise AppleMusicBackendError("Apple Music 开关设置无效")
+        if "audio_send_format" in values and values["audio_send_format"] not in {
+            "file", "voice"
+        }:
+            raise AppleMusicBackendError("Apple Music 音频发送格式无效")
+        if "file_codec_priority" in values:
+            codecs = values["file_codec_priority"]
+            if (
+                not isinstance(codecs, list)
+                or not 1 <= len(codecs) <= len(SUPPORTED_FILE_CODECS)
+                or any(not isinstance(codec, str) for codec in codecs)
+                or len(codecs) != len(set(codecs))
+                or any(codec not in SUPPORTED_FILE_CODECS for codec in codecs)
+            ):
+                raise AppleMusicBackendError("Apple Music 文件音质优先级无效")
+
+        async with self.lock:
+            self.check_owner(owner)
+            item = self.cfg.parser.applemusic
+            previous = {key: getattr(item, key, None) for key in values}
+            try:
+                for key, value in values.items():
+                    setattr(item, key, list(value) if key == "file_codec_priority" else value)
+                save = getattr(self.cfg, "save_config", None)
+                if not callable(save):
+                    raise RuntimeError("configuration is not persistent")
+                await asyncio.get_running_loop().run_in_executor(None, save)
+            except Exception:
+                for key, value in previous.items():
+                    setattr(item, key, value)
+                raise AppleMusicBackendError("Apple Music 设置保存失败，请稍后重试") from None
+
+            # BackendSettings is immutable and normally created at plugin load.
+            # Refresh it so backend_enabled takes effect without a plugin reload.
+            self.settings = BackendSettings.from_config(self.cfg)
+            self._probe_cache = None
+            return {
+                "message": "Apple Music 解析设置已保存并立即生效",
+                "settings": self.management_settings(),
+            }
+
     @staticmethod
     async def _read_json(response: aiohttp.ClientResponse) -> dict:
         # read(n) may return only the first available HTTP chunk. Read to EOF
@@ -277,6 +360,10 @@ class AppleMusicBackend:
         return dict(result)
 
     async def status(self, owner: str) -> dict:
+        loop = asyncio.get_running_loop()
+        cache_bytes, cache_files = await loop.run_in_executor(
+            None, get_cache_size, self.cfg.cache_dir
+        )
         result = {
             "enabled": self.settings.enabled,
             "connected": False,
@@ -289,6 +376,8 @@ class AppleMusicBackend:
             "message": "请在插件配置中启用可选后端并配置 wrapper / gamdl Python",
             "subscription_message": "尚未核验订阅",
             "gamdl": {"available": False, "version": None, "ffmpeg": False, "ffprobe": False},
+            "cache": {"bytes": cache_bytes, "files": cache_files},
+            "settings": self.management_settings(),
         }
         if not self.settings.enabled or self.closed:
             return result
@@ -313,6 +402,21 @@ class AppleMusicBackend:
         except AppleMusicBackendError as exc:
             result["message"] = exc.message
         return result
+
+    async def clear_cache(self, owner: str) -> dict:
+        """Clear generated media/cards while keeping the configured root."""
+
+        async with self.lock:
+            self.check_owner(owner)
+            loop = asyncio.get_running_loop()
+            removed_files, removed_bytes = await loop.run_in_executor(
+                None, clear_cache_dir, self.cfg.cache_dir
+            )
+            return {
+                "message": "缓存已清理，账号登录状态未受影响",
+                "removed_files": removed_files,
+                "removed_bytes": removed_bytes,
+            }
 
     def check_owner(self, owner: str, *, require_pending=False) -> None:
         if time.monotonic() >= self.pending_until:

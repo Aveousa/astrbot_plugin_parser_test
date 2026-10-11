@@ -9,6 +9,7 @@ or introducing races between concurrent messages.
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -65,3 +66,57 @@ def cache_dir_scope(directory: Path | str | None) -> Iterator[Path | None]:
     finally:
         _ACTIVE_CACHE_DIR.reset(token)
 
+
+def get_cache_size(cache_root: Path | str) -> tuple[int, int]:
+    """Return ``(bytes, files)`` for the plugin cache without following links."""
+
+    root = Path(cache_root)
+    if not root.exists() or not root.is_dir() or root.is_symlink():
+        return 0, 0
+    total = 0
+    files = 0
+    try:
+        for entry in root.rglob("*"):
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            try:
+                total += entry.stat().st_size
+                files += 1
+            except OSError:
+                continue
+    except OSError:
+        return total, files
+    return total, files
+
+
+def clear_cache_dir(cache_root: Path | str) -> tuple[int, int]:
+    """Remove cache contents and recreate the configured cache directory.
+
+    The root itself is preserved and symlinked children are unlinked rather
+    than followed. Returns the number of removed files and bytes.
+    """
+
+    root = Path(cache_root)
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise ValueError("cache root is not a directory")
+    root.mkdir(parents=True, exist_ok=True)
+    removed_files = 0
+    removed_bytes = 0
+    for entry in tuple(root.iterdir()):
+        if entry.is_symlink() or entry.is_file():
+            try:
+                if entry.is_file() and not entry.is_symlink():
+                    removed_bytes += entry.stat().st_size
+                entry.unlink()
+                removed_files += 1
+            except OSError:
+                continue
+        elif entry.is_dir():
+            size, count = get_cache_size(entry)
+            try:
+                shutil.rmtree(entry)
+                removed_files += count
+                removed_bytes += size
+            except OSError:
+                continue
+    return removed_files, removed_bytes
