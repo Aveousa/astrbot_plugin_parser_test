@@ -38,8 +38,10 @@ Windows 主机可通过配置好的 Docker Linux 环境运行；插件管理页�
 
 ### 2. 独立 gamdl 环境
 
-不要在 AstrBot 的 Python 环境直接安装 gamdl。创建独立虚拟环境并安装
-**gamdl==3.9.1**。例如：
+不要在 AstrBot 的 Python 环境直接安装 gamdl。请在**AstrBot 进程所在的容器**中创建独立虚拟环境并安装
+**gamdl==3.9.1**。插件会从 AstrBot 容器内启动这个 Python 子进程；`gamdl_python` 必须是
+该容器内部可访问的绝对路径，不能填写宿主机路径，也不能填写另一个 gamdl 容器内部的路径。
+例如：
 
 ```powershell
 py -3.12 -m venv D:\tools\apple-music-gamdl
@@ -53,9 +55,31 @@ python3 -m venv /opt/apple-music-gamdl
 /opt/apple-music-gamdl/bin/python -m pip install gamdl==3.9.1
 ```
 
-FFmpeg 和 FFprobe 必须在 **AstrBot 进程的 PATH** 中可见。
+Docker 部署时，应在 AstrBot 容器内执行等价操作（下面的
+`astrbot` 替换成你的容器名；临时 `docker exec` 安装会在重建容器后丢失，建议写入
+AstrBot 自定义 Dockerfile）：
+
+```bash
+docker exec -it astrbot sh
+python3 -m venv /opt/gamdl-venv
+/opt/gamdl-venv/bin/python -m pip install --no-cache-dir gamdl==3.9.1
+exit
+docker exec astrbot /opt/gamdl-venv/bin/python -c \
+  "from gamdl.cli.cli import main; from importlib.metadata import version; print(version('gamdl'))"
+docker exec astrbot sh -lc 'command -v ffmpeg && command -v ffprobe'
+```
+
+如果镜像没有 `python3-venv` 或 FFmpeg，需要在自定义镜像构建阶段安装它们，而不是只在
+宿主机安装。验证命令应输出 `3.9.1`，且两个媒体工具都应在 AstrBot 容器中找到。
+
+FFmpeg 和 FFprobe 必须在 **AstrBot 容器内、AstrBot 进程的 PATH** 中可见。
 gamdl 是子进程，不会被 import 到 AstrBot；其标准输出/错误不会转发给后台或日志，
 避免第三方错误泄露令牌。子进程无交互 stdin、有超时，卸载时停止运行任务。
+如果 AstrBot 和 gamdl 是两个独立容器，当前适配不能直接通过 `gamdl_python` 调用后者；
+最简单的做法是把 gamdl 虚拟环境和 FFmpeg 安装到 AstrBot 的自定义镜像中（仍然使用独立
+虚拟环境）。不要为了调用 gamdl 把 Docker socket 暴露给 AstrBot。wrapper 可以继续作为
+独立服务运行，但要使用 AstrBot 容器能访问的 Docker 网络服务名，而不是各自容器里的
+`127.0.0.1`。
 本版固定 AAC Web 单曲，不启用 ALAC/Atmos、整张专辑或歌单下载。
 
 ### 3. 插件配置

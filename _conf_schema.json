@@ -393,7 +393,7 @@
           },
           "gamdl_python": {
             "description": "独立 gamdl 环境的 Python 路径",
-            "hint": "填写安装了 gamdl==3.9.1 的虚拟环境 Python 绝对路径；不在 AstrBot 环境安装 gamdl。不配置时仍可管理登录。FFmpeg/FFprobe 须在 PATH。",
+            "hint": "填写 AstrBot 容器内安装了 gamdl==3.9.1 的虚拟环境 Python 绝对路径，例如 /opt/gamdl-venv/bin/python；不能填写宿主机或另一个容器的路径。不配置时仍可管理登录。FFmpeg/FFprobe 也须在 AstrBot 容器 PATH。",
             "type": "string", "default": ""
           },
           "show_playlist_cover": {
