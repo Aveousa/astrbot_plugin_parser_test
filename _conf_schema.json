@@ -380,7 +380,7 @@
           },
           "audio_send_format": {
             "description": "Apple Music 音频发送格式",
-            "hint": "选择“语音”时发送为语音消息，选择“文件”时发送 m4a 文件。默认文件；是否能显示为语音还取决于当前平台适配器。",
+            "hint": "选择“语音”时让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频，选择“文件”时发送 m4a 文件。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",
             "type": "string",
             "options": ["file", "voice"],
             "labels": ["文件", "语音"],

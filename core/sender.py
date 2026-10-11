@@ -262,9 +262,12 @@ class MessageSender:
                         File(name=path.name, file=self._to_file_uri(path))
                         if (
                             result.extra.get("audio_as_file") is True
-                            or self.cfg.audio_to_file
+                            or result.extra.get("audio_send_via_url") is True
+                            or (
+                                self.cfg.audio_to_file
+                                and result.extra.get("audio_as_voice") is not True
+                            )
                         )
-                        and result.extra.get("audio_as_voice") is not True
                         else self._record_from_path(path)
                     )
                 case FileContent():
@@ -437,6 +440,26 @@ class MessageSender:
         return True
 
     @staticmethod
+    async def _register_local_audio_url(path: Path) -> str | None:
+        """Expose a cached local audio file through AstrBot's one-shot file URL.
+
+        This lets OneBot/NapCat fetch the m4a itself.  In particular, it avoids
+        AstrBot's Record preprocessing step, which otherwise decodes a whole
+        song to WAV and can consume substantial CPU/RAM.
+        """
+
+        try:
+            from astrbot.core import astrbot_config, file_token_service
+
+            callback_base = astrbot_config.get("callback_api_base", "")
+            if not isinstance(callback_base, str) or not callback_base.strip():
+                return None
+            token = await file_token_service.register_file(str(path), timeout=300)
+            return f"{callback_base.rstrip('/')}/api/file/{token}"
+        except (ImportError, AttributeError, KeyError, OSError, TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
         """提取消息段元信息，用于失败日志定位。"""
         meta: list[dict[str, str]] = []
@@ -539,11 +562,17 @@ class MessageSender:
         # 音乐单曲仍先下载到本次解析目录，但 OneBot 发送时传媒体 URL，
         # 让 Napcat 自行拉取并转码，避免本地 Record 被编码成超大 WebSocket 帧。
         direct_audio_url = result.extra.get("audio_send_url")
+        use_local_audio_url = result.extra.get("audio_send_via_url") is True
         direct_audio_content: AudioContent | None = None
         if (
             result.extra.get("audio_as_voice") is True
-            and isinstance(direct_audio_url, str)
-            and direct_audio_url.startswith(("http://", "https://"))
+            and (
+                (
+                    isinstance(direct_audio_url, str)
+                    and direct_audio_url.startswith(("http://", "https://"))
+                )
+                or use_local_audio_url
+            )
             and callable(getattr(getattr(event, "bot", None), "call_action", None))
         ):
             direct_audio_content = next(
@@ -568,18 +597,32 @@ class MessageSender:
                 ):
                     direct_audio_content = None
                 else:
-                    groups = [
-                        SendGroup(
-                            contents=[
-                                content
-                                for content in group.contents
-                                if content is not direct_audio_content
-                            ],
-                            force_merge=group.force_merge,
-                            render_card=group.render_card,
+                    if use_local_audio_url and not (
+                        isinstance(direct_audio_url, str)
+                        and direct_audio_url.startswith(("http://", "https://"))
+                    ):
+                        direct_audio_url = await self._register_local_audio_url(
+                            await direct_audio_content.get_path()
                         )
-                        for group in groups
-                    ]
+                    if direct_audio_url:
+                        groups = [
+                            SendGroup(
+                                contents=[
+                                    content
+                                    for content in group.contents
+                                    if content is not direct_audio_content
+                                ],
+                                force_merge=group.force_merge,
+                                render_card=group.render_card,
+                            )
+                            for group in groups
+                        ]
+                    else:
+                        # No reachable AstrBot file service: send the cached
+                        # m4a as a file instead of entering local WAV conversion.
+                        direct_audio_content = None
+                        result.extra["audio_as_voice"] = False
+                        result.extra["audio_as_file"] = True
 
         sent = False
         for group in groups:
