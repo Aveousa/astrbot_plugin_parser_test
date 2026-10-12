@@ -187,8 +187,42 @@ def test_disabled_backend_makes_no_network_requests(tmp_path):
         result = await backend.status("admin")
         assert result["enabled"] is False
         assert result["subscription_active"] is None
+        assert [item["key"] for item in result["platform_accounts"]] == [
+            "douyin", "bilibili", "qqmusic", "kugou", "applemusic"
+        ]
+        assert result["platform_accounts"][-1] == {
+            "key": "applemusic", "label": "Apple Music",
+            "available": False, "text": "账号后端未启用",
+        }
         await backend.close()
     asyncio.run(run())
+
+
+def test_platform_account_provider_is_normalized_without_exposing_cookie_data(tmp_path):
+    cfg = config(tmp_path)
+    cfg.parser.applemusic.backend_enabled = True
+    backend = AppleMusicBackend(
+        cfg,
+        BackendSettings(enabled=True),
+        platform_status_provider=lambda: [
+            {"key": "douyin", "label": "forged", "available": True,
+             "text": "登录 Cookie 已配置", "cookie": "private-session"},
+            {"key": "qqmusic", "available": False, "text": "账号 Cookie 不完整"},
+            {"key": "unknown", "available": True, "text": "ignored"},
+        ],
+    )
+
+    accounts = backend.platform_accounts("authenticated")
+
+    assert accounts[0] == {
+        "key": "douyin", "label": "抖音",
+        "available": True, "text": "登录 Cookie 已配置",
+    }
+    assert accounts[1]["text"] == "状态未就绪"
+    assert accounts[2]["text"] == "账号 Cookie 不完整"
+    assert accounts[-1]["available"] is True
+    assert accounts[-1]["text"] == "已登录"
+    assert "private-session" not in json.dumps(accounts)
 
 
 async def wrapper_fixture(tmp_path):
@@ -246,6 +280,8 @@ def test_login_two_factor_owner_isolation_and_redacted_status(tmp_path):
             status = await backend.status("admin-a")
             assert status["auth_state"] == "authenticated"
             assert status["subscription_active"] is True
+            assert status["platform_accounts"][-1]["available"] is True
+            assert status["platform_accounts"][-1]["text"] == "已登录"
             assert "private" not in json.dumps(status)
             assert "must-not-be-returned" not in json.dumps(result)
             cleared = await backend.clear_session("admin-a")

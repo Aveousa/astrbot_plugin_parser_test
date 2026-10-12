@@ -47,6 +47,9 @@ class ProbedVideo:
 
 
 class DouyinParser(BaseParser):
+    _LOGIN_COOKIE_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"sessionid", "sessionid_ss", "sid_tt", "sid_guard"}
+    )
     # 平台信息
     platform: ClassVar[Platform] = Platform(name="douyin", display_name="抖音")
     PLAY_RATIOS: ClassVar[tuple[str, ...]] = ("1080p", "720p", "540p", "360p")
@@ -166,6 +169,22 @@ class DouyinParser(BaseParser):
         self.mycfg = config.parser.douyin
         self.cookiejar = CookieJar(config, self.mycfg, domain="douyin.com")
         self._set_cookies()
+
+    def has_login_cookie(self) -> bool:
+        """Whether locally stored cookies contain a Douyin account session.
+
+        Anonymous cookies such as ``ttwid`` intentionally do not count as a
+        login state. This method only inspects local cookie names and never
+        sends credentials over the network.
+        """
+
+        cookies = getattr(getattr(self, "cookiejar", None), "cookies", ())
+        return any(
+            str(getattr(cookie, "name", "")).lower() in self._LOGIN_COOKIE_NAMES
+            and bool(getattr(cookie, "value", ""))
+            and not cookie.is_expired()
+            for cookie in cookies
+        )
 
     @property
     def motion_photo_send_mode(self) -> str:

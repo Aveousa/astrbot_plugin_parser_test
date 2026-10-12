@@ -203,3 +203,58 @@ def test_initialize_checks_kugou_cookie_after_registering_parsers(monkeypatch):
     asyncio.run(plugin.initialize())
 
     assert calls == ["clean", "renderer", "register", "qq-cookie", "kugou-cookie"]
+
+
+def test_platform_account_statuses_distinguish_login_cookies_and_disabled_parsers():
+    main_module = _load_main_module()
+
+    class _AccountParser:
+        def __init__(self, name, *, auth=False, cookie=False, bilibili=False):
+            self.platform = SimpleNamespace(name=name)
+            self._auth = auth
+            self._cookie = cookie
+            if bilibili:
+                self.login = SimpleNamespace(has_cookie=lambda: cookie)
+
+        def has_login_cookie(self):
+            return self._auth
+
+        def has_auth_credentials(self):
+            return self._auth
+
+        def has_cookie(self):
+            return self._cookie
+
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    plugin.cfg = SimpleNamespace(parser=SimpleNamespace(
+        douyin=SimpleNamespace(enable=True),
+        bilibili=SimpleNamespace(enable=True),
+        qqmusic=SimpleNamespace(enable=True),
+        kugou=SimpleNamespace(enable=False),
+    ))
+    douyin = _AccountParser("douyin", auth=False, cookie=True)
+    bilibili = _AccountParser("bilibili", cookie=True, bilibili=True)
+    qqmusic = _AccountParser("qqmusic", auth=False, cookie=True)
+    kugou = _AccountParser("kugou", auth=True, cookie=True)
+    plugin.parser_map = {
+        "douyin.com": douyin,
+        "v.douyin.com": douyin,
+        "bilibili.com": bilibili,
+        "y.qq.com": qqmusic,
+        "kugou.com": kugou,
+    }
+
+    statuses = {
+        item["key"]: item
+        for item in main_module.ParserPlugin._platform_account_statuses(plugin)
+    }
+
+    assert statuses["douyin"] == {
+        "key": "douyin", "available": False, "text": "登录 Cookie 未配置"
+    }
+    assert statuses["bilibili"]["available"] is True
+    assert statuses["bilibili"]["text"] == "登录 Cookie 已配置"
+    assert statuses["qqmusic"] == {
+        "key": "qqmusic", "available": False, "text": "账号 Cookie 不完整"
+    }
+    assert statuses["kugou"]["text"] == "解析器未启用"

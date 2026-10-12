@@ -30,6 +30,20 @@
     $(id).textContent = value;
     $(id).dataset.tone = tone;
   }
+  function renderPlatformAccounts(accounts) {
+    const byKey = new Map(
+      (Array.isArray(accounts) ? accounts : [])
+        .filter((item) => item && typeof item.key === "string")
+        .map((item) => [item.key, item])
+    );
+    document.querySelectorAll("[data-platform-status]").forEach((item) => {
+      const status = byKey.get(item.dataset.platformStatus);
+      const available = status?.available === true;
+      item.dataset.available = String(available);
+      item.querySelector("small").textContent = typeof status?.text === "string"
+        ? status.text : "状态未确认";
+    });
+  }
   function controls() {
     const connected = Boolean(snapshot?.enabled && snapshot?.connected && nonce);
     $("refresh").disabled = refreshing;
@@ -61,6 +75,7 @@
     field("ffmpeg-state", data.gamdl.ffmpeg && data.gamdl.ffprobe ? "就绪" : "未就绪");
     field("playback-state", data.playback_ready ? "就绪" : "未就绪");
     $("subscription-detail").textContent = data.subscription_message;
+    renderPlatformAccounts(data.platform_accounts);
     renderCache(data.cache);
     renderSettings(data.settings);
     controls();

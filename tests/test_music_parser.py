@@ -44,6 +44,20 @@ class _Downloader:
         return asyncio.create_task(complete())
 
 
+def test_qqmusic_account_status_requires_identity_and_auth_key():
+    parser = QQMusicParser.__new__(QQMusicParser)
+    cookie = "uin=12345; qqmusic_key=account-key"
+    parser.cookiejar = SimpleNamespace(
+        get_cookie_header_for_url=lambda _url: cookie
+    )
+    assert parser.has_cookie() is True
+    assert parser.has_auth_credentials() is True
+
+    cookie = "uin=12345; pgv_pvid=anonymous"
+    assert parser.has_cookie() is True
+    assert parser.has_auth_credentials() is False
+
+
 def _build_result(show_playlist_cover: bool | None):
     async def build():
         parser = QishuiMusicParser.__new__(QishuiMusicParser)

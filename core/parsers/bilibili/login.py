@@ -46,6 +46,24 @@ class BilibiliLogin:
         else:
             logger.warning(f"哔哩哔哩凭证文件缺少 SESSDATA: {self.credential_file}")
 
+    def has_cookie(self) -> bool:
+        """Check for a locally stored SESSDATA value without a network request."""
+
+        if self._credential is not None and self._credential.has_sessdata():
+            return True
+        for item in str(self.raw_cookies or "").split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name.lower() == "sessdata" and value.strip():
+                return True
+        try:
+            cookies = json.loads(self.credential_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        return isinstance(cookies, dict) and any(
+            str(name).lower() == "sessdata" and bool(value)
+            for name, value in cookies.items()
+        )
+
     async def login_with_qrcode(self) -> bytes:
         """通过二维码登录获取哔哩哔哩登录凭证"""
         self._qr_login = QrCodeLogin()

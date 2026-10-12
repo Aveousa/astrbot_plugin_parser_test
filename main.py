@@ -48,8 +48,53 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
-        self.apple_music_backend = AppleMusicBackend(self.cfg)
+        self.apple_music_backend = AppleMusicBackend(
+            self.cfg, platform_status_provider=self._platform_account_statuses
+        )
         self.apple_music_web = AppleMusicWeb(self.apple_music_backend, self.cfg._plugin_name)
+
+    def _platform_account_statuses(self) -> list[dict]:
+        """Describe local account cookies without exposing or validating secrets."""
+
+        parsers = {
+            parser.platform.name: parser
+            for parser in set(self.parser_map.values())
+            if getattr(getattr(parser, "platform", None), "name", None)
+        }
+        statuses: list[dict] = []
+        for key in ("douyin", "bilibili", "qqmusic", "kugou"):
+            item = getattr(getattr(self.cfg, "parser", None), key, None)
+            parser = parsers.get(key)
+            if item is None or getattr(item, "enable", True) is not True:
+                statuses.append(
+                    {"key": key, "available": False, "text": "解析器未启用"}
+                )
+                continue
+            if parser is None:
+                statuses.append(
+                    {"key": key, "available": False, "text": "状态未就绪"}
+                )
+                continue
+
+            try:
+                if key == "douyin":
+                    available = parser.has_login_cookie()
+                    text = "登录 Cookie 已配置" if available else "登录 Cookie 未配置"
+                elif key == "bilibili":
+                    available = parser.login.has_cookie()
+                    text = "登录 Cookie 已配置" if available else "登录 Cookie 未配置"
+                else:
+                    available = parser.has_auth_credentials()
+                    if available:
+                        text = "账号 Cookie 已配置"
+                    elif parser.has_cookie():
+                        text = "账号 Cookie 不完整"
+                    else:
+                        text = "账号 Cookie 未配置"
+            except (AttributeError, TypeError, ValueError):
+                available, text = False, "状态读取失败"
+            statuses.append({"key": key, "available": available, "text": text})
+        return statuses
 
     async def initialize(self):
         """加载、重载插件时触发"""

@@ -14,6 +14,7 @@ import re
 import shutil
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -168,9 +169,16 @@ class BackendSettings:
 
 
 class AppleMusicBackend:
-    def __init__(self, config, settings: BackendSettings | None = None):
+    def __init__(
+        self,
+        config,
+        settings: BackendSettings | None = None,
+        *,
+        platform_status_provider: Callable[[], object] | None = None,
+    ):
         self.cfg = config
         self.settings = settings or BackendSettings.from_config(config)
+        self._platform_status_provider = platform_status_provider
         self._session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.pending_owner: str | None = None
@@ -179,6 +187,75 @@ class AppleMusicBackend:
         self._processes: set[asyncio.subprocess.Process] = set()
         self._tasks: set[asyncio.Task] = set()
         self.closed = False
+
+    def platform_accounts(self, apple_auth_state: str = "unknown") -> list[dict]:
+        """Return non-secret local credential and Apple login states for the page."""
+
+        labels = {
+            "douyin": "抖音",
+            "bilibili": "Bilibili",
+            "qqmusic": "QQ 音乐",
+            "kugou": "酷狗音乐",
+        }
+        provided: dict[str, dict] = {}
+        if self._platform_status_provider is not None:
+            try:
+                raw_statuses = self._platform_status_provider()
+            except Exception:
+                raw_statuses = ()
+            if isinstance(raw_statuses, (list, tuple)):
+                for status in raw_statuses:
+                    if not isinstance(status, dict):
+                        continue
+                    key = status.get("key")
+                    text = status.get("text")
+                    if key not in labels or not isinstance(text, str):
+                        continue
+                    provided[key] = {
+                        "key": key,
+                        "label": labels[key],
+                        "available": status.get("available") is True,
+                        # The provider emits fixed descriptions. Bound the value
+                        # defensively so arbitrary parser data can never become a
+                        # large dashboard response.
+                        "text": text.strip()[:64] or "状态未确认",
+                    }
+
+        result = [
+            provided.get(
+                key,
+                {
+                    "key": key,
+                    "label": label,
+                    "available": False,
+                    "text": "状态未就绪",
+                },
+            )
+            for key, label in labels.items()
+        ]
+
+        if not self.settings.enabled:
+            apple_available, apple_text = False, "账号后端未启用"
+        elif self.closed:
+            apple_available, apple_text = False, "账号后端已停止"
+        else:
+            apple_available = apple_auth_state == "authenticated"
+            apple_text = {
+                "authenticated": "已登录",
+                "logged_out": "未登录",
+                "awaiting_2fa": "等待验证码",
+                "in_progress": "正在登录",
+                "failed": "登录失败",
+            }.get(apple_auth_state, "状态未确认")
+        result.append(
+            {
+                "key": "applemusic",
+                "label": "Apple Music",
+                "available": apple_available,
+                "text": apple_text,
+            }
+        )
+        return result
 
     def _require_enabled(self) -> str:
         if self.closed:
@@ -378,6 +455,7 @@ class AppleMusicBackend:
             "gamdl": {"available": False, "version": None, "ffmpeg": False, "ffprobe": False},
             "cache": {"bytes": cache_bytes, "files": cache_files},
             "settings": self.management_settings(),
+            "platform_accounts": self.platform_accounts(),
         }
         if not self.settings.enabled or self.closed:
             return result
@@ -401,6 +479,7 @@ class AppleMusicBackend:
                 result.update(subscription_active=active, storefront=storefront, subscription_message=message)
         except AppleMusicBackendError as exc:
             result["message"] = exc.message
+        result["platform_accounts"] = self.platform_accounts(result["auth_state"])
         return result
 
     async def clear_cache(self, owner: str) -> dict:

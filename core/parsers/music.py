@@ -1237,6 +1237,14 @@ class QQMusicParser(PlaylistParserBase):
     def has_cookie(self) -> bool:
         return bool(self._qq_cookie_header(self._QQ_PROFILE_URL))
 
+    def has_auth_credentials(self) -> bool:
+        """Whether the Cookie contains QQ Music account identity and auth key."""
+
+        cookies = self._qq_cookie_values()
+        identity = cookies.get("uin") or cookies.get("qqmusic_uin")
+        auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst")
+        return bool(identity and auth_key)
+
     def _return_audio_enabled(self) -> bool:
         parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
         value = getattr(parser_config, "return_audio", None)

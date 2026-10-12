@@ -21,6 +21,12 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
  subscription_active:null,storefront:null,playback_ready:true,can_submit_2fa:false,
  message:'wrapper 已连接',subscription_message:'尚未核验订阅',nonce:'qa-nonce',
  gamdl:{available:true,version:'3.9.1',ffmpeg:true,ffprobe:true},cache:{bytes:7340032,files:9},
+ platform_accounts:[
+  {key:'douyin',label:'抖音',available:true,text:'登录 Cookie 已配置'},
+  {key:'bilibili',label:'Bilibili',available:true,text:'登录 Cookie 已配置'},
+  {key:'qqmusic',label:'QQ 音乐',available:false,text:'账号 Cookie 不完整'},
+  {key:'kugou',label:'酷狗音乐',available:false,text:'账号 Cookie 未配置'},
+  {key:'applemusic',label:'Apple Music',available:false,text:'未登录'}],
  settings:{backend_enabled:true,return_audio:false,audio_send_format:'file',
  file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true}};
 let job = {state:'idle'};
@@ -43,16 +49,19 @@ window.addEventListener('message', event => {
   data = {...job};
   setTimeout(() => {
    if (endpoint === 'login') {
-    state.auth_state='awaiting_2fa';state.can_submit_2fa=true;
+   state.auth_state='awaiting_2fa';state.can_submit_2fa=true;
+    state.platform_accounts[4]={key:'applemusic',label:'Apple Music',available:false,text:'等待验证码'};
     job={state:'complete',action:endpoint,needs_2fa:true,message:'请输入六位验证码'};
    } else if (endpoint === 'two-factor') {
     state.auth_state='authenticated';state.can_submit_2fa=false;
     state.subscription_active=true;state.storefront='cn';state.subscription_message='订阅已核验';
+    state.platform_accounts[4]={key:'applemusic',label:'Apple Music',available:true,text:'已登录'};
     job={state:'complete',action:endpoint,needs_2fa:false,message:'验证码已提交'};
    } else if (endpoint === 'verify') {
     job={state:'complete',action:endpoint,message:'单曲音频已生成并通过格式/时长检查',bytes:6000000,duration:306};
    } else if (endpoint === 'clear-session') {
     state.auth_state='logged_out';state.subscription_active=null;state.can_submit_2fa=false;
+    state.platform_accounts[4]={key:'applemusic',label:'Apple Music',available:false,text:'未登录'};
     job={state:'complete',action:endpoint,needs_2fa:false,message:'已清除内存会话；磁盘登录缓存仍在'};
    } else if (endpoint === 'clear-cache') {
     state.cache={bytes:0,files:0};
@@ -117,6 +126,11 @@ def run(output: Path):
                 page.screenshot(path=str(output / name))
                 page.set_viewport_size(viewport)
             frame.locator("#wrapper-state").get_by_text("已连接", exact=False).wait_for()
+            assert frame.locator("[data-platform-status]").count() == 5
+            assert frame.locator("[data-platform-status='douyin']").get_attribute("data-available") == "true"
+            assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"
+            assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "账号 Cookie 不完整"
+            assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "未登录"
             screenshot("desktop-light.png")
             assert frame.locator("#setting-backend").is_checked()
             frame.locator("#setting-return-audio").check()
@@ -140,6 +154,8 @@ def run(output: Path):
             frame.locator("#code").fill("123456")
             frame.locator("#two-factor-form button").click()
             frame.locator("#subscription-state").get_by_text("订阅有效").wait_for()
+            assert frame.locator("[data-platform-status='applemusic']").get_attribute("data-available") == "true"
+            assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "已登录"
             assert frame.locator("#code").input_value() == ""
             frame.locator("#verify-form button").click()
             frame.locator("#verification-result").get_by_text("306 秒", exact=False).wait_for()
@@ -168,13 +184,15 @@ def run(output: Path):
             page.on("dialog", lambda dialog: dialog.accept())
             frame.locator("#clear-session").click()
             frame.locator("#auth-state").get_by_text("未登录").wait_for()
+            assert frame.locator("[data-platform-status='applemusic']").get_attribute("data-available") == "false"
             assert frame.locator("#track-url").is_disabled()
-            page.evaluate("qaState.enabled=false;qaState.connected=false;qaState.message='请在插件配置中启用可选后端'")
+            page.evaluate("qaState.enabled=false;qaState.connected=false;qaState.message='请在插件配置中启用可选后端';qaState.platform_accounts[4]={key:'applemusic',label:'Apple Music',available:false,text:'账号后端未启用'}")
             frame.locator("#refresh").click()
             frame.locator("#wrapper-state").get_by_text("未启用").wait_for()
+            assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["settings", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "settings", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

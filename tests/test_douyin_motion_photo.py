@@ -15,6 +15,23 @@ from core.parsers.douyin.slides import Video as SlidesVideo
 from core.parsers.douyin.video import AwemeDetailRes, Image, PlayAddr, Video
 
 
+def test_douyin_login_status_ignores_anonymous_and_expired_cookies():
+    def cookie(name, *, expired=False):
+        return SimpleNamespace(
+            name=name, value="value", is_expired=lambda: expired
+        )
+
+    parser = DouyinParser.__new__(DouyinParser)
+    parser.cookiejar = SimpleNamespace(cookies=[cookie("ttwid")])
+    assert parser.has_login_cookie() is False
+
+    parser.cookiejar.cookies.append(cookie("sessionid", expired=True))
+    assert parser.has_login_cookie() is False
+
+    parser.cookiejar.cookies.append(cookie("sessionid_ss"))
+    assert parser.has_login_cookie() is True
+
+
 def test_douyin_live_url_matches_dedicated_handler():
     keyword, searched = DouyinParser.search_url(
         "https://live.douyin.com/1234567890"
