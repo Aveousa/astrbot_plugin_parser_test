@@ -25,6 +25,11 @@ from .core.download import Downloader
 from .core.parsers import BaseParser, BilibiliParser, KugouMusicParser, QQMusicParser
 from .core.render import Renderer
 from .core.sender import MessageSender
+from .core.session_scope import (
+    is_group_session,
+    normalize_session_scope,
+    session_scope_in,
+)
 from .core.utils import extract_json_url
 
 
@@ -242,11 +247,11 @@ class ParserPlugin(Star):
         umo = event.unified_msg_origin
 
         # 白名单
-        if self.cfg.whitelist and umo not in self.cfg.whitelist:
+        if self.cfg.whitelist and not session_scope_in(umo, self.cfg.whitelist):
             return
 
         # 黑名单
-        if self.cfg.blacklist and umo in self.cfg.blacklist:
+        if session_scope_in(umo, self.cfg.blacklist):
             return
 
         # 消息链
@@ -364,16 +369,18 @@ class ParserPlugin(Star):
     async def open_parser(self, event: AstrMessageEvent):
         """开启当前会话的解析"""
         umo = event.unified_msg_origin
-        self.cfg.remove_blacklist(umo)
-        yield event.plain_result("当前会话的解析已开启")
+        self.cfg.remove_blacklist(normalize_session_scope(umo))
+        target = "当前群聊" if is_group_session(umo) else "当前会话"
+        yield event.plain_result(f"{target}的解析已开启")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭解析")
     async def close_parser(self, event: AstrMessageEvent):
         """关闭当前会话的解析"""
         umo = event.unified_msg_origin
-        self.cfg.add_blacklist(umo)
-        yield event.plain_result("当前会话的解析已关闭")
+        self.cfg.add_blacklist(normalize_session_scope(umo))
+        target = "当前群聊" if is_group_session(umo) else "当前会话"
+        yield event.plain_result(f"{target}的解析已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})

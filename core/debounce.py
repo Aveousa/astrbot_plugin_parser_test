@@ -3,6 +3,7 @@
 import time
 
 from .config import PluginConfig
+from .session_scope import normalize_session_scope
 
 
 class Debouncer:
@@ -20,19 +21,7 @@ class Debouncer:
     @staticmethod
     def _normalize_session(session: str) -> str:
         """将群成员隔离 UMO 归一化为群聊 UMO。"""
-        prefix, separator, session_id = session.rpartition(":")
-        if not separator or not prefix.endswith(":GroupMessage"):
-            return session
-
-        member_id, separator, group_id = session_id.partition("_")
-        if (
-            separator
-            and "_" not in group_id
-            and member_id.isdigit()
-            and group_id.isdigit()
-        ):
-            return f"{prefix}:{group_id}"
-        return session
+        return normalize_session_scope(session)
 
     def _hit(self, session: str, key: str) -> bool:
         # 禁用

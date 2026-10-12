@@ -1,13 +1,13 @@
 {
   "whitelist": {
     "description": "解析白名单",
-    "hint": "留空表示不限制",
+    "hint": "留空表示不限制；开启会话隔离时群聊仍按整个群生效",
     "type": "list",
     "default": []
   },
   "blacklist": {
     "description": "解析黑名单",
-    "hint": "可在会话中使用开启解析/关闭解析命令",
+    "hint": "可在会话中使用开启解析/关闭解析命令；群聊按整个群生效",
     "type": "list",
     "default": []
   },

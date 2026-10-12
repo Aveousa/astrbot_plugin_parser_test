@@ -16,6 +16,8 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_path,
 )
 
+from .session_scope import normalize_session_scope
+
 
 class ConfigNode:
     """
@@ -458,11 +460,32 @@ class PluginConfig(ConfigNode):
             return []
 
     def add_blacklist(self, umo: str):
-        if umo not in self.blacklist:
-            self.blacklist.append(umo)
+        scope = normalize_session_scope(umo)
+        normalized: list[str] = []
+        inserted = False
+        for value in self.blacklist:
+            if isinstance(value, str) and normalize_session_scope(value) == scope:
+                if not inserted:
+                    normalized.append(scope)
+                    inserted = True
+                continue
+            normalized.append(value)
+        if not inserted:
+            normalized.append(scope)
+        if normalized != list(self.blacklist):
+            self.blacklist[:] = normalized
             self.save_config()
 
     def remove_blacklist(self, umo: str):
-        if umo in self.blacklist:
-            self.blacklist.remove(umo)
+        scope = normalize_session_scope(umo)
+        normalized = [
+            value
+            for value in self.blacklist
+            if not (
+                isinstance(value, str)
+                and normalize_session_scope(value) == scope
+            )
+        ]
+        if normalized != list(self.blacklist):
+            self.blacklist[:] = normalized
             self.save_config()

@@ -26,16 +26,18 @@ class _Event:
         *,
         message_str: str | None = None,
         fail_react: bool = False,
+        umo: str = "test:FriendMessage:1",
     ):
         self.message_str = text if message_str is None else message_str
         self._chain = [main_module.Plain(text)]
         self.reactions: list[str] = []
         self.calls = calls
         self.fail_react = fail_react
+        self._umo = umo
 
     @property
     def unified_msg_origin(self):
-        return "test:FriendMessage:1"
+        return self._umo
 
     def get_messages(self):
         return self._chain
@@ -131,6 +133,99 @@ def test_debounced_link_does_not_react_or_parse():
 
     assert event.reactions == []
     assert calls == []
+
+
+def test_member_isolated_group_blacklist_applies_to_every_group_member():
+    main_module = _load_main_module()
+    blocked_calls: list[str] = []
+    plugin = _plugin(main_module, blocked_calls)
+    plugin.cfg.blacklist = ["Napcat_V5:GroupMessage:10001_90001"]
+    member_event = _Event(
+        main_module,
+        "群成员链接 https://163cn.tv/AbC_123",
+        blocked_calls,
+        umo="Napcat_V5:GroupMessage:10002_90001",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, member_event))
+
+    assert blocked_calls == []
+
+    other_group_calls: list[str] = []
+    other_plugin = _plugin(main_module, other_group_calls)
+    other_plugin.cfg.blacklist = list(plugin.cfg.blacklist)
+    other_group_event = _Event(
+        main_module,
+        "其他群链接 https://163cn.tv/AbC_123",
+        other_group_calls,
+        umo="Napcat_V5:GroupMessage:10002_90002",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(other_plugin, other_group_event))
+
+    assert other_group_calls == ["parse", "send"]
+
+
+def test_member_isolated_group_whitelist_allows_every_group_member_only():
+    main_module = _load_main_module()
+    allowed_calls: list[str] = []
+    plugin = _plugin(main_module, allowed_calls)
+    plugin.cfg.whitelist = ["Napcat_V5:GroupMessage:10001_90001"]
+    member_event = _Event(
+        main_module,
+        "同群成员链接 https://163cn.tv/AbC_123",
+        allowed_calls,
+        umo="Napcat_V5:GroupMessage:10002_90001",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, member_event))
+
+    assert allowed_calls == ["parse", "send"]
+
+    blocked_calls: list[str] = []
+    other_plugin = _plugin(main_module, blocked_calls)
+    other_plugin.cfg.whitelist = list(plugin.cfg.whitelist)
+    other_group_event = _Event(
+        main_module,
+        "其他群链接 https://163cn.tv/AbC_123",
+        blocked_calls,
+        umo="Napcat_V5:GroupMessage:10002_90002",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(other_plugin, other_group_event))
+
+    assert blocked_calls == []
+
+
+def test_parser_toggle_commands_write_group_scope_and_report_group_effect():
+    main_module = _load_main_module()
+    mutations: list[tuple[str, str]] = []
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    plugin.cfg = SimpleNamespace(
+        add_blacklist=lambda umo: mutations.append(("add", umo)),
+        remove_blacklist=lambda umo: mutations.append(("remove", umo)),
+    )
+    event = SimpleNamespace(
+        unified_msg_origin="Napcat_V5:GroupMessage:10001_90001",
+        plain_result=lambda message: message,
+    )
+
+    async def collect(result):
+        return [item async for item in result]
+
+    closed = asyncio.run(
+        collect(main_module.ParserPlugin.close_parser(plugin, event))
+    )
+    opened = asyncio.run(
+        collect(main_module.ParserPlugin.open_parser(plugin, event))
+    )
+
+    assert mutations == [
+        ("add", "Napcat_V5:GroupMessage:90001"),
+        ("remove", "Napcat_V5:GroupMessage:90001"),
+    ]
+    assert closed == ["当前群聊的解析已关闭"]
+    assert opened == ["当前群聊的解析已开启"]
 
 
 def test_matching_does_not_call_reaction():
