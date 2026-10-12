@@ -25,10 +25,10 @@
       --secondary: #515154;
       --muted: #6e6e73;
       --divider: #e8e8ed;
-      --accent: #13a866;
-      --accent-deep: #087a49;
-      --accent-soft: #effbf4;
-      --accent-warm: #ffda2e;
+      --accent: {{ accent | default('#13a866') }};
+      --accent-deep: {{ accent_deep | default('#087a49') }};
+      --accent-soft: {{ accent_soft | default('#effbf4') }};
+      --accent-warm: {{ accent_warm | default('#ffda2e') }};
     }
 
     * { box-sizing: border-box; }
@@ -60,9 +60,9 @@
       position: relative;
       padding: 29px 40px 27px;
       background:
-        radial-gradient(circle at 91% 0%, rgba(19, 168, 102, .13), transparent 35%),
-        linear-gradient(145deg, #f2fcf6 0%, #ffffff 76%);
-      border-bottom: 1px solid rgba(19, 168, 102, .11);
+        radial-gradient(circle at 91% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 35%),
+        linear-gradient(145deg, var(--accent-soft) 0%, #ffffff 76%);
+      border-bottom: 1px solid color-mix(in srgb, var(--accent) 11%, transparent);
     }
 
     .login-card__top::after {
@@ -143,8 +143,8 @@
       height: 25px;
       padding: 0 10px;
       color: var(--accent-deep);
-      background: rgba(19, 168, 102, .09);
-      border: 1px solid rgba(19, 168, 102, .15);
+      background: color-mix(in srgb, var(--accent) 9%, transparent);
+      border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
       border-radius: 999px;
       font-size: 12px;
       font-weight: 650;
@@ -212,7 +212,7 @@
       height: 8px;
       background: var(--accent);
       border-radius: 50%;
-      box-shadow: 0 0 0 4px rgba(19, 168, 102, .12);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
     }
 
     .login-hint {
@@ -248,7 +248,7 @@
       height: 22px;
       color: var(--accent-deep);
       background: var(--accent-soft);
-      border: 1px solid rgba(19, 168, 102, .15);
+      border: 1px solid color-mix(in srgb, var(--accent) 15%, transparent);
       border-radius: 50%;
       font-size: 12px;
       font-weight: 700;
@@ -290,7 +290,7 @@
     }
 
     @media (prefers-reduced-transparency: reduce) {
-      .login-card__top { background: #f2fcf6; }
+      .login-card__top { background: var(--accent-soft); }
       .brand-label,
       .step-number { background: #e6f8ee; }
     }

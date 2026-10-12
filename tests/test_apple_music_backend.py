@@ -98,6 +98,87 @@ def test_bad_optional_configuration_does_not_break_plugin_loading(tmp_path, port
     asyncio.run(run())
 
 
+def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(tmp_path):
+    async def run():
+        cfg = config(tmp_path)
+        cfg.parser.netease = SimpleNamespace(
+            enable=True, cookies="private-cookie", return_audio=True,
+            audio_send_format="voice", show_playlist_cover=True,
+            show_playlist_url=True,
+        )
+        cfg.parser.qqmusic = SimpleNamespace(
+            enable=True, cookies="", return_audio=True,
+            audio_send_format="voice", show_playlist_cover=True,
+            show_playlist_url=True,
+        )
+        cfg.parser.kugou = SimpleNamespace(
+            enable=False, cookies="", return_audio=True,
+            audio_send_format="voice", show_playlist_cover=True,
+            show_playlist_url=True,
+        )
+        saves = []
+        cfg.save_config = lambda: saves.append(True)
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        try:
+            result = await backend.update_music_parser_settings(
+                "admin",
+                {"qqmusic": {
+                    "enable": False,
+                    "return_audio": False,
+                    "audio_send_format": "file",
+                    "show_playlist_cover": False,
+                    "show_playlist_url": False,
+                }},
+            )
+            entry = result["parsers"]["qqmusic"]
+            assert entry["enabled"] is False
+            assert entry["settings"]["audio_send_format"] == "file"
+            assert entry["settings"]["return_audio"] is False
+            assert saves == [True]
+            assert "private-cookie" not in json.dumps(result)
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
+def test_music_cookie_save_returns_parser_identity_without_echoing_cookie(tmp_path):
+    async def run():
+        cfg = config(tmp_path)
+        cfg.parser.qqmusic = SimpleNamespace(enable=True, cookies="")
+        cfg.save_config = lambda: None
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        try:
+            result = await backend.update_music_cookie(
+                "admin", "qqmusic", "uin=12345; qqmusic_key=secret-token"
+            )
+            assert result["parser_key"] == "qqmusic"
+            assert "secret-token" not in json.dumps(result)
+            assert cfg.parser.qqmusic.cookies == "uin=12345; qqmusic_key=secret-token"
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
+def test_missing_music_parser_uses_bundled_defaults_without_reporting_enabled(tmp_path):
+    async def run():
+        backend = AppleMusicBackend(config(tmp_path), BackendSettings(enabled=False))
+        try:
+            status = await backend.status("admin")
+            music = {key: entry for key, entry in status["music_parsers"].items()}
+            assert music["netease"]["known"] is True
+            assert music["netease"]["configured"] is False
+            assert music["netease"]["enabled"] is False
+            assert music["netease"]["settings"]["audio_send_format"] == "voice"
+            assert music["netease"]["settings"]["return_audio"] is True
+            assert "private-cookie" not in json.dumps(status)
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
 def test_string_false_does_not_opt_into_backend(tmp_path):
     cfg = config(tmp_path)
     cfg.parser.applemusic.backend_enabled = "false"
@@ -200,6 +281,7 @@ def test_disabled_backend_makes_no_network_requests(tmp_path):
 
 def test_platform_account_provider_is_normalized_without_exposing_cookie_data(tmp_path):
     cfg = config(tmp_path)
+    cfg.parser.qqmusic = SimpleNamespace(enable=True, cookies="identity-only")
     cfg.parser.applemusic.backend_enabled = True
     backend = AppleMusicBackend(
         cfg,

@@ -1382,6 +1382,15 @@ class Renderer:
             scan_app_name="酷狗音乐 App",
         )
 
+    async def render_bilibili_login_card(self, qrcode: bytes) -> Path | None:
+        """Render a styled Bilibili QR login card."""
+        return await self._render_music_login_card(
+            qrcode,
+            platform_key="bilibili",
+            platform_display_name="Bilibili",
+            scan_app_name="哔哩哔哩 App",
+        )
+
     async def _render_music_login_card(
         self,
         qrcode: bytes,
@@ -1427,6 +1436,10 @@ class Renderer:
                 platform_display_name=platform_display_name,
                 platform_logo_uri=platform_logo_uri,
                 scan_app_name=scan_app_name,
+                accent="#00a1d6" if platform_key == "bilibili" else "#13a866",
+                accent_deep="#007fa8" if platform_key == "bilibili" else "#087a49",
+                accent_soft="#eefaff" if platform_key == "bilibili" else "#effbf4",
+                accent_warm="#fb7299" if platform_key == "bilibili" else "#ffda2e",
                 # Retain the previous context key for user-overridden QQ cards.
                 qqmusic_logo_uri=platform_logo_uri,
                 card_font_uri=self._file_uri(self._CARD_FONT_PATH),

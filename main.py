@@ -53,8 +53,11 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
+        self._parser_config_signature: tuple[tuple[str, bool], ...] = ()
         self.apple_music_backend = AppleMusicBackend(
-            self.cfg, platform_status_provider=self._platform_account_statuses
+            self.cfg,
+            platform_status_provider=self._platform_account_statuses,
+            runtime_parser_provider=lambda: set(self.parser_map.values()),
         )
         self.apple_music_web = AppleMusicWeb(self.apple_music_backend, self.cfg._plugin_name)
 
@@ -68,27 +71,32 @@ class ParserPlugin(Star):
         }
         statuses: list[dict] = []
         for key in ("douyin", "bilibili", "qqmusic", "kugou"):
-            item = getattr(getattr(self.cfg, "parser", None), key, None)
+            get_parser = getattr(getattr(self.cfg, "parser", None), "get", None)
+            item = get_parser(key) if callable(get_parser) else getattr(getattr(self.cfg, "parser", None), key, None)
             parser = parsers.get(key)
+            cookie_configured = False
             if item is None or getattr(item, "enable", True) is not True:
                 statuses.append(
-                    {"key": key, "available": False, "text": "解析器未启用"}
+                    {"key": key, "available": False, "text": "解析器未启用", "cookie_configured": False}
                 )
                 continue
             if parser is None:
                 statuses.append(
-                    {"key": key, "available": False, "text": "状态未就绪"}
+                    {"key": key, "available": False, "text": "Cookie 状态未就绪", "cookie_configured": bool(getattr(item, "cookies", None))}
                 )
                 continue
 
             try:
                 if key == "douyin":
                     available = parser.has_login_cookie()
+                    cookie_configured = bool(available)
                     text = "登录 Cookie 已配置" if available else "登录 Cookie 未配置"
                 elif key == "bilibili":
                     available = parser.login.has_cookie()
+                    cookie_configured = bool(available)
                     text = "登录 Cookie 已配置" if available else "登录 Cookie 未配置"
                 else:
+                    cookie_configured = parser.has_cookie()
                     available = parser.has_auth_credentials()
                     if available:
                         text = "账号 Cookie 已配置"
@@ -194,6 +202,8 @@ class ParserPlugin(Star):
 
     def _register_parser(self):
         """注册解析器（以 parser.enable 为唯一启用来源）"""
+        old_parsers = set(self.parser_map.values())
+        self.parser_map.clear()
         # 所有 Parser 子类
         all_subclass = BaseParser.get_all_subclass()
         enabled_platforms = set(self.cfg.parser.enabled_platforms())
@@ -232,8 +242,46 @@ class ParserPlugin(Star):
         patterns.sort(key=lambda x: -len(x[0]))
 
         self.key_pattern_list = patterns
+        self._parser_config_signature = self._current_parser_config_signature()
+        # Management API may inspect currently instantiated cookie jars without
+        # holding onto request data or serializing their values.
+        self.apple_music_backend._runtime_parser_provider = lambda: set(self.parser_map.values())
 
         logger.debug(f"[parser] 关键词-正则对已生成: {[kw for kw, _ in patterns]}")
+
+        # Re-registration can happen after a management-page toggle. Close
+        # sessions belonging to removed parser instances in the background so
+        # enabling/disabling a parser takes effect without a plugin reload.
+        current_parsers = set(self.parser_map.values())
+        for parser in old_parsers - current_parsers:
+            try:
+                task = asyncio.create_task(parser.close_session())
+                task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+            except RuntimeError:
+                pass
+
+    def _current_parser_config_signature(self) -> tuple[tuple[str, bool], ...]:
+        parser_config = getattr(self.cfg, "parser", None)
+        nodes = getattr(parser_config, "_nodes", None)
+        if not isinstance(nodes, dict):
+            values = vars(parser_config) if parser_config is not None else {}
+            nodes = {
+                key: value for key, value in values.items()
+                if not key.startswith("_") and hasattr(value, "enable")
+            }
+        return tuple(sorted(
+            (str(key), getattr(item, "enable", True) is True)
+            for key, item in nodes.items()
+        ))
+
+    def _ensure_parser_registration(self) -> None:
+        current = self._current_parser_config_signature()
+        previous = getattr(self, "_parser_config_signature", None)
+        if previous is None:
+            object.__setattr__(self, "_parser_config_signature", current)
+            return
+        if current != previous:
+            self._register_parser()
 
     def _get_parser_by_type(self, parser_type):
         for parser in self.parser_map.values():
@@ -244,6 +292,7 @@ class ParserPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
+        self._ensure_parser_registration()
         umo = event.unified_msg_origin
 
         # 白名单
@@ -386,9 +435,14 @@ class ParserPlugin(Star):
     @filter.command("登录B站", alias={"blogin", "登录b站"})
     async def login_bilibili(self, event: AstrMessageEvent):
         """扫码登录B站"""
+        self._ensure_parser_registration()
         parser: BilibiliParser = self._get_parser_by_type(BilibiliParser)  # type: ignore
         qrcode = await parser.login.login_with_qrcode()
-        yield event.chain_result([Image.fromBytes(qrcode)])
+        card_path = await self.renderer.render_bilibili_login_card(qrcode)
+        if card_path is not None:
+            yield event.chain_result([Image.fromFileSystem(str(card_path))])
+        else:
+            yield event.chain_result([Image.fromBytes(qrcode)])
         async for msg in parser.login.check_qr_state():
             yield event.plain_result(msg)
 
@@ -396,6 +450,7 @@ class ParserPlugin(Star):
     @filter.command("登录QQ音乐", alias={"qqlogin", "登录qq音乐"})
     async def login_qqmusic(self, event: AstrMessageEvent):
         """扫码登录QQ音乐"""
+        self._ensure_parser_registration()
         parser: QQMusicParser = self._get_parser_by_type(QQMusicParser)  # type: ignore
         qrcode = await parser.login.login_with_qrcode()
         card_path = await self.renderer.render_qqmusic_login_card(qrcode)
@@ -412,6 +467,7 @@ class ParserPlugin(Star):
     @filter.command("登录酷狗音乐", alias={"kugoulogin", "登录酷狗"})
     async def login_kugou(self, event: AstrMessageEvent):
         """扫码登录酷狗音乐"""
+        self._ensure_parser_registration()
         parser: KugouMusicParser = self._get_parser_by_type(KugouMusicParser)  # type: ignore
         qrcode = await parser.login.login_with_qrcode()
         card_path = await self.renderer.render_kugou_login_card(qrcode)

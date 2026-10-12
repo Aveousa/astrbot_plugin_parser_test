@@ -829,6 +829,52 @@ def test_kugou_track_uses_cookie_and_marks_audio_as_onebot_voice():
     )
 
 
+def test_kugou_return_audio_disabled_skips_playback_request_and_keeps_card():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                kugou=SimpleNamespace(
+                    use_proxy=False, return_audio=False, audio_send_format="voice"
+                )
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {"User-Agent": "test"}
+        parser.cookiejar = SimpleNamespace(get_cookie_header_for_url=lambda _url: "")
+        requests = []
+
+        async def get_song_info(url, **kwargs):
+            requests.append((url, kwargs))
+            raise AssertionError("playback endpoint must not be requested")
+
+        parser._json_request = get_song_info
+        fallback = {
+            "hash": "song-hash",
+            "song_name": "卡片歌曲",
+            "author_name": "卡片歌手",
+            "album_img": "https://example.com/cover.jpg",
+            "timelength": 185000,
+        }
+        result = await parser._kugou_single_result(
+            source_url="https://www.kugou.com/mixsong/demo.html",
+            song_hash="song-hash",
+            fallback=fallback,
+            album_name="卡片专辑",
+        )
+        return result, requests, parser.downloader
+
+    result, requests, downloader = asyncio.run(build())
+
+    assert result.title == "卡片歌曲"
+    assert result.author.name == "卡片歌手"
+    assert result.extra["duration"] == 185
+    assert not any(isinstance(content, AudioContent) for content in result.contents)
+    assert requests == []
+    assert downloader.audio_urls == []
+
+
 def test_kugou_member_cookie_uses_signed_web_player_endpoint():
     async def build():
         parser = KugouMusicParser.__new__(KugouMusicParser)

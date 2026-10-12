@@ -6,11 +6,21 @@
   let nonce = "";
   let snapshot = null;
   let busy = false;
+  let activeAction = "";
   let timer = null;
   let refreshing = false;
   let needs2fa = false;
   let lastOperation = "";
   let savedSettings = "";
+  let settingsTimer = null;
+  let settingsDirty = false;
+  let submittedSettings = "";
+  let settingsSaveFailed = false;
+  let savedMusic = "";
+  let musicDirty = false;
+  let musicSaveFailed = false;
+  let musicTimer = null;
+  let submittedMusic = "";
   let clearCacheArmed = false;
   let clearCacheTimer = null;
   const codecOptions = [
@@ -52,7 +62,7 @@
     $("two-factor-fields").disabled = !connected || busy || !needs2fa;
     $("clear-session").disabled = !connected || busy;
     $("clear-cache").disabled = !nonce || busy;
-    $("settings-fields").disabled = !nonce || busy;
+    $("settings-fields").disabled = !nonce || (busy && activeAction !== "save-settings");
     updateSettingsState();
     $("verify-fields").disabled = !connected || busy || needs2fa || snapshot?.auth_state !== "authenticated"
       || snapshot?.subscription_active !== true || !snapshot?.gamdl?.available
@@ -78,8 +88,195 @@
     renderPlatformAccounts(data.platform_accounts);
     renderCache(data.cache);
     renderSettings(data.settings);
+    renderMusicParsers(data.music_parsers);
     controls();
   }
+  const musicLabels = { netease: "网易云音乐", qqmusic: "QQ 音乐", kugou: "酷狗音乐" };
+
+  function renderMusicParsers(parsers) {
+    const list = $("music-parser-list");
+    if (!list || !parsers || typeof parsers !== "object") return;
+    const dirty = musicDirty || activeAction === "save-music-settings";
+    const pendingSettings = dirty ? readMusicSettings() : null;
+    list.replaceChildren(...Object.entries(parsers)
+      .filter(([key]) => Object.hasOwn(musicLabels, key))
+      .map(([key, parser]) => createMusicParserRow(key, parser, pendingSettings?.[key])));
+    if (!dirty) {
+      savedMusic = JSON.stringify(readMusicSettings());
+      musicSaveFailed = false;
+    }
+    updateMusicSettingsState();
+  }
+
+  function createMusicParserRow(key, parser, pending) {
+    const card = document.createElement("article");
+    card.className = "music-parser-row";
+    card.dataset.musicParser = key;
+    const settings = parser.settings && typeof parser.settings === "object" ? parser.settings : {};
+    const configured = parser.configured === true;
+    const heading = document.createElement("header");
+    const identity = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = musicLabels[key];
+    const subtitle = document.createElement("small");
+    subtitle.textContent = configured ? (parser.enabled ? "已启用" : "未启用")
+      : parser.known ? "预设配置，当前未启用" : "未配置";
+    identity.append(title, subtitle);
+    const status = document.createElement("span");
+    status.className = "music-cookie-state";
+    status.dataset.available = String(parser.available === true);
+    status.textContent = parser.known ? parser.cookie_status || "Cookie 状态未确认" : "未配置";
+    heading.append(identity, status);
+    card.append(heading);
+
+    if (!parser.known) {
+      const note = document.createElement("p");
+      note.className = "music-unconfigured";
+      note.textContent = "未配置";
+      card.append(note);
+      return card;
+    }
+
+    const fieldset = document.createElement("fieldset");
+    fieldset.disabled = !nonce || busy;
+    fieldset.dataset.musicParserFieldset = key;
+    if (!configured) {
+      const note = document.createElement("p");
+      note.className = "music-unconfigured";
+      note.textContent = "显示预设或历史配置；恢复解析器配置后可编辑。";
+      fieldset.append(note);
+    }
+    fieldset.append(
+      musicToggle(key, "enable", "启用解析器", configured && parser.enabled === true, configured),
+      musicToggle(key, "return_audio", "解析单曲时返回音频", pending?.return_audio ?? settings.return_audio !== false, configured),
+      musicToggle(key, "show_playlist_cover", "显示歌单封面", pending?.show_playlist_cover ?? settings.show_playlist_cover !== false, configured),
+      musicToggle(key, "show_playlist_url", "显示歌单原始链接", pending?.show_playlist_url ?? settings.show_playlist_url !== false, configured),
+    );
+
+    const formatLabel = document.createElement("label");
+    formatLabel.className = "music-format-setting";
+    formatLabel.append(document.createTextNode("单曲音频发送模式"));
+    const format = document.createElement("select");
+    format.dataset.musicSetting = "audio_send_format";
+    format.dataset.parserKey = key;
+    format.disabled = !configured;
+    const selected = pending?.audio_send_format ?? settings.audio_send_format ?? "voice";
+    [["voice", "语音（默认）"], ["file", "文件（OneBot）"]].forEach(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      option.selected = value === selected;
+      format.append(option);
+    });
+    formatLabel.append(format);
+    fieldset.append(formatLabel);
+
+    const editor = document.createElement("div");
+    editor.className = "music-cookie-editor";
+    const cookieLabel = document.createElement("label");
+    cookieLabel.append(document.createTextNode("Cookie"));
+    const cookie = document.createElement("textarea");
+    cookie.dataset.musicCookie = key;
+    cookie.disabled = !configured;
+    cookie.setAttribute("aria-label", `${musicLabels[key]} Cookie`);
+    cookie.placeholder = parser.cookie_configured
+      ? "Cookie 已配置；出于安全考虑不回显。输入新值可替换。"
+      : "可选：粘贴此平台登录 Cookie";
+    cookieLabel.append(cookie);
+    const actions = document.createElement("div");
+    actions.className = "music-cookie-actions";
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "quiet-button";
+    clear.textContent = "清除 Cookie";
+    clear.disabled = !configured || !parser.cookie_configured;
+    clear.addEventListener("click", () => saveMusicCookie(key, "", true));
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "music-cookie-save";
+    save.textContent = "保存 Cookie";
+    save.disabled = !configured;
+    save.addEventListener("click", () => {
+      const value = cookie.value.trim();
+      if (!value) { notice("请先输入 Cookie；清除现有值请使用“清除 Cookie”。", true); return; }
+      saveMusicCookie(key, value, false);
+    });
+    actions.append(clear, save);
+    editor.append(cookieLabel, actions);
+    fieldset.append(editor);
+    fieldset.addEventListener("change", scheduleMusicSave);
+    card.append(fieldset);
+    return card;
+  }
+
+  function musicToggle(parserKey, setting, labelText, checked, enabled) {
+    const label = document.createElement("label");
+    label.className = "setting-row music-setting-row";
+    const text = document.createElement("span");
+    text.textContent = labelText;
+    const control = document.createElement("span");
+    control.className = "switch";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.musicSetting = setting;
+    input.dataset.parserKey = parserKey;
+    input.checked = Boolean(checked);
+    input.disabled = !enabled;
+    const track = document.createElement("span");
+    track.className = "switch-track";
+    track.setAttribute("aria-hidden", "true");
+    control.append(input, track);
+    label.append(text, control);
+    return label;
+  }
+
+  function readMusicSettings() {
+    const result = {};
+    document.querySelectorAll("[data-music-setting]").forEach((control) => {
+      const key = control.dataset.parserKey;
+      result[key] ??= {};
+      result[key][control.dataset.musicSetting] = control.type === "checkbox" ? control.checked : control.value;
+    });
+    return result;
+  }
+
+  function updateMusicSettingsState() {
+    const state = $("music-settings-state");
+    if (!state) return;
+    state.textContent = musicSaveFailed ? "自动保存失败；修改选项可重试。"
+      : musicDirty ? "正在保存音乐解析设置…" : "音乐解析设置已同步到磁盘。";
+    state.dataset.error = String(musicSaveFailed);
+  }
+
+  function scheduleMusicSave() {
+    clearTimeout(musicTimer);
+    const settings = readMusicSettings();
+    if (!nonce || !savedMusic || JSON.stringify(settings) === savedMusic) return;
+    musicDirty = true;
+    updateMusicSettingsState();
+    musicTimer = setTimeout(saveMusicSettings, 350);
+  }
+
+  function saveMusicSettings() {
+    clearTimeout(musicTimer);
+    if (busy || !nonce || !savedMusic) return;
+    const settings = readMusicSettings();
+    if (JSON.stringify(settings) === savedMusic) {
+      musicDirty = false;
+      updateMusicSettingsState();
+      return;
+    }
+    submittedMusic = JSON.stringify(settings);
+    musicDirty = true;
+    musicSaveFailed = false;
+    updateMusicSettingsState();
+    submit("save-music-settings", { parsers: settings });
+  }
+
+  function saveMusicCookie(parserKey, cookie, clear) {
+    submit("save-music-cookie", { parser: parserKey, cookie, clear });
+  }
+
   function formatBytes(value) {
     const bytes = Number(value) || 0;
     if (bytes < 1024) return `${bytes} B`;
@@ -108,6 +305,7 @@
   }
   function renderSettings(settings) {
     if (!settings) return;
+    if (activeAction === "save-settings" || settingsDirty || changedSettings()) return;
     $("setting-backend").checked = Boolean(settings.backend_enabled);
     $("setting-return-audio").checked = Boolean(settings.return_audio);
     $("setting-cover").checked = settings.show_playlist_cover !== false;
@@ -116,6 +314,9 @@
     document.querySelector(`input[name='audio-format'][value='${format}']`).checked = true;
     renderCodecs(Array.isArray(settings.file_codec_priority) ? settings.file_codec_priority : ["alac", "aac-web"]);
     savedSettings = JSON.stringify(readSettings());
+    settingsDirty = false;
+    settingsSaveFailed = false;
+    clearTimeout(settingsTimer);
     updateSettingsState();
   }
   function codecRow(value) {
@@ -149,6 +350,7 @@
           if (sibling) $("codec-priority-list").insertBefore(direction < 0 ? row : sibling, direction < 0 ? sibling : row);
         }
         updateSettingsState();
+        scheduleSettingsSave();
       });
       controls.append(button);
     });
@@ -163,9 +365,12 @@
     const settings = readSettings();
     const duplicates = settings.file_codec_priority.length !== new Set(settings.file_codec_priority).size;
     const changed = Boolean(savedSettings) && JSON.stringify(settings) !== savedSettings;
-    $("settings-state").textContent = duplicates ? "同一音质不能重复添加。" : changed ? "有尚未保存的更改。" : "设置已与磁盘配置同步。";
+    $("settings-state").textContent = duplicates ? "同一音质不能重复添加。" : settingsSaveFailed ? "自动保存失败；可调整设置重试，或点击“重试保存”。" : settingsDirty ? "正在保存更改…" : changed ? "更改将在短暂等待后自动保存。" : "设置已与磁盘配置同步。";
     $("settings-state").dataset.error = String(duplicates);
-    $("save-settings").disabled = !nonce || busy || !changed || duplicates;
+    $("save-settings").hidden = !settingsSaveFailed;
+    $("save-settings").disabled = !settingsSaveFailed || !nonce || busy || duplicates;
+    $("save-settings").querySelector("span").textContent = settingsSaveFailed ? "↻" : "→";
+    $("save-settings").firstChild.textContent = settingsSaveFailed ? "重试保存 " : "保存设置 ";
     $("add-codec").disabled = settings.file_codec_priority.length >= codecOptions.length;
     const rows = [...$("codec-priority-list").querySelectorAll(".codec-row")];
     rows.forEach((row, index) => {
@@ -176,6 +381,41 @@
     $("format-help").textContent = settings.audio_send_format === "voice"
       ? "语音模式固定使用 AAC Web；需配置可访问的文件回调地址，否则降级为文件。"
       : "文件模式按下方优先级下载；不可用时自动回退。";
+  }
+  function scheduleSettingsSave() {
+    clearTimeout(settingsTimer);
+    const settings = readSettings();
+    const duplicates = settings.file_codec_priority.length !== new Set(settings.file_codec_priority).size;
+    if (!nonce || !savedSettings || !changedSettings() || duplicates) {
+      settingsDirty = false;
+      updateSettingsState();
+      return;
+    }
+    settingsDirty = true;
+    updateSettingsState();
+    settingsTimer = setTimeout(saveSettings, 350);
+  }
+  function changedSettings() {
+    return Boolean(savedSettings) && JSON.stringify(readSettings()) !== savedSettings;
+  }
+  async function saveSettings() {
+    clearTimeout(settingsTimer);
+    if (busy || !nonce || !changedSettings()) {
+      if (busy && changedSettings()) settingsDirty = true;
+      return;
+    }
+    const settings = readSettings();
+    const duplicates = settings.file_codec_priority.length !== new Set(settings.file_codec_priority).size;
+    if (duplicates) {
+      settingsDirty = false;
+      updateSettingsState();
+      return;
+    }
+    settingsDirty = true;
+    settingsSaveFailed = false;
+    submittedSettings = JSON.stringify(settings);
+    updateSettingsState();
+    submit("save-settings", { settings });
   }
   function schedulePoll() {
     clearTimeout(timer);
@@ -208,8 +448,57 @@
       notice(operation.message + details, false);
     }
     if (operation.action === "save-settings" && operation.state === "complete" && operation.settings) {
-      renderSettings(operation.settings);
+      const currentSettings = readSettings();
+      const hasNewerChanges = JSON.stringify(currentSettings) !== submittedSettings;
+      savedSettings = JSON.stringify(operation.settings);
+      activeAction = "";
+      if (hasNewerChanges) {
+        settingsDirty = true;
+        settingsSaveFailed = false;
+        updateSettingsState();
+        settingsTimer = setTimeout(saveSettings, 0);
+      } else {
+        settingsDirty = false;
+        settingsSaveFailed = false;
+        renderSettings(operation.settings);
+        notice(operation.message || "Apple Music 设置已自动保存");
+      }
     }
+    if (operation.action === "save-settings" && operation.state === "error") {
+      const hasNewerChanges = JSON.stringify(readSettings()) !== submittedSettings;
+      activeAction = "";
+      settingsDirty = false;
+      settingsSaveFailed = true;
+      updateSettingsState();
+      $("settings-state").dataset.error = "true";
+      if (hasNewerChanges) scheduleSettingsSave();
+    }
+    if (operation.action === "save-music-settings" && operation.state === "complete" && operation.parsers) {
+      const current = JSON.stringify(readMusicSettings());
+      const returned = { ...operation.parsers };
+      Object.entries(returned).forEach(([key, item]) => { returned[key] = item?.settings || item; });
+      savedMusic = current === submittedMusic ? JSON.stringify({ ...readMusicSettings(), ...returned }) : submittedMusic;
+      musicDirty = current !== submittedMusic;
+      musicSaveFailed = false;
+      updateMusicSettingsState();
+      notice(operation.message || "音乐解析设置已自动保存");
+      if (musicDirty) scheduleMusicSave();
+    }
+    if (operation.action === "save-music-settings" && operation.state === "error") {
+      musicDirty = false;
+      musicSaveFailed = true;
+      updateMusicSettingsState();
+    }
+    if (operation.action === "save-music-cookie" && operation.state === "complete") {
+      const parserKey = operation.parser_key;
+      const textarea = parserKey ? document.querySelector(`[data-music-cookie="${parserKey}"]`) : null;
+      if (textarea) textarea.value = "";
+    }
+    if (operation.action !== "save-settings") {
+      activeAction = "";
+      if (operation.state !== "running" && changedSettings()) scheduleSettingsSave();
+    }
+    if (operation.action !== "save-music-settings") activeAction = "";
     if (needs2fa) $("code").focus();
   }
   async function poll() {
@@ -220,7 +509,6 @@
       if (!busy && key !== lastOperation) {
         lastOperation = key;
         await refresh(false);
-        showOperation(operation);
       }
     } catch (_) {
       busy = false;
@@ -248,17 +536,32 @@
   }
   async function submit(action, body) {
     if (busy || !nonce) return;
+    activeAction = action;
     busy = true;
     controls();
-    notice("正在提交操作…");
+    notice(action === "save-settings" || action === "save-music-settings"
+      ? "正在自动保存解析器设置…"
+      : action === "save-music-cookie" ? "正在安全保存 Cookie…" : "正在提交操作…");
     try {
       const operation = await bridge.apiPost(`apple-music/${action}`, { ...body, nonce });
       showOperation(operation);
     } catch (error) {
       busy = false;
+      activeAction = "";
       controls();
       // API errors are sanitized server-side; never echo a submitted body.
       notice(error.message || "提交失败，请刷新后重试", true);
+      if (action === "save-settings") {
+        settingsDirty = false;
+        settingsSaveFailed = true;
+        updateSettingsState();
+        $("settings-state").dataset.error = "true";
+      }
+      if (action === "save-music-settings") {
+        musicDirty = false;
+        musicSaveFailed = true;
+        updateMusicSettingsState();
+      }
     }
   }
   $("refresh").addEventListener("click", () => refresh());
@@ -300,18 +603,21 @@
     resetClearCacheConfirmation();
     submit("clear-cache", { confirm: true });
   });
-  $("settings-form").addEventListener("change", updateSettingsState);
+  $("settings-form").addEventListener("change", () => {
+    updateSettingsState();
+    scheduleSettingsSave();
+  });
+  $("music-parser-list")?.addEventListener("change", scheduleMusicSave);
   $("add-codec").addEventListener("click", () => {
     const used = new Set(readSettings().file_codec_priority);
     const next = codecOptions.find(([value]) => !used.has(value));
     if (next) $("codec-priority-list").append(codecRow(next[0]));
     updateSettingsState();
+    scheduleSettingsSave();
   });
   $("settings-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const settings = readSettings();
-    if (settings.file_codec_priority.length !== new Set(settings.file_codec_priority).size) return;
-    submit("save-settings", { settings });
+    saveSettings();
   });
   $("verify-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -320,6 +626,8 @@
   window.addEventListener("pagehide", () => {
     clearTimeout(timer);
     clearTimeout(clearCacheTimer);
+    clearTimeout(settingsTimer);
+    clearTimeout(musicTimer);
     $("password").value = "";
     $("code").value = "";
   });

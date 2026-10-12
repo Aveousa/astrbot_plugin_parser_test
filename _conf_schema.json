@@ -233,6 +233,13 @@
             "type": "bool",
             "default": true
           },
+          "audio_send_format": {
+            "description": "单曲音频发送模式",
+            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "type": "string",
+            "options": ["voice", "file"],
+            "default": "voice"
+          },
           "parse_lyrics": {
             "description": "解析单曲时同时解析歌词",
             "hint": "开启后，解析 QQ 音乐单曲链接时会尝试获取并发送歌词卡片。",
@@ -265,6 +272,19 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "return_audio": {
+            "description": "解析单曲时返回音频",
+            "hint": "关闭后只返回歌曲信息卡片，不获取或发送音频。",
+            "type": "bool",
+            "default": true
+          },
+          "audio_send_format": {
+            "description": "单曲音频发送模式",
+            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "type": "string",
+            "options": ["voice", "file"],
+            "default": "voice"
+          },
           "parse_lyrics": {
             "description": "解析单曲时同时解析歌词",
             "hint": "开启后，解析网易云音乐单曲链接时会尝试获取并发送歌词卡片。",
@@ -304,6 +324,19 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "return_audio": {
+            "description": "解析单曲时返回音频",
+            "hint": "关闭后只返回酷狗歌曲信息卡片，不请求播放地址或下载音频。",
+            "type": "bool",
+            "default": true
+          },
+          "audio_send_format": {
+            "description": "单曲音频发送模式",
+            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "type": "string",
+            "options": ["voice", "file"],
+            "default": "voice"
+          },
           "cookies": {
             "description": "酷狗音乐 Cookie（可选）",
             "hint": "尝试将登录 Cookie 用于酷狗播放信息请求及同域音频下载；会员歌曲能否播放仍由酷狗接口权限决定。",

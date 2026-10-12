@@ -28,7 +28,16 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
   {key:'kugou',label:'酷狗音乐',available:false,text:'账号 Cookie 未配置'},
   {key:'applemusic',label:'Apple Music',available:false,text:'未登录'}],
  settings:{backend_enabled:true,return_audio:false,audio_send_format:'file',
- file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true}};
+  file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true},
+ music_parsers:{
+  netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
+  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_status:'账号 Cookie 不完整',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
+  kugou:{key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,available:false,cookie_configured:false,cookie_status:'解析器未启用',settings:{enable:false,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}}},
+ parsers:[
+  {key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,cookie_configured:true,cookie_status:'Cookie 已配置'},
+  {key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,cookie_configured:false,cookie_status:'账号 Cookie 不完整'},
+  {key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,cookie_configured:false,cookie_status:'解析器未启用'}],
+};
 let job = {state:'idle'};
 window.qaState = state;
 window.qaRequests = [];
@@ -69,6 +78,22 @@ window.addEventListener('message', event => {
    } else if (endpoint === 'save-settings') {
     state.settings=message.body.settings;
     job={state:'complete',action:endpoint,message:'Apple Music 解析设置已保存并立即生效',settings:state.settings};
+   } else if (endpoint === 'save-music-settings') {
+    const submitted=message.body.parsers || {};
+    Object.values(state.music_parsers).forEach(parser => {
+      const settings=submitted[parser.key];
+      if (!settings) return;
+      parser.settings=settings;
+      parser.enabled=settings.enable;
+    });
+    job={state:'complete',action:endpoint,message:'音乐解析设置已保存并立即生效',parsers:Object.fromEntries(Object.entries(state.music_parsers).filter(([key]) => submitted[key]))};
+   } else if (endpoint === 'save-music-cookie') {
+    const parser=state.music_parsers[message.body.parser];
+    if (parser) {
+      parser.cookie_configured=!message.body.clear && Boolean(message.body.cookie);
+      parser.cookie_status=parser.cookie_configured?'Cookie 已配置':'Cookie 未配置';
+    }
+    job={state:'complete',action:endpoint,message:'Cookie 已保存',parser_key:message.body.parser,parser:parser};
    }
   }, 100);
  }
@@ -114,7 +139,7 @@ def run(output: Path):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1200, "height": 980})
-            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("pageerror", lambda error: errors.append(f"{error} | {getattr(error, 'stack', '')}"))
             page.goto(f"http://127.0.0.1:{server.server_port}/")
             frame = page.frame_locator("iframe")
             def screenshot(name):
@@ -125,22 +150,45 @@ def run(output: Path):
                 page.set_viewport_size({"width": viewport["width"], "height": max(height, viewport["height"])})
                 page.screenshot(path=str(output / name))
                 page.set_viewport_size(viewport)
-            frame.locator("#wrapper-state").get_by_text("已连接", exact=False).wait_for()
+            try:
+                frame.locator("#wrapper-state").get_by_text("已连接", exact=False).wait_for(timeout=5000)
+            except Exception:
+                print(json.dumps({"initial_wrapper_state": frame.locator("#wrapper-state").inner_text(), "browser_errors": errors}, ensure_ascii=False))
+                raise
             assert frame.locator("[data-platform-status]").count() == 5
             assert frame.locator("[data-platform-status='douyin']").get_attribute("data-available") == "true"
             assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"
             assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "账号 Cookie 不完整"
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "未登录"
+            music_list = frame.locator("#music-parser-list")
+            assert music_list.locator("[data-music-parser]").count() == 3
+            qq_music = music_list.locator("[data-music-parser='qqmusic']")
+            qq_music.locator("[data-music-setting='audio_send_format']").select_option("file")
+            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
+            assert page.evaluate("qaState.music_parsers.qqmusic.settings.audio_send_format === 'file'")
+            qq_music.locator("[data-music-cookie]").fill("uin=12345; qqmusic_key=example-key")
+            qq_music.locator(".music-cookie-save").click()
+            page.wait_for_function("window.qaState.music_parsers.qqmusic.cookie_configured === true")
+            qq_music.locator("[data-music-cookie]").wait_for(state="visible")
+            frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).wait_for()
+            assert qq_music.locator("[data-music-cookie]").input_value() == ""
+            assert frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).is_visible()
             screenshot("desktop-light.png")
             assert frame.locator("#setting-backend").is_checked()
             frame.locator("#setting-return-audio").check()
+            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             frame.locator("input[name='audio-format'][value='voice']").check()
+            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             frame.locator("#setting-cover").uncheck()
+            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             frame.locator(".codec-row").first.locator("button[aria-label='下移']").click()
             assert frame.locator(".codec-row select").first.input_value() == "aac-web"
-            frame.locator("#save-settings").click()
+            # Settings are debounced and persisted automatically after the
+            # last control change; the old explicit save button is hidden.
             frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             assert page.evaluate("qaState.settings.return_audio && qaState.settings.audio_send_format === 'voice' && !qaState.settings.show_playlist_cover && qaState.settings.file_codec_priority.join(',') === 'aac-web,alac'")
+            assert not frame.locator("#save-settings").is_visible()
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-settings').length >= 4")
             frame.locator("#clear-cache").click()
             frame.locator("#clear-cache").get_by_text("再次点击确认清理", exact=False).wait_for()
             frame.locator("#clear-cache").click()
@@ -192,7 +240,7 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "settings", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

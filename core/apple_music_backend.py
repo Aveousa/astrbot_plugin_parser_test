@@ -49,6 +49,17 @@ MANAGED_SETTINGS = frozenset({
     "audio_send_format",
     "file_codec_priority",
 })
+MUSIC_SETTINGS = {
+    "netease": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "qqmusic": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "kugou": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+}
+MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "show_playlist_cover", "show_playlist_url"})
+PARSER_LABELS = {
+    "netease": "网易云音乐",
+    "qqmusic": "QQ 音乐",
+    "kugou": "酷狗音乐",
+}
 
 
 def codec_priority_for_send_format(send_format: object) -> tuple[str, ...]:
@@ -175,10 +186,13 @@ class AppleMusicBackend:
         settings: BackendSettings | None = None,
         *,
         platform_status_provider: Callable[[], object] | None = None,
+        runtime_parser_provider: Callable[[], object] | None = None,
     ):
         self.cfg = config
         self.settings = settings or BackendSettings.from_config(config)
         self._platform_status_provider = platform_status_provider
+        self._runtime_parser_provider = runtime_parser_provider
+        self._last_auth_state = "unknown"
         self._session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
         self.pending_owner: str | None = None
@@ -191,71 +205,7 @@ class AppleMusicBackend:
     def platform_accounts(self, apple_auth_state: str = "unknown") -> list[dict]:
         """Return non-secret local credential and Apple login states for the page."""
 
-        labels = {
-            "douyin": "抖音",
-            "bilibili": "Bilibili",
-            "qqmusic": "QQ 音乐",
-            "kugou": "酷狗音乐",
-        }
-        provided: dict[str, dict] = {}
-        if self._platform_status_provider is not None:
-            try:
-                raw_statuses = self._platform_status_provider()
-            except Exception:
-                raw_statuses = ()
-            if isinstance(raw_statuses, (list, tuple)):
-                for status in raw_statuses:
-                    if not isinstance(status, dict):
-                        continue
-                    key = status.get("key")
-                    text = status.get("text")
-                    if key not in labels or not isinstance(text, str):
-                        continue
-                    provided[key] = {
-                        "key": key,
-                        "label": labels[key],
-                        "available": status.get("available") is True,
-                        # The provider emits fixed descriptions. Bound the value
-                        # defensively so arbitrary parser data can never become a
-                        # large dashboard response.
-                        "text": text.strip()[:64] or "状态未确认",
-                    }
-
-        result = [
-            provided.get(
-                key,
-                {
-                    "key": key,
-                    "label": label,
-                    "available": False,
-                    "text": "状态未就绪",
-                },
-            )
-            for key, label in labels.items()
-        ]
-
-        if not self.settings.enabled:
-            apple_available, apple_text = False, "账号后端未启用"
-        elif self.closed:
-            apple_available, apple_text = False, "账号后端已停止"
-        else:
-            apple_available = apple_auth_state == "authenticated"
-            apple_text = {
-                "authenticated": "已登录",
-                "logged_out": "未登录",
-                "awaiting_2fa": "等待验证码",
-                "in_progress": "正在登录",
-                "failed": "登录失败",
-            }.get(apple_auth_state, "状态未确认")
-        result.append(
-            {
-                "key": "applemusic",
-                "label": "Apple Music",
-                "available": apple_available,
-                "text": apple_text,
-            }
-        )
-        return result
+        return self._status_platform_accounts(apple_auth_state)
 
     def _require_enabled(self) -> str:
         if self.closed:
@@ -267,7 +217,14 @@ class AppleMusicBackend:
     def management_settings(self) -> dict:
         """Return the small, non-secret configuration exposed to this page."""
 
-        item = self.cfg.parser.applemusic
+        item = self._parser_item("applemusic")
+        if item is None:
+            return {
+                "backend_enabled": False, "return_audio": False,
+                "audio_send_format": "file",
+                "file_codec_priority": list(FILE_CODEC_PRIORITY),
+                "show_playlist_cover": True, "show_playlist_url": True,
+            }
         return {
             "backend_enabled": getattr(item, "backend_enabled", False) is True,
             "return_audio": getattr(item, "return_audio", False) is True,
@@ -284,6 +241,507 @@ class AppleMusicBackend:
             "show_playlist_cover": getattr(item, "show_playlist_cover", True) is not False,
             "show_playlist_url": getattr(item, "show_playlist_url", True) is not False,
         }
+
+    def _parser_item(self, key: str):
+        parsers = getattr(self.cfg, "parser", None)
+        getter = getattr(parsers, "get", None)
+        if callable(getter):
+            return getter(key)
+        return getattr(parsers, key, None)
+
+    def _parser_config_entries(self) -> dict[str, dict]:
+        """Describe three music parsers without returning cookie values."""
+
+        entries: dict[str, dict] = {}
+        defaults = self._default_parser_templates()
+        history = self._parser_management_history()
+        runtime_parsers = self._runtime_parsers()
+        provided_statuses: dict[str, dict] = {}
+        if self._platform_status_provider is not None:
+            try:
+                raw_statuses = self._platform_status_provider()
+            except Exception:
+                raw_statuses = ()
+            if isinstance(raw_statuses, (list, tuple)):
+                for status in raw_statuses:
+                    if isinstance(status, dict) and status.get("key") in MUSIC_SETTINGS:
+                        text = status.get("text")
+                        provided_statuses[status["key"]] = {
+                            "available": status.get("available") is True,
+                            "cookie_configured": status.get("cookie_configured") is True
+                                or status.get("available") is True,
+                            "cookie_status": text.strip()[:64] if isinstance(text, str) else "Cookie 状态未确认",
+                        }
+        for key, fields in MUSIC_SETTINGS.items():
+            item = self._parser_item(key)
+            history_entry = history.get(key)
+            history_entry = history_entry if isinstance(history_entry, dict) else {}
+            if item is None:
+                default = defaults.get(key)
+                prior = history_entry
+                previous_settings = prior.get("settings")
+                previous_settings = previous_settings if isinstance(previous_settings, dict) else {}
+                has_configuration = key in self._known_parser_keys() or bool(prior)
+                known = has_configuration or default is not None
+                configured = has_configuration
+                cookie_configured = prior.get("cookie_configured") is True
+                if not known:
+                    settings = {}
+                else:
+                    settings = {
+                        field: (
+                            "file" if field == "audio_send_format" and str(previous_settings.get(field, default.get(field, "voice") if default else "voice")).lower() == "file"
+                            else "voice" if field == "audio_send_format"
+                            else bool(previous_settings.get(field, default.get(field, True) if default else True))
+                        )
+                        for field in fields
+                    }
+                entries[key] = {
+                    "configured": False, "known": known,
+                    "enabled": False,
+                    "available": False,
+                    "cookie_configured": cookie_configured,
+                    "cookie_status": (
+                        "Cookie 已配置（解析器未启用）" if cookie_configured else
+                        "解析器未启用" if known else "未配置"
+                    ),
+                    "settings": settings,
+                }
+                continue
+            raw_cookie = getattr(item, "cookies", None)
+            cookiejar = next(
+                (
+                    getattr(parser, "cookiejar", None)
+                    for parser in runtime_parsers
+                    if getattr(getattr(parser, "platform", None), "name", None) == key
+                    and getattr(parser, "cookiejar", None) is not None
+                ),
+                None,
+            )
+            cookie_configured = bool(
+                getattr(cookiejar, "cookies_str", None) or raw_cookie
+                or (history_entry.get("cookie_configured") is True)
+            )
+            provided = provided_statuses.get(key)
+            parser = next((
+                candidate for candidate in runtime_parsers
+                if getattr(getattr(candidate, "platform", None), "name", None) == key
+            ), None)
+            if not getattr(item, "enable", True):
+                cookie_status = "解析器未启用"
+                available = False
+            elif provided is not None:
+                cookie_status = provided["cookie_status"]
+                available = provided["available"]
+                cookie_configured = cookie_configured or provided["cookie_configured"]
+            elif key == "netease":
+                cookie_status = "Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）"
+                available = cookie_configured
+            elif key in {"qqmusic", "kugou"}:
+                if not cookie_configured:
+                    cookie_status, available = "Cookie 未配置（可选）", False
+                elif parser is None:
+                    cookie_status, available = "Cookie 已配置，状态未就绪", False
+                else:
+                    try:
+                        available = parser.has_auth_credentials()
+                    except (AttributeError, TypeError, ValueError):
+                        available = False
+                    cookie_status = "账号 Cookie 已配置" if available else "账号 Cookie 不完整"
+            else:
+                cookie_status, available = (
+                    ("Cookie 已配置", True) if cookie_configured
+                    else ("Cookie 未配置", False)
+                )
+            settings = {}
+            for field in fields:
+                value = getattr(item, field, None)
+                if field == "audio_send_format":
+                    value = "file" if str(value or "voice").strip().lower() == "file" else "voice"
+                elif field in MUSIC_BOOLEAN_SETTINGS:
+                    value = True if value is None else bool(value)
+                settings[field] = value
+            entries[key] = {
+                "configured": True,
+                "known": True,
+                "enabled": getattr(item, "enable", True) is True,
+                "available": available,
+                "cookie_configured": cookie_configured,
+                "cookie_status": cookie_status,
+                "settings": settings,
+            }
+        return entries
+
+    def _known_parser_keys(self) -> set[str]:
+        parser_config = getattr(self.cfg, "parser", None)
+        raw = getattr(parser_config, "_nodes", None)
+        if isinstance(raw, dict):
+            return set(raw)
+        value = getattr(self.cfg, "parsers_template", None)
+        if isinstance(value, list):
+            return {
+                str(item.get("__template_key"))
+                for item in value
+                if isinstance(item, dict) and item.get("__template_key")
+            }
+        return set()
+
+    def _parser_management_history(self) -> dict:
+        value = getattr(self.cfg, "_parser_management_history", None)
+        if isinstance(value, dict):
+            return value
+        raw_data = getattr(self.cfg, "_data", None)
+        value = raw_data.get("__parser_management_history_v1") if isinstance(raw_data, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _default_parser_templates() -> dict[str, dict]:
+        try:
+            path = Path(__file__).parent.parent / "default_template.json"
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, list):
+            return {}
+        return {
+            item.get("__template_key"): item
+            for item in raw
+            if isinstance(item, dict) and isinstance(item.get("__template_key"), str)
+        }
+
+    def _runtime_parsers(self) -> list[object]:
+        if self._runtime_parser_provider is None:
+            return []
+        try:
+            values = self._runtime_parser_provider()
+        except Exception:
+            return []
+        return list(values) if isinstance(values, (list, tuple, set)) else []
+
+    def _parser_statuses(self) -> list[dict]:
+        """Return non-secret enablement and Cookie status for all known parsers."""
+
+        labels = {
+            "bilibili": "Bilibili", "douyin": "抖音", "xhs": "小红书",
+            "pixiv": "Pixiv", "qqmusic": "QQ 音乐",
+            "netease": "网易云音乐", "kugou": "酷狗音乐",
+            "qishui": "汽水音乐", "kuwo": "酷我音乐",
+            "applemusic": "Apple Music",
+        }
+        default_templates = self._default_parser_templates()
+        rows: dict[str, dict] = {}
+        if self._platform_status_provider is not None:
+            try:
+                provided = self._platform_status_provider()
+            except Exception:
+                provided = ()
+            if isinstance(provided, (list, tuple)):
+                for status in provided:
+                    if isinstance(status, dict) and status.get("key") in labels:
+                        text = status.get("text")
+                        rows[status["key"]] = {
+                            "available": status.get("available") is True,
+                            "cookie_configured": status.get("cookie_configured") is True
+                                or status.get("available") is True,
+                            "cookie_status": text.strip()[:64] if isinstance(text, str) else "状态未确认",
+                        }
+        runtime = {
+            getattr(getattr(parser, "platform", None), "name", ""): parser
+            for parser in self._runtime_parsers()
+        }
+        entries = []
+        default_keys = set(default_templates) | self._known_parser_keys()
+        for key, label in labels.items():
+            item = self._parser_item(key)
+            known = key in default_keys or item is not None
+            parser = runtime.get(key)
+            state = rows.get(key, {})
+            available = state.get("available", False)
+            cookie_configured = state.get("cookie_configured", False)
+            cookie_status = state.get("cookie_status", "Cookie 未配置")
+            if item is None:
+                configured = False
+                enabled = False
+                cookie_configured = bool(self._parser_management_history().get(key, {}).get("cookie_configured"))
+                cookie_status = (
+                    "Cookie 已配置（解析器未启用）" if cookie_configured else
+                    "解析器未启用" if known else "未配置"
+                )
+            elif key == "applemusic":
+                configured = item is not None
+                enabled = configured and getattr(item, "enable", True) is True
+                cookie_configured = False
+                cookie_status = (
+                    "账号后端未启用" if not self.settings.enabled else
+                    "已登录" if self._last_auth_state == "authenticated" else
+                    "未登录"
+                )
+                available = self.settings.enabled and self._last_auth_state == "authenticated"
+            else:
+                configured = True
+                enabled = getattr(item, "enable", True) is True
+                if key in {"xhs", "pixiv", "netease"} and not state:
+                    cookiejar = getattr(parser, "cookiejar", None)
+                    cookie_configured = bool(
+                        getattr(cookiejar, "cookies_str", None)
+                        or getattr(item, "cookies", None)
+                    )
+                    cookie_status = ("Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）")
+                    available = cookie_configured
+                if key in {"qishui", "kuwo"}:
+                    cookie_status = "无需 Cookie"
+                    available = True
+            entries.append({
+                "key": key, "label": label, "known": known,
+                "configured": configured, "enabled": enabled,
+                "cookie_configured": cookie_configured,
+                "cookie_status": cookie_status,
+            })
+            if entries[-1]["known"]:
+                if key == "applemusic":
+                    entries[-1]["cookie_status"] = cookie_status
+                elif key in rows:
+                    entries[-1]["cookie_status"] = cookie_status
+                    entries[-1]["available"] = state.get("available", False)
+                elif item is None:
+                    pass
+                elif key in {"qqmusic", "kugou"} and item is not None:
+                    cookiejar = getattr(parser, "cookiejar", None)
+                    cookie_configured = bool(
+                        getattr(cookiejar, "cookies_str", None)
+                        or getattr(item, "cookies", None)
+                    )
+                    if not enabled:
+                        cookie_status = "解析器未启用"
+                    elif not cookie_configured:
+                        cookie_status = "Cookie 未配置（可选）"
+                    elif parser is None:
+                        cookie_status = "Cookie 已配置，状态未就绪"
+                    elif parser.has_auth_credentials():
+                        cookie_status = "账号 Cookie 已配置"
+                        available = True
+                    else:
+                        cookie_status = "账号 Cookie 不完整"
+                        available = False
+                    if not cookie_configured:
+                        available = False
+                    entries[-1]["cookie_configured"] = cookie_configured
+                    entries[-1]["cookie_status"] = cookie_status
+                    entries[-1]["available"] = available
+                elif key in {"qishui", "kuwo"} and item is not None:
+                    entries[-1]["cookie_status"] = "无需 Cookie"
+                    entries[-1]["available"] = True
+                elif key in {"xhs", "pixiv", "netease"} and item is not None:
+                    cookiejar = getattr(parser, "cookiejar", None)
+                    cookie_configured = bool(
+                        getattr(cookiejar, "cookies_str", None)
+                        or getattr(item, "cookies", None)
+                    )
+                    entries[-1]["cookie_configured"] = cookie_configured
+                    entries[-1]["cookie_status"] = "Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）"
+                    entries[-1]["available"] = cookie_configured
+                elif key == "douyin" and item is not None and parser is not None:
+                    cookie_configured = bool(parser.has_login_cookie())
+                    entries[-1]["cookie_configured"] = cookie_configured
+                    entries[-1]["cookie_status"] = "登录 Cookie 已配置" if cookie_configured else "登录 Cookie 未配置"
+                    entries[-1]["available"] = cookie_configured
+                elif key == "bilibili" and item is not None and parser is not None:
+                    cookie_configured = bool(parser.login.has_cookie())
+                    entries[-1]["cookie_configured"] = cookie_configured
+                    entries[-1]["cookie_status"] = "登录 Cookie 已配置" if cookie_configured else "登录 Cookie 未配置"
+                    entries[-1]["available"] = cookie_configured
+                if not enabled and item is not None:
+                    entries[-1]["cookie_status"] = "解析器未启用"
+                    entries[-1]["available"] = False
+        return entries
+
+    def _status_platform_accounts(self, apple_auth_state: str = "unknown") -> list[dict]:
+        """Build fixed platform badges, with configured vs missing distinction."""
+
+        provider_statuses: dict[str, dict] = {}
+        if self._platform_status_provider is not None:
+            try:
+                raw_statuses = self._platform_status_provider()
+            except Exception:
+                raw_statuses = ()
+            if isinstance(raw_statuses, (list, tuple)):
+                for status in raw_statuses:
+                    if isinstance(status, dict) and status.get("key") in {"douyin", "bilibili", *MUSIC_SETTINGS.keys()}:
+                        text = status.get("text")
+                        provider_statuses[status["key"]] = {
+                            "available": status.get("available") is True,
+                            "text": text.strip()[:64] if isinstance(text, str) else "状态未确认",
+                        }
+
+        accounts = []
+        for key, label in (("douyin", "抖音"), ("bilibili", "Bilibili"), ("qqmusic", "QQ 音乐"), ("kugou", "酷狗音乐"), ("applemusic", "Apple Music")):
+            if key in {"qqmusic", "kugou"}:
+                parser_status = provider_statuses.get(key)
+                entry = self._parser_item(key)
+                if entry is None:
+                    known = key in self._known_parser_keys() or key in self._default_parser_templates()
+                    if parser_status is not None:
+                        available, text = parser_status["available"], parser_status["text"]
+                    else:
+                        available, text = False, "解析器未启用" if known else "未配置"
+                elif getattr(entry, "enable", True) is not True:
+                    available, text = False, "解析器未启用"
+                elif parser_status is None:
+                    has_cookie = bool(getattr(entry, "cookies", None))
+                    available, text = has_cookie, "状态未就绪" if has_cookie else "Cookie 未配置"
+                elif entry is not None and parser_status is not None:
+                    available, text = parser_status["available"], parser_status["text"]
+                else:
+                    has_cookie = bool(getattr(entry, "cookies", None))
+                    available, text = has_cookie, "Cookie 已配置，状态未就绪" if has_cookie else "Cookie 未配置"
+            elif key in {"douyin", "bilibili"}:
+                parser_status = provider_statuses.get(key)
+                available, text = (parser_status["available"], parser_status["text"]) if parser_status else (False, "状态未就绪")
+            else:
+                if not self.settings.enabled:
+                    available, text = False, "账号后端未启用"
+                elif self.closed:
+                    available, text = False, "账号后端已停止"
+                else:
+                    available = apple_auth_state == "authenticated"
+                    text = {
+                        "authenticated": "已登录", "logged_out": "未登录",
+                        "awaiting_2fa": "等待验证码", "in_progress": "正在登录",
+                        "failed": "登录失败",
+                    }.get(apple_auth_state, "状态未确认")
+            accounts.append({"key": key, "label": label, "available": available, "text": text})
+        return accounts
+
+    async def update_music_parser_settings(self, owner: str, values: object) -> dict:
+        if not isinstance(values, dict) or not values:
+            raise AppleMusicBackendError("没有可保存的音乐解析设置")
+        if set(values) - MUSIC_SETTINGS.keys():
+            raise AppleMusicBackendError("设置中包含不支持的音乐解析器")
+        updates: list[tuple[object, str, object]] = []
+        responses: dict[str, dict] = {}
+        for parser_key, settings in values.items():
+            if not isinstance(settings, dict) or not settings:
+                raise AppleMusicBackendError("音乐解析器设置无效")
+            allowed = MUSIC_SETTINGS[parser_key]
+            if set(settings) - allowed:
+                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}设置中包含不支持的字段")
+            for field, value in settings.items():
+                if field in MUSIC_BOOLEAN_SETTINGS | {"enable"} and not isinstance(value, bool):
+                    raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}开关设置无效")
+                if field == "audio_send_format" and value not in {"voice", "file"}:
+                    raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}音频发送模式无效")
+            item = self._parser_item(parser_key)
+            if item is None:
+                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
+            for field, value in settings.items():
+                updates.append((item, field, value))
+
+        async with self.lock:
+            self.check_owner(owner)
+            previous = [(item, field, getattr(item, field, None)) for item, field, _ in updates]
+            raw_data = getattr(self.cfg, "_data", None)
+            history_store = raw_data.get("__parser_management_history_v1") if isinstance(raw_data, dict) else None
+            history_snapshot = (
+                json.loads(json.dumps(history_store))
+                if isinstance(history_store, dict)
+                else None
+            )
+            if isinstance(raw_data, dict) and not isinstance(history_store, dict):
+                history_store = {}
+                raw_data["__parser_management_history_v1"] = history_store
+            try:
+                for item, field, value in updates:
+                    setattr(item, field, value)
+                if isinstance(history_store, dict):
+                    for parser_key, settings in values.items():
+                        saved = history_store.get(parser_key)
+                        saved = dict(saved) if isinstance(saved, dict) else {}
+                        saved_settings = saved.get("settings")
+                        saved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
+                        saved_settings.update(settings)
+                        saved.update(settings=saved_settings, cookie_configured=bool(saved.get("cookie_configured")))
+                        history_store[parser_key] = saved
+                save = getattr(self.cfg, "save_config", None)
+                if not callable(save):
+                    raise RuntimeError("configuration is not persistent")
+                await asyncio.get_running_loop().run_in_executor(None, save)
+            except Exception:
+                for item, field, value in previous:
+                    setattr(item, field, value)
+                if isinstance(history_store, dict) and history_snapshot is not None:
+                    history_store.clear()
+                    history_store.update(history_snapshot)
+                raise AppleMusicBackendError("音乐解析设置保存失败，请稍后重试") from None
+            all_entries = self._parser_config_entries()
+            for key in values:
+                responses[key] = all_entries[key]
+            return {"message": "音乐解析设置已保存并立即生效", "parsers": responses}
+
+    async def update_music_cookie(self, owner: str, parser_key: object, cookie: object, *, clear: bool = False) -> dict:
+        if parser_key not in MUSIC_SETTINGS:
+            raise AppleMusicBackendError("未知的音乐解析器")
+        if not isinstance(clear, bool):
+            raise AppleMusicBackendError("清除 Cookie 参数无效")
+        if clear is True:
+            cookie = ""
+        if not isinstance(cookie, str) or len(cookie) > 16384:
+            raise AppleMusicBackendError("Cookie 无效或超过长度限制")
+        from .cookie import CookieJar
+
+        cookie = CookieJar.clean_cookies_str(cookie)
+        item = self._parser_item(parser_key)
+        if item is None:
+            raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
+        async with self.lock:
+            self.check_owner(owner)
+            old_cookie = getattr(item, "cookies", None)
+            cookiejars = [
+                getattr(parser, "cookiejar", None) for parser in self._runtime_parsers()
+                if getattr(getattr(parser, "platform", None), "name", None) == parser_key
+                and getattr(parser, "cookiejar", None) is not None
+            ]
+            cookie_states = [(jar, jar.raw_cookies, list(jar.cookies), jar.cookies_str) for jar in cookiejars]
+            raw_data = getattr(self.cfg, "_data", None)
+            history_store = None
+            if isinstance(raw_data, dict):
+                history_store = raw_data.get("__parser_management_history_v1")
+                if not isinstance(history_store, dict):
+                    history_store = {}
+                    raw_data["__parser_management_history_v1"] = history_store
+            history_snapshot = None
+            if history_store is not None:
+                history_snapshot = json.loads(json.dumps(history_store))
+            try:
+                item.cookies = cookie
+                for jar in cookiejars:
+                    jar.replace_from_cookies_str(cookie)
+                if history_store is not None:
+                    saved = history_store.get(parser_key)
+                    saved = dict(saved) if isinstance(saved, dict) else {}
+                    saved["cookie_configured"] = bool(cookie)
+                    history_store[parser_key] = saved
+                save = getattr(self.cfg, "save_config", None)
+                if not callable(save):
+                    raise RuntimeError("configuration is not persistent")
+                await asyncio.get_running_loop().run_in_executor(None, save)
+            except Exception:
+                item.cookies = old_cookie
+                if history_store is not None and history_snapshot is not None:
+                    history_store.clear()
+                    history_store.update(history_snapshot)
+                for jar, raw, cookies, cookies_str in cookie_states:
+                    jar.raw_cookies, jar.cookies, jar.cookies_str = raw, cookies, cookies_str
+                    try:
+                        jar.save_to_file()
+                    except Exception:
+                        pass
+                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]} Cookie 保存失败") from None
+            entry = self._parser_config_entries()[parser_key]
+            return {
+                "message": f"{PARSER_LABELS[parser_key]} Cookie 已{ '清除' if clear or not cookie else '保存' }",
+                "parser_key": parser_key,
+                "parser": entry,
+            }
 
     async def update_management_settings(self, owner: str, values: object) -> dict:
         """Validate and persist only the Apple Music fields exposed by the page."""
@@ -313,7 +771,9 @@ class AppleMusicBackend:
 
         async with self.lock:
             self.check_owner(owner)
-            item = self.cfg.parser.applemusic
+            item = self._parser_item("applemusic")
+            if item is None:
+                raise AppleMusicBackendError("Apple Music 解析器未配置，请先在插件配置页恢复该解析器配置")
             previous = {key: getattr(item, key, None) for key in values}
             try:
                 for key, value in values.items():
@@ -456,6 +916,8 @@ class AppleMusicBackend:
             "cache": {"bytes": cache_bytes, "files": cache_files},
             "settings": self.management_settings(),
             "platform_accounts": self.platform_accounts(),
+            "parsers": self._parser_statuses(),
+            "music_parsers": self._parser_config_entries(),
         }
         if not self.settings.enabled or self.closed:
             return result
@@ -479,7 +941,9 @@ class AppleMusicBackend:
                 result.update(subscription_active=active, storefront=storefront, subscription_message=message)
         except AppleMusicBackendError as exc:
             result["message"] = exc.message
+        self._last_auth_state = result["auth_state"]
         result["platform_accounts"] = self.platform_accounts(result["auth_state"])
+        result["parsers"] = self._parser_statuses()
         return result
 
     async def clear_cache(self, owner: str) -> dict:

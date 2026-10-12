@@ -217,6 +217,19 @@ class ParserConfig(ConfigNodeContainer):
     def platforms(self) -> list[str]:
         return [key for key in self._nodes if key in self.SUPPORTED]
 
+    def get(self, key: str, default=None) -> ParserItem | Any:
+        """Return a parser setting only when its node exists.
+
+        Unlike attribute access, this is safe for optional management surfaces
+        that must describe a parser removed from ``parsers_template`` without
+        recreating its configuration node.
+        """
+
+        return self._nodes.get(key, default)
+
+    def has_configuration(self, key: str) -> bool:
+        return key in self._nodes
+
     def enabled_platforms(self) -> list[str]:
         return [
             k
@@ -329,7 +342,10 @@ class PluginConfig(ConfigNode):
             self.save_config()
 
         # ---------- Parser ----------
-        if not self.parsers_template:
+        parser_keys_marker = config.get("__parser_template_keys_v1")
+        if "parsers_template" not in config or (
+            not self.parsers_template and not isinstance(parser_keys_marker, list)
+        ):
             self.parsers_template[:] = self.load_parser_template(
                 self.default_template_file
             )
@@ -376,7 +392,7 @@ class PluginConfig(ConfigNode):
         return sorted(names)
 
     def _migrate_parser_template(self) -> None:
-        """移除旧平台配置，并为当前支持的平台补齐最新默认字段。"""
+        """移除旧平台配置，并仅迁移仍保留平台节点的最新默认字段。"""
         defaults = self.load_parser_template(self.default_template_file)
         # The installed template can lag behind the bundled one after a
         # plugin upgrade.  Keep its existing values, but append newly shipped
@@ -411,6 +427,36 @@ class PluginConfig(ConfigNode):
             if isinstance(item, dict)
             and item.get("__template_key") in self._supported_parser_names
         }
+        saved_template_keys = self._data.get("__parser_template_keys_v1")
+        known_keys = (
+            {str(key) for key in saved_template_keys if isinstance(key, str)}
+            if isinstance(saved_template_keys, list)
+            else set()
+        )
+        history = self._data.get("__parser_management_history_v1")
+        history = dict(history) if isinstance(history, Mapping) else {}
+        history_fields = {
+            "qqmusic": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "netease": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "applemusic": ("enable", "backend_enabled", "return_audio", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
+        }
+        for key, old in existing.items():
+            saved = history.get(key)
+            saved = dict(saved) if isinstance(saved, Mapping) else {}
+            saved_settings = saved.get("settings")
+            saved_settings = dict(saved_settings) if isinstance(saved_settings, Mapping) else {}
+            saved_settings.update(
+                {field: old[field] for field in history_fields.get(key, ()) if field in old}
+            )
+            saved.update(
+                settings=saved_settings,
+                cookie_configured=bool(old.get("cookies")),
+            )
+            history[key] = saved
+        # Distinguish an intentionally empty parser list from an empty file
+        # being initialized for the first time. The constructor seeds the
+        # default list before this migration when creating a new config.
         normalized: list[dict[str, Any]] = []
         for default in defaults:
             if not isinstance(default, dict):
@@ -419,9 +465,13 @@ class PluginConfig(ConfigNode):
             if key not in self._supported_parser_names:
                 # 安装目录可能残留旧版本模板；不要把已移除平台重新写回配置。
                 continue
+            old = existing.get(key)
+            if old is None and key in known_keys:
+                # A previously configured parser row was deliberately removed.
+                continue
             merged = default.copy()
             # 保留用户已填写的 cookie、代理等有效字段；默认值补新字段。
-            if old := existing.get(key):
+            if old:
                 merged.update(old)
                 # 早期默认模板曾使用单值 ``video_codecs``；迁移为当前
                 # 配置页的列表字段，避免升级后丢失用户的编码偏好。
@@ -442,8 +492,29 @@ class PluginConfig(ConfigNode):
 
         if not normalized:
             return
+        current_default_keys = {
+            str(item.get("__template_key"))
+            for item in defaults
+            if isinstance(item, dict)
+            and item.get("__template_key") in self._supported_parser_names
+        }
+        marker = sorted(known_keys | current_default_keys)
+        history_changed = history != self._data.get("__parser_management_history_v1")
+        markers_changed = marker != saved_template_keys
+        changed = False
         if list(self.parsers_template) != normalized:
             self.parsers_template[:] = normalized
+            changed = True
+        if markers_changed:
+            self._data["__parser_template_keys_v1"] = marker
+            changed = True
+        if history_changed:
+            self._data["__parser_management_history_v1"] = history
+            object.__setattr__(self, "_parser_management_history", history)
+            changed = True
+        else:
+            object.__setattr__(self, "_parser_management_history", history)
+        if changed:
             self.save_config()
 
     @staticmethod

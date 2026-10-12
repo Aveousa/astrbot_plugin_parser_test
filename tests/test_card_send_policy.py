@@ -375,9 +375,9 @@ def test_apple_file_uses_onebot_file_protocol(sender_module):
     ]
 
 
-def test_apple_music_attachment_filename_is_sanitized(sender_module):
-    filename = sender_module.MessageSender._apple_music_audio_filename(
-        '../bad:name?.m4a', Path('track.m4a')
+def test_music_attachment_filename_is_sanitized(sender_module):
+    filename = sender_module.MessageSender._audio_attachment_filename(
+        '../bad:name?.m4a', Path('track.m4a'), '音乐'
     )
 
     assert filename == "_bad_name_.m4a"
@@ -491,6 +491,48 @@ def test_qqmusic_audio_uses_remote_url_for_onebot(sender_module):
         {
             "type": "record",
             "data": {"file": "https://aqqmusic.tc.qq.com/song.mp3?vkey=test"},
+        }
+    ]
+
+
+def test_netease_file_uses_tokenized_onebot_file_path(sender_module):
+    actions = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            actions.append((action, kwargs))
+
+    class _TokenService:
+        async def register_file(self, path, timeout=None):
+            assert path == "song.mp3"
+            assert timeout == 300
+            return "netease-token"
+
+    import sys
+
+    fake_core = sys.modules["astrbot.core"]
+    fake_core.astrbot_config = {"callback_api_base": "http://astrbot:6185/"}
+    fake_core.file_token_service = _TokenService()
+    result = ParseResult(
+        platform=Platform("netease", "网易云音乐"),
+        title="试听歌曲",
+        contents=[AudioContent(Path("song.mp3"))],
+        extra={"audio_as_file": True, "audio_send_via_url": True},
+    )
+    event = _Event()
+    event.bot = _Bot()
+    sender = sender_module.MessageSender(_card_config(audio_to_file=False), _Renderer())
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert actions[0][1]["message"] == [
+        {
+            "type": "file",
+            "data": {
+                "file": "http://astrbot:6185/api/file/netease-token",
+                "name": "试听歌曲.mp3",
+            },
         }
     ]
 

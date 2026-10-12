@@ -92,20 +92,25 @@ class MessageSender:
         return path.as_uri()
 
     @staticmethod
-    def _apple_music_audio_filename(title: object, path: Path) -> str:
-        """Build a portable attachment filename from the Apple Music title."""
+    def _audio_attachment_filename(title: object, path: Path, fallback: str) -> str:
+        """Build a portable attachment filename from a track title."""
         suffix = path.suffix or ".m4a"
         stem = str(title or "").strip()
         if stem.lower().endswith(suffix.lower()):
             stem = stem[: -len(suffix)]
         stem = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", stem).strip(" .")
         if not stem:
-            stem = path.stem or "Apple Music"
+            stem = path.stem or fallback
         if stem.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
             stem = f"_{stem}"
         # Leave room for the extension even on filesystems with short limits.
-        stem = stem[: max(1, 180 - len(suffix))].rstrip(" .") or "Apple Music"
+        stem = stem[: max(1, 180 - len(suffix))].rstrip(" .") or fallback
         return f"{stem}{suffix}"
+
+    @staticmethod
+    def _apple_music_audio_filename(title: object, path: Path) -> str:
+        """Backward-compatible Apple Music filename helper."""
+        return MessageSender._audio_attachment_filename(title, path, "Apple Music")
 
     @staticmethod
     def _image_from_path(path: Path) -> Image:
@@ -279,6 +284,7 @@ class MessageSender:
                         File(name=path.name, file=self._to_file_uri(path))
                         if (
                             result.extra.get("audio_as_file") is True
+                            or result.extra.get("audio_delivery_mode") == "file"
                             or result.extra.get("audio_send_via_url") is True
                             or (
                                 self.cfg.audio_to_file
@@ -584,8 +590,8 @@ class MessageSender:
             self._resolve_groups(result, omit_playlist_cover=card_sent),
         )
 
-        # Apple Music 单曲先保存在本次解析目录，再通过临时 URL 交由 OneBot
-        # 拉取；语音与文件都不经过 AstrBot 原生媒体组件。
+        # 选择通过 OneBot URL 交付的音乐单曲先保存在本次解析目录，再注册
+        # 临时 URL；Apple Music 与网易云/QQ/酷狗的文件模式共用此路径。
         direct_audio_url = result.extra.get("audio_send_url")
         use_local_audio_url = result.extra.get("audio_send_via_url") is True
         direct_audio_content: AudioContent | None = None
@@ -594,6 +600,7 @@ class MessageSender:
             (
                 use_local_audio_url
                 or result.extra.get("audio_as_voice") is True
+                or result.extra.get("audio_delivery_mode") == "voice"
             )
             and (
                 (
@@ -629,11 +636,21 @@ class MessageSender:
                     audio_path = await direct_audio_content.get_path()
                     direct_audio_name = audio_path.name
                     if (
-                        result.platform.name.lower() == "applemusic"
-                        and result.extra.get("audio_as_voice") is not True
+                        result.extra.get("audio_as_file") is True
+                        or result.extra.get("audio_delivery_mode") == "file"
+                        or (
+                            result.platform.name.lower() == "applemusic"
+                            and result.extra.get("audio_as_voice") is not True
+                        )
                     ):
-                        direct_audio_name = self._apple_music_audio_filename(
-                            result.title, audio_path
+                        fallback = {
+                            "applemusic": "Apple Music",
+                            "netease": "网易云音乐",
+                            "qqmusic": "QQ 音乐",
+                            "kugou": "酷狗音乐",
+                        }.get(result.platform.name.lower(), "音乐")
+                        direct_audio_name = self._audio_attachment_filename(
+                            result.title, audio_path, fallback
                         )
                     if use_local_audio_url and not (
                         isinstance(direct_audio_url, str)
@@ -661,9 +678,9 @@ class MessageSender:
                         # Apple Music audio, which can copy/serialize large files.
                         direct_audio_content = None
 
-        # Apple Music audio is intentionally OneBot-only. If URL registration
-        # or the platform action is unavailable, omit the audio rather than
-        # invoking AstrBot's native File/Record serialization path.
+        # Music configured for OneBot-only local-URL delivery must not fall
+        # back to AstrBot's native media serialization if URL registration
+        # or the platform action is unavailable.
         if use_local_audio_url and direct_audio_content is None:
             groups = [
                 SendGroup(
@@ -689,7 +706,10 @@ class MessageSender:
                         direct_audio_url,
                         message_type=(
                             "record"
-                            if result.extra.get("audio_as_voice") is True
+                            if (
+                                result.extra.get("audio_as_voice") is True
+                                or result.extra.get("audio_delivery_mode") == "voice"
+                            )
                             else "file"
                         ),
                         name=direct_audio_name,

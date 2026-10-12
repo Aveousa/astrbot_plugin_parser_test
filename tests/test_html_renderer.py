@@ -1078,6 +1078,32 @@ def test_kugou_login_card_uses_kugou_branding(
     assert "QQ 音乐" not in captured_html[0]
 
 
+def test_bilibili_login_card_uses_bilibili_branding_and_accent(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    captured_html: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured_html.append(html)
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+
+    output = asyncio.run(renderer.render_bilibili_login_card(b"qr-image"))
+
+    assert output is not None
+    assert "Bilibili扫码登录" in captured_html[0]
+    assert "使用 哔哩哔哩 App 扫描二维码" in captured_html[0]
+    assert "bilibili.png" in captured_html[0]
+    assert "--accent: #00a1d6" in captured_html[0]
+    assert "color-mix(in srgb, var(--accent) 13%, transparent)" in captured_html[0]
+    assert "rgba(19, 168, 102" not in captured_html[0]
+    assert "酷狗音乐" not in captured_html[0]
+
+
 def test_render_card_uses_parse_result_cache_directory(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

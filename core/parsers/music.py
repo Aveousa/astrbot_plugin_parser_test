@@ -442,6 +442,47 @@ class PlaylistParserBase(BaseParser):
     platform = Platform(name="music_base", display_name="音乐")
     _MAX_PREVIEW_TRACKS = 5
 
+    def _music_parser_config(self):
+        """Read this parser's settings without assuming its config row exists.
+
+        Parser rows can be intentionally removed from the AstrBot parser list.
+        Read paths should then use safe defaults instead of raising and
+        breaking the management page or an already-created parser instance.
+        """
+
+        parsers = getattr(self.cfg, "parser", None)
+        getter = getattr(parsers, "get", None)
+        if callable(getter):
+            return getter(self.platform.name)
+        return getattr(parsers, self.platform.name, None)
+
+    def _return_audio_enabled(self) -> bool:
+        value = getattr(self._music_parser_config(), "return_audio", None)
+        return True if value is None else bool(value)
+
+    def _audio_send_format(self) -> str:
+        value = getattr(self._music_parser_config(), "audio_send_format", None)
+        return "file" if str(value or "voice").strip().lower() == "file" else "voice"
+
+    def _set_audio_delivery(self, result: ParseResult, audio_url: str) -> None:
+        """Choose OneBot record vs file delivery for this music track."""
+
+        if self._audio_send_format() == "file":
+            # Download into the active parse cache, expose it through the
+            # same short-lived AstrBot token URL as Apple Music, and have the
+            # OneBot adapter send a file segment.
+            result.extra["audio_as_file"] = True
+            result.extra["audio_send_via_url"] = True
+            result.extra["audio_send_url"] = None
+            # Extra data survives subsequent downloader-task completion. Keep
+            # the chosen mode there because create_audio_content begins with
+            # legacy voice defaults.
+            result.extra["audio_delivery_mode"] = "file"
+            return
+        result.extra["audio_as_voice"] = True
+        result.extra["audio_send_url"] = audio_url
+        result.extra["audio_delivery_mode"] = "voice"
+
     async def _json_request(
         self,
         url: str,
@@ -519,18 +560,14 @@ class PlaylistParserBase(BaseParser):
         value as enabled keeps their existing card appearance unchanged.
         """
 
-        parser_config = getattr(
-            getattr(self.cfg, "parser", None), self.platform.name, None
-        )
+        parser_config = self._music_parser_config()
         value = getattr(parser_config, "show_playlist_cover", None)
         return True if value is None else bool(value)
 
     def _show_playlist_url(self) -> bool:
         """Return whether the card should expose the source playlist URL."""
 
-        parser_config = getattr(
-            getattr(self.cfg, "parser", None), self.platform.name, None
-        )
+        parser_config = self._music_parser_config()
         value = getattr(parser_config, "show_playlist_url", None)
         return True if value is None else bool(value)
 
@@ -1098,18 +1135,17 @@ class AppleMusicParser(PlaylistParserBase):
             download_cover=not metadata_only,
         )
         backend = getattr(self, "apple_music_backend", None)
+        parser_config = self._music_parser_config()
         if (
             backend is not None
             and not metadata_only
             and backend.settings.enabled
-            and getattr(self.cfg.parser.applemusic, "return_audio", False)
+            and getattr(parser_config, "return_audio", False)
         ):
             # Keep Apple Music's send choice local to this parser.  The file
             # mode explicitly overrides the global audio_to_file switch, while
             # voice mode asks the sender to build a Record component.
-            send_format = getattr(
-                self.cfg.parser.applemusic, "audio_send_format", "file"
-            )
+            send_format = getattr(parser_config, "audio_send_format", "file")
             send_as_voice = str(send_format).strip().lower() == "voice"
             result.extra["audio_as_voice"] = send_as_voice
             result.extra["audio_as_file"] = not send_as_voice
@@ -1208,7 +1244,7 @@ class QQMusicParser(PlaylistParserBase):
 
     def __init__(self, config, downloader):
         super().__init__(config, downloader)
-        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
+        parser_config = self._music_parser_config()
         self.cookiejar = (
             CookieJar(self.cfg, parser_config, domain="y.qq.com")
             if parser_config is not None
@@ -1246,12 +1282,10 @@ class QQMusicParser(PlaylistParserBase):
         return bool(identity and auth_key)
 
     def _return_audio_enabled(self) -> bool:
-        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
-        value = getattr(parser_config, "return_audio", None)
-        return True if value is None else bool(value)
+        return super()._return_audio_enabled()
 
     def _lyrics_enabled(self) -> bool:
-        parser_config = getattr(getattr(self.cfg, "parser", None), "qqmusic", None)
+        parser_config = self._music_parser_config()
         return bool(getattr(parser_config, "parse_lyrics", False))
 
     async def _fetch_qq_lyrics(
@@ -1583,8 +1617,7 @@ class QQMusicParser(PlaylistParserBase):
             audio_url=audio_url,
         )
         if audio_url:
-            result.extra["audio_as_voice"] = True
-            result.extra["audio_send_url"] = audio_url
+            self._set_audio_delivery(result, audio_url)
         if self._lyrics_enabled():
             lyrics = await self._fetch_qq_lyrics(
                 song_mid,
@@ -1683,13 +1716,19 @@ class NetEaseMusicParser(PlaylistParserBase):
             return ""
         return cookiejar.get_cookie_header_for_url(url)
 
+    def has_cookie(self) -> bool:
+        return bool(self._netease_cookie_header("https://music.163.com/"))
+
+    def has_auth_credentials(self) -> bool:
+        return self.has_cookie()
+
     def _netease_api_base(self) -> str:
-        parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
+        parser_config = self._music_parser_config()
         configured = getattr(parser_config, "audio_api_base", None)
         return str(configured or self._DEFAULT_METING_API).strip().rstrip("/")
 
     def _lyrics_enabled(self) -> bool:
-        parser_config = getattr(getattr(self.cfg, "parser", None), "netease", None)
+        parser_config = self._music_parser_config()
         return bool(getattr(parser_config, "parse_lyrics", False))
 
     async def _fetch_netease_lyrics(self, song_id: str) -> str | None:
@@ -1821,13 +1860,15 @@ class NetEaseMusicParser(PlaylistParserBase):
                 )
         song_id = _first_text(track, "id") or searched.group("song_id")
         cover = _track_cover_url(track)
-        audio_url = await self._resolve_netease_audio_url(song_id)
-        audio_url = audio_url or _first_text(track, "mp3Url") or (
-            f"https://music.163.com/song/media/outer/url?id={song_id}"
-        )
+        audio_url = None
+        if self._return_audio_enabled():
+            audio_url = await self._resolve_netease_audio_url(song_id)
+            audio_url = audio_url or _first_text(track, "mp3Url") or (
+                f"https://music.163.com/song/media/outer/url?id={song_id}"
+            )
         audio_headers = dict(self.headers)
         audio_headers["Referer"] = "https://music.163.com/"
-        if cookie := self._netease_cookie_header(audio_url):
+        if audio_url and (cookie := self._netease_cookie_header(audio_url)):
             audio_headers["Cookie"] = cookie
         result = self._single_track_result(
             title=_track_title(track) or "未命名歌曲",
@@ -1844,11 +1885,8 @@ class NetEaseMusicParser(PlaylistParserBase):
             audio_url=audio_url,
             audio_headers=audio_headers,
         )
-        # 网易云单曲附加的本地音频应始终作为语音发送，不受全局
-        # “音频以文件形式发送”选项影响。OneBot 同时保留源 URL，避免将
-        # 大型本地音频编码进反向 WebSocket 消息。
-        result.extra["audio_as_voice"] = True
-        result.extra["audio_send_url"] = audio_url
+        if audio_url:
+            self._set_audio_delivery(result, audio_url)
         if self._lyrics_enabled():
             lyrics = await self._fetch_netease_lyrics(song_id)
             if lyrics:
@@ -1930,7 +1968,7 @@ class KugouMusicParser(PlaylistParserBase):
 
     def __init__(self, config, downloader):
         super().__init__(config, downloader)
-        parser_config = getattr(getattr(self.cfg, "parser", None), "kugou", None)
+        parser_config = self._music_parser_config()
         self.cookiejar = (
             CookieJar(self.cfg, parser_config, domain="kugou.com")
             if parser_config is not None
@@ -2218,12 +2256,17 @@ class KugouMusicParser(PlaylistParserBase):
         album_name: str | None = None,
     ) -> ParseResult:
         fallback = fallback if isinstance(fallback, Mapping) else {}
-        info = await self._fetch_kugou_song_info(
-            song_hash,
-            encode_album_audio_id=_first_text(fallback, "encode_album_audio_id"),
-            album_id=_first_text(fallback, "album_id"),
-            album_audio_id=_first_text(fallback, "album_audio_id"),
-            referer=source_url,
+        return_audio = self._return_audio_enabled()
+        info = (
+            await self._fetch_kugou_song_info(
+                song_hash,
+                encode_album_audio_id=_first_text(fallback, "encode_album_audio_id"),
+                album_id=_first_text(fallback, "album_id"),
+                album_audio_id=_first_text(fallback, "album_audio_id"),
+                referer=source_url,
+            )
+            if return_audio
+            else {}
         )
         title = (
             _first_text(info, "songName", "song_name", "fileName", "audio_name")
@@ -2251,7 +2294,8 @@ class KugouMusicParser(PlaylistParserBase):
             or extra.get("128timelength")
             or fallback.get("timelength")
         )
-        audio_url = _first_text(info, "url", "play_url", "play_backup_url")
+        resolved_audio_url = _first_text(info, "url", "play_url", "play_backup_url")
+        audio_url = resolved_audio_url if return_audio else None
         audio_headers = dict(self.headers)
         if audio_url and (cookie := self._kugou_cookie_header(audio_url)):
             audio_headers["Cookie"] = cookie
@@ -2273,10 +2317,7 @@ class KugouMusicParser(PlaylistParserBase):
             stats={},
         )
         if audio_url and audio_url.startswith(("http://", "https://")):
-            # Match QQ Music and NetEase: always send resolved tracks as voice,
-            # and let OneBot fetch the playable URL instead of uploading MP3 bytes.
-            result.extra["audio_as_voice"] = True
-            result.extra["audio_send_url"] = audio_url
+            self._set_audio_delivery(result, audio_url)
         return result
 
     @handle(
