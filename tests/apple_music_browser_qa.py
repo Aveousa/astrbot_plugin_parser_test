@@ -160,6 +160,9 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"
             assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "账号 Cookie 不完整"
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "未登录"
+            light_palette = frame.locator("html").evaluate("el => Object.fromEntries(['--bg','--accent','--surface-soft'].map(key => [key, getComputedStyle(el).getPropertyValue(key).trim()]))")
+            assert light_palette == {"--bg": "#F6F6F6", "--accent": "#8785A2", "--surface-soft": "#FFE2E2"}, light_palette
+            assert frame.locator(".primary-button").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 199, 199)"
             music_list = frame.locator("#music-parser-list")
             assert music_list.locator("[data-music-parser]").count() == 3
             qq_music = music_list.locator("[data-music-parser='qqmusic']")
@@ -213,7 +216,11 @@ def run(output: Path):
             dark_surface = frame.locator("html").evaluate(
                 "el => getComputedStyle(el).getPropertyValue('--surface').trim()"
             )
-            assert dark_surface == "#232326", dark_surface
+            assert dark_surface == "#292832", dark_surface
+            dark_accent = frame.locator("html").evaluate(
+                "el => getComputedStyle(el).getPropertyValue('--accent').trim()"
+            )
+            assert dark_accent == "#FFC7C7", dark_accent
             screenshot("desktop-dark.png")
             page.set_viewport_size({"width": 390, "height": 844})
             screenshot("mobile-dark.png")

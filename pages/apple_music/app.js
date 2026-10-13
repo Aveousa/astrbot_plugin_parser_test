@@ -36,6 +36,17 @@
     $("notice").querySelector(".notice-text").textContent = message;
     $("notice").dataset.error = String(error);
   }
+  function loadPluginLogo() {
+    const pluginName = bridge.getContext()?.pluginName;
+    if (typeof pluginName !== "string" || !pluginName) return;
+    const logo = $("plugin-logo");
+    logo.addEventListener("load", () => {
+      logo.hidden = false;
+      $("plugin-logo-fallback").hidden = true;
+    }, { once: true });
+    logo.addEventListener("error", () => { logo.hidden = true; }, { once: true });
+    logo.src = `/api/plug/${encodeURIComponent(pluginName)}/apple-music/logo`;
+  }
   function field(id, value, tone = "") {
     $(id).textContent = value;
     $(id).dataset.tone = tone;
@@ -637,5 +648,5 @@
     return;
   }
   const readyTimeout = setTimeout(() => notice("尚未连接后台页面桥接，请从支持 Plugin Pages 的 AstrBot 后台打开此页。", true), 8000);
-  bridge.ready().then(() => { clearTimeout(readyTimeout); refresh(); });
+  bridge.ready().then(() => { clearTimeout(readyTimeout); loadPluginLogo(); refresh(); });
 })();

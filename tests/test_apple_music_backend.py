@@ -529,6 +529,37 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
     asyncio.run(run())
 
 
+def test_plugin_logo_route_serves_current_plugin_root_file(tmp_path, monkeypatch):
+    async def run():
+        plugin_dir = tmp_path / "plugin"
+        plugin_dir.mkdir()
+        logo_path = plugin_dir / "logo.png"
+        logo_path.write_bytes(b"png logo bytes")
+        cfg = config(tmp_path)
+        cfg.plugin_dir = plugin_dir
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=True))
+        page = AppleMusicWeb(backend, "test-plugin")
+        request = SimpleNamespace(username="admin", headers={"content-type": "application/json"})
+        api = SimpleNamespace(request=request, json_response=lambda data, **kwargs: (data, kwargs))
+        monkeypatch.setitem(sys.modules, "astrbot.api.web", api)
+        context = SimpleNamespace(registered_web_apis=[])
+        context.register_web_api = lambda route, handler, methods, desc: context.registered_web_apis.append(
+            (route, handler, methods, desc)
+        )
+        assert page.register(context)
+        route = next(item for item in context.registered_web_apis if item[0].endswith("/apple-music/logo"))
+
+        response = await route[1]()
+
+        assert Path(response.path) == logo_path
+        assert response.media_type == "image/png"
+        assert response.headers["cache-control"] == "no-store"
+        await page.close()
+        await backend.close()
+
+    asyncio.run(run())
+
+
 def test_native_astrbot_request_context_and_json_response(tmp_path):
     api = pytest.importorskip("astrbot.api.web")
     from starlette.requests import Request

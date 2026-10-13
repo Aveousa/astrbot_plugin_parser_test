@@ -7,6 +7,9 @@ import hashlib
 import hmac
 import secrets
 from collections.abc import Callable
+from pathlib import Path
+
+from starlette.responses import FileResponse
 
 from .apple_music_backend import AppleMusicBackend, AppleMusicBackendError, normalize_track_url
 
@@ -197,6 +200,26 @@ class AppleMusicWeb:
             route = f"/{self.plugin_name}/apple-music/{endpoint}"
             context.register_web_api(route, handler, methods, "Apple Music 账号管理")
             self._registrations.append((route, handler, methods))
+
+        async def get_plugin_logo():
+            owner = authenticated_owner()
+            if not owner:
+                return response(message="需要 AstrBot 后台登录", status_code=401)
+            if self.closed:
+                return response(message="插件管理页已关闭", status_code=503)
+            plugin_dir = getattr(self.backend.cfg, "plugin_dir", None)
+            logo_path = (Path(plugin_dir) if plugin_dir else Path(__file__).resolve().parent.parent) / "logo.png"
+            if not logo_path.is_file():
+                return response(message="插件 Logo 文件不存在", status_code=404)
+            return FileResponse(
+                logo_path,
+                media_type="image/png",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+
+        logo_route = f"/{self.plugin_name}/apple-music/logo"
+        context.register_web_api(logo_route, get_plugin_logo, ["GET"], "Apple Music 插件 Logo")
+        self._registrations.append((logo_route, get_plugin_logo, ["GET"]))
         return True
 
     async def close(self) -> None:
