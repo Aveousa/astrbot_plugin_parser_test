@@ -36,13 +36,20 @@
     $("notice").querySelector(".notice-text").textContent = message;
     $("notice").dataset.error = String(error);
   }
-  function loadPluginLogo() {
-    const pluginName = bridge.getContext()?.pluginName;
-    if (typeof pluginName !== "string" || !pluginName) return;
+  async function loadPluginLogo() {
     const logo = $("plugin-logo");
     logo.addEventListener("load", () => { logo.hidden = false; }, { once: true });
     logo.addEventListener("error", () => { logo.hidden = true; }, { once: true });
-    logo.src = `/api/plug/${encodeURIComponent(pluginName)}/apple-music/logo`;
+    try {
+      // Read via the authenticated Plugin Pages bridge instead of a direct
+      // image request, which cannot add the dashboard Authorization header.
+      const result = await bridge.apiGet("apple-music/logo");
+      if (typeof result?.data_url === "string" && result.data_url.startsWith("data:image/png;base64,")) {
+        logo.src = result.data_url;
+      }
+    } catch (_) {
+      logo.hidden = true;
+    }
   }
   function field(id, value, tone = "") {
     $(id).textContent = value;

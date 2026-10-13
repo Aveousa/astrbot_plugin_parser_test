@@ -551,9 +551,9 @@ def test_plugin_logo_route_serves_current_plugin_root_file(tmp_path, monkeypatch
 
         response = await route[1]()
 
-        assert Path(response.path) == logo_path
-        assert response.media_type == "image/png"
-        assert response.headers["cache-control"] == "no-store"
+        payload, options = response
+        assert payload["data"]["data_url"] == "data:image/png;base64,cG5nIGxvZ28gYnl0ZXM="
+        assert options["headers"]["Cache-Control"] == "no-store"
         await page.close()
         await backend.close()
 

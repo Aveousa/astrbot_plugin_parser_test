@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import secrets
 from collections.abc import Callable
 from pathlib import Path
-
-from starlette.responses import FileResponse
 
 from .apple_music_backend import AppleMusicBackend, AppleMusicBackendError, normalize_track_url
 
@@ -211,11 +210,13 @@ class AppleMusicWeb:
             logo_path = (Path(plugin_dir) if plugin_dir else Path(__file__).resolve().parent.parent) / "logo.png"
             if not logo_path.is_file():
                 return response(message="插件 Logo 文件不存在", status_code=404)
-            return FileResponse(
-                logo_path,
-                media_type="image/png",
-                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-            )
+            try:
+                image = await asyncio.to_thread(logo_path.read_bytes)
+            except OSError:
+                return response(message="插件 Logo 暂时无法读取", status_code=404)
+            if len(image) > 2 * 1024 * 1024:
+                return response(message="插件 Logo 文件过大", status_code=413)
+            return response({"data_url": f"data:image/png;base64,{base64.b64encode(image).decode('ascii')}"})
 
         logo_route = f"/{self.plugin_name}/apple-music/logo"
         context.register_web_api(logo_route, get_plugin_logo, ["GET"], "Apple Music 插件 Logo")

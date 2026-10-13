@@ -5,6 +5,7 @@ No real account/password is used; this does not verify Apple downloading.
 """
 
 import argparse
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,6 +53,7 @@ window.addEventListener('message', event => {
  let data;
  if (endpoint === 'status') data = {...state,operation:job};
  else if (endpoint === 'operation') data = job;
+ else if (endpoint === 'logo') data = {data_url:'__LOGO_DATA_URL__'};
  else if (message.action === 'api:post') {
   if (message.body?.nonce !== 'qa-nonce') {send({kind:'response',requestId:message.requestId,ok:false,error:'invalid nonce'});return;}
   job = {state:'running',action:endpoint,message:'任务已提交，请等待'};
@@ -111,7 +113,9 @@ def run(output: Path):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/":
-                data, content_type = HARNESS.encode(), "text/html; charset=utf-8"
+                logo_data = base64.b64encode((ROOT / "logo.png").read_bytes()).decode("ascii")
+                harness = HARNESS.replace("__LOGO_DATA_URL__", f"data:image/png;base64,{logo_data}")
+                data, content_type = harness.encode(), "text/html; charset=utf-8"
             elif self.path == "/api/plugin/page/bridge-sdk.js":
                 data, content_type = bridge.read_bytes(), "application/javascript"
             elif self.path.startswith("/page/"):
@@ -121,8 +125,6 @@ def run(output: Path):
                     return
                 data = (ROOT / "pages" / "apple_music" / name).read_bytes()
                 content_type = {"html": "text/html; charset=utf-8", "css": "text/css", "js": "application/javascript"}[name.rsplit(".", 1)[-1]]
-            elif self.path == "/api/plug/test-plugin/apple-music/logo":
-                data, content_type = (ROOT / "logo.png").read_bytes(), "image/png"
             else:
                 self.send_error(404)
                 return
