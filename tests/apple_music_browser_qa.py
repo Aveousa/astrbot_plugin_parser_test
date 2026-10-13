@@ -121,6 +121,8 @@ def run(output: Path):
                     return
                 data = (ROOT / "pages" / "apple_music" / name).read_bytes()
                 content_type = {"html": "text/html; charset=utf-8", "css": "text/css", "js": "application/javascript"}[name.rsplit(".", 1)[-1]]
+            elif self.path == "/api/plug/test-plugin/apple-music/logo":
+                data, content_type = (ROOT / "logo.png").read_bytes(), "image/png"
             else:
                 self.send_error(404)
                 return
@@ -155,6 +157,9 @@ def run(output: Path):
             except Exception:
                 print(json.dumps({"initial_wrapper_state": frame.locator("#wrapper-state").inner_text(), "browser_errors": errors}, ensure_ascii=False))
                 raise
+            frame.locator("#plugin-logo").wait_for(state="visible")
+            assert frame.locator(".brand").locator("img").count() == 1
+            assert frame.locator("#plugin-logo").evaluate("el => getComputedStyle(el).objectFit") == "contain"
             assert frame.locator("[data-platform-status]").count() == 5
             assert frame.locator("[data-platform-status='douyin']").get_attribute("data-available") == "true"
             assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"

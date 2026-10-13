@@ -40,10 +40,7 @@
     const pluginName = bridge.getContext()?.pluginName;
     if (typeof pluginName !== "string" || !pluginName) return;
     const logo = $("plugin-logo");
-    logo.addEventListener("load", () => {
-      logo.hidden = false;
-      $("plugin-logo-fallback").hidden = true;
-    }, { once: true });
+    logo.addEventListener("load", () => { logo.hidden = false; }, { once: true });
     logo.addEventListener("error", () => { logo.hidden = true; }, { once: true });
     logo.src = `/api/plug/${encodeURIComponent(pluginName)}/apple-music/logo`;
   }
