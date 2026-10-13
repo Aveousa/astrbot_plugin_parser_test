@@ -39,7 +39,7 @@ class AppleMusicWeb:
             raise AppleMusicBackendError("管理页已关闭，请重载插件")
         # Cache maintenance is a local plugin operation and remains available
         # even when the optional Apple Music wrapper is disabled.
-        if action not in {"clear-cache", "save-settings", "save-music-settings", "save-music-cookie"}:
+        if action not in {"clear-cache", "save-settings", "save-music-settings", "save-music-cookie", "check-music-cookie"}:
             self.backend._require_enabled()
         if self._task and not self._task.done() or self.backend.lock.locked():
             raise AppleMusicBackendError("已有登录或下载任务运行中，请稍后再试")
@@ -77,6 +77,8 @@ class AppleMusicWeb:
                 owner, body.get("parser"), body.get("cookie"),
                 clear=body.get("clear", False),
             )
+        elif action == "check-music-cookie":
+            coroutine = self.backend.check_music_cookie(owner, body.get("parser"))
         elif action == "verify":
             url, _ = normalize_track_url(body.get("url"))
             coroutine = self._verify(url)
@@ -194,7 +196,7 @@ class AppleMusicWeb:
             return handler
 
         routes = [("status", get_status, ["GET"]), ("operation", get_operation, ["GET"])]
-        routes += [(action, post_handler(action), ["POST"]) for action in ("login", "two-factor", "clear-session", "clear-cache", "save-settings", "save-music-settings", "save-music-cookie", "verify")]
+        routes += [(action, post_handler(action), ["POST"]) for action in ("login", "two-factor", "clear-session", "clear-cache", "save-settings", "save-music-settings", "save-music-cookie", "check-music-cookie", "verify")]
         for endpoint, handler, methods in routes:
             route = f"/{self.plugin_name}/apple-music/{endpoint}"
             context.register_web_api(route, handler, methods, "Apple Music 账号管理")

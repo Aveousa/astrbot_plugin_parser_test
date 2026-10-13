@@ -1236,6 +1236,9 @@ class AppleMusicParser(PlaylistParserBase):
 
 class QQMusicParser(PlaylistParserBase):
     _QQ_PROFILE_URL = "https://y.qq.com/n/ryqq/profile"
+    _QQ_COOKIE_CHECK_URL = (
+        "https://c6.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg"
+    )
     _QQ_VKEY_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
     _QQ_BROWSER_USER_AGENT = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -1470,29 +1473,70 @@ class QQMusicParser(PlaylistParserBase):
             return purl
         return None
 
-    async def check_cookie(self) -> bool:
-        """Check whether the configured QQ Music Cookie reaches the profile page."""
+    async def check_cookie(self) -> bool | None:
+        """Check QQ account authentication without treating transport errors as expiry.
 
-        cookie_header = self._qq_cookie_header(self._QQ_PROFILE_URL)
-        if not cookie_header:
+        ``True`` means QQ's profile API accepted the account key, ``False`` is
+        reserved for missing credentials or an explicit authentication-expired
+        response, and ``None`` means the check could not reach a reliable result.
+        A successful HTTP status by itself is not evidence of a logged-in session.
+        """
+
+        cookie_header = self._qq_cookie_header(self._QQ_COOKIE_CHECK_URL)
+        cookies = self._qq_cookie_values()
+        identity = cookies.get("uin") or cookies.get("qqmusic_uin")
+        auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst")
+        if not cookie_header or not identity or not auth_key:
             return False
+
         headers = dict(self.headers)
         headers["User-Agent"] = self._QQ_BROWSER_USER_AGENT
         headers["Referer"] = "https://y.qq.com/"
         headers["Cookie"] = cookie_header
-        for attempt in range(3):
-            try:
-                async with self.session.get(
-                    self._QQ_PROFILE_URL,
-                    params={"_parser_cookie_check": str(int(time.time() * 1000) + attempt)},
-                    headers=headers,
-                    allow_redirects=False,
-                ) as response:
-                    if 200 <= response.status < 300:
-                        return True
-            except (ClientError, TimeoutError):
-                continue
-        return False
+        params = {
+            "g_tk": str(self._qq_g_tk(auth_key)),
+            "format": "json",
+            "inCharset": "utf-8",
+            "outCharset": "utf-8",
+            "notice": "0",
+            "cid": "205360838",
+            "needNewCode": "0",
+            "loginUin": identity,
+            "hostUin": "0",
+            "userid": identity,
+            "reqfrom": "1",
+        }
+        try:
+            async with self.session.get(
+                self._QQ_COOKIE_CHECK_URL,
+                params=params,
+                headers=headers,
+                allow_redirects=False,
+            ) as response:
+                if response.status >= 500 or response.status in (403, 429):
+                    return None
+                if response.status == 401:
+                    return False
+                if not 200 <= response.status < 300:
+                    return None
+                try:
+                    payload = json.loads(await response.text())
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    return None
+        except (ClientError, TimeoutError):
+            return None
+
+        if not isinstance(payload, Mapping):
+            return None
+        try:
+            code = int(payload.get("code"))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if code == 0:
+            return True
+        if code in {1000, 104400, 104401}:
+            return False
+        return None
 
     platform = Platform(name="qqmusic", display_name="QQ音乐")
 

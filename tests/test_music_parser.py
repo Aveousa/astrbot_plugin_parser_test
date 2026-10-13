@@ -626,18 +626,20 @@ def test_qq_single_track_audio_switch_can_disable_audio_resolution():
     assert result.extra.get("audio_as_voice") is not True
 
 
-def test_qq_cookie_check_reports_profile_authentication():
-    async def check(status):
+def test_qq_cookie_check_uses_profile_api_and_reports_authentication():
+    async def check(status=200, payload=None):
         class _Response:
             def __init__(self):
                 self.status = status
-                self.headers = {"Location": "https://y.qq.com/login"} if status == 302 else {}
 
             async def __aenter__(self):
                 return self
 
             async def __aexit__(self, *_args):
                 return None
+
+            async def text(self):
+                return json.dumps(payload if payload is not None else {"code": 0})
 
         class _Session:
             closed = False
@@ -655,15 +657,55 @@ def test_qq_cookie_check_reports_profile_authentication():
         )
         return await parser.check_cookie(), requests
 
-    valid, valid_requests = asyncio.run(check(200))
-    invalid, invalid_requests = asyncio.run(check(302))
+    valid, valid_requests = asyncio.run(check(payload={"code": 0}))
+    invalid, invalid_requests = asyncio.run(check(payload={"code": 1000}))
 
     assert valid is True
     assert invalid is False
+    assert valid_requests[0][0] == QQMusicParser._QQ_COOKIE_CHECK_URL
+    assert valid_requests[0][1]["params"]["loginUin"] == "12345"
+    assert valid_requests[0][1]["params"]["g_tk"] == str(
+        QQMusicParser._qq_g_tk("key")
+    )
     assert valid_requests[0][1]["headers"]["Cookie"] == (
         "uin=12345; qqmusic_key=key"
     )
     assert invalid_requests[0][1]["allow_redirects"] is False
+
+
+def test_qq_cookie_check_does_not_treat_transport_or_unknown_errors_as_invalid():
+    async def check(*, error=None, payload=None, status=200):
+        class _Response:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return json.dumps(payload)
+
+        class _Session:
+            closed = False
+
+            def get(self, *_args, **_kwargs):
+                if error:
+                    raise error
+                response = _Response()
+                response.status = status
+                return response
+
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.headers = {"User-Agent": "test"}
+        parser._session = _Session()
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: "uin=12345; qqmusic_key=key"
+        )
+        return await parser.check_cookie()
+
+    assert asyncio.run(check(error=TimeoutError())) is None
+    assert asyncio.run(check(payload={"code": 500001})) is None
+    assert asyncio.run(check(payload={"unexpected": "shape"})) is None
 
 
 @pytest.mark.parametrize(

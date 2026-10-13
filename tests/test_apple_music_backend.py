@@ -161,6 +161,60 @@ def test_music_cookie_save_returns_parser_identity_without_echoing_cookie(tmp_pa
     asyncio.run(run())
 
 
+def test_music_cookie_status_is_checked_manually_and_bound_to_cookie_value(tmp_path):
+    async def run():
+        cookie = "uin=12345; qqmusic_key=private-key"
+        parser_item = SimpleNamespace(enable=True, cookies=cookie)
+        cfg = config(tmp_path)
+        cfg.parser.qqmusic = parser_item
+
+        async def valid_check():
+            return True
+
+        parser = SimpleNamespace(
+            platform=SimpleNamespace(name="qqmusic"),
+            _QQ_COOKIE_CHECK_URL="https://c6.y.qq.com/profile-check",
+            cookiejar=SimpleNamespace(cookies_str=cookie),
+            _qq_cookie_header=lambda _url: parser.cookiejar.cookies_str,
+            has_auth_credentials=lambda: True,
+            check_cookie=valid_check,
+        )
+        backend = AppleMusicBackend(
+            cfg,
+            BackendSettings(enabled=False),
+            runtime_parser_provider=lambda: [parser],
+        )
+        try:
+            initial = backend._parser_config_entries()["qqmusic"]
+            assert initial["cookie_validity"] == "unknown"
+            assert initial["cookie_status"] == "Cookie 待检查"
+
+            result = await backend.check_music_cookie("admin", "qqmusic")
+            assert result["cookie_validity"] == "valid"
+            assert result["cookie_status"] == "Cookie 有效"
+            assert "private-key" not in json.dumps(result)
+            assert backend._parser_config_entries()["qqmusic"]["cookie_validity"] == "valid"
+
+            async def unavailable_check():
+                raise RuntimeError("private-key in third-party error")
+
+            parser.check_cookie = unavailable_check
+            result = await backend.check_music_cookie("admin", "qqmusic")
+            assert result["cookie_validity"] == "valid"
+            assert "状态未更新" in result["message"]
+
+            parser.cookiejar.cookies_str = "uin=12345; qqmusic_key=replaced-key"
+            parser_item.cookies = parser.cookiejar.cookies_str
+            changed = backend._parser_config_entries()["qqmusic"]
+            assert changed["cookie_validity"] == "unknown"
+            assert changed["cookie_status"] == "Cookie 待检查"
+            assert "replaced-key" not in json.dumps(changed)
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
 def test_missing_music_parser_uses_bundled_defaults_without_reporting_enabled(tmp_path):
     async def run():
         backend = AppleMusicBackend(config(tmp_path), BackendSettings(enabled=False))
@@ -506,6 +560,7 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
         routes = {route.rsplit("/", 1)[-1]: handler for route, handler, _, _ in context.registered_web_apis}
         assert "save-settings" in routes
         assert "clear-cache" in routes
+        assert "check-music-cookie" in routes
         assert (await routes["status"]())[1]["status_code"] == 401
         assert (await routes["login"]())[1]["status_code"] == 401
         request.username = "admin"

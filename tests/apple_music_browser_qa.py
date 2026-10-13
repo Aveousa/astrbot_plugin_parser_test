@@ -32,7 +32,7 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
   file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true},
  music_parsers:{
   netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
-  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_status:'账号 Cookie 不完整',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
+  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
   kugou:{key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,available:false,cookie_configured:false,cookie_status:'解析器未启用',settings:{enable:false,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}}},
  parsers:[
   {key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,cookie_configured:true,cookie_status:'Cookie 已配置'},
@@ -89,13 +89,20 @@ window.addEventListener('message', event => {
       parser.enabled=settings.enable;
     });
     job={state:'complete',action:endpoint,message:'音乐解析设置已保存并立即生效',parsers:Object.fromEntries(Object.entries(state.music_parsers).filter(([key]) => submitted[key]))};
-   } else if (endpoint === 'save-music-cookie') {
+    } else if (endpoint === 'save-music-cookie') {
     const parser=state.music_parsers[message.body.parser];
     if (parser) {
       parser.cookie_configured=!message.body.clear && Boolean(message.body.cookie);
-      parser.cookie_status=parser.cookie_configured?'Cookie 已配置':'Cookie 未配置';
+      parser.cookie_validity=parser.cookie_configured?'unknown':'unconfigured';
+      parser.available=false;
+      parser.cookie_status=parser.cookie_configured?'Cookie 待检查':'Cookie 未配置';
     }
     job={state:'complete',action:endpoint,message:'Cookie 已保存',parser_key:message.body.parser,parser:parser};
+   } else if (endpoint === 'check-music-cookie') {
+    const parser=state.music_parsers[message.body.parser];
+    parser.cookie_validity='valid';parser.available=true;parser.cookie_status='Cookie 有效';
+    state.platform_accounts[2]={key:'qqmusic',label:'QQ 音乐',available:true,text:'Cookie 有效'};
+    job={state:'complete',action:endpoint,parser_key:message.body.parser,cookie_validity:'valid',cookie_status:'Cookie 有效',message:'QQ 音乐 Cookie 检查有效'};
    }
   }, 100);
  }
@@ -183,6 +190,12 @@ def run(output: Path):
             frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).wait_for()
             assert qq_music.locator("[data-music-cookie]").input_value() == ""
             assert frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).is_visible()
+            qq_music.locator("[data-cookie-check='qqmusic']").click()
+            frame.locator("[data-music-parser='qqmusic'] .music-cookie-state").get_by_text("Cookie 有效").wait_for()
+            assert frame.locator("[data-music-parser='qqmusic'] .music-cookie-state").get_attribute("data-validity") == "valid"
+            assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "Cookie 有效"
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'check-music-cookie').length === 1")
+            music_list.screenshot(path=str(output / "music-cookie-status.png"))
             screenshot("desktop-light.png")
             assert frame.locator("#setting-backend").is_checked()
             frame.locator("#setting-return-audio").check()
@@ -254,7 +267,7 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

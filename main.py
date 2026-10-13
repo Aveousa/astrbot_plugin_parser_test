@@ -97,13 +97,32 @@ class ParserPlugin(Star):
                     text = "登录 Cookie 已配置" if available else "登录 Cookie 未配置"
                 else:
                     cookie_configured = parser.has_cookie()
-                    available = parser.has_auth_credentials()
-                    if available:
-                        text = "账号 Cookie 已配置"
-                    elif parser.has_cookie():
-                        text = "账号 Cookie 不完整"
+                    if key in {"qqmusic", "kugou"}:
+                        backend = getattr(self, "apple_music_backend", None)
+                        status_reader = getattr(backend, "music_cookie_status", None)
+                        if callable(status_reader):
+                            cookie_value = backend._music_cookie_value(key)
+                            state = status_reader(
+                                key,
+                                cookie_value,
+                                has_credentials=(
+                                    parser.has_auth_credentials() if cookie_configured else False
+                                ),
+                            )
+                            available, text = state["available"], state["cookie_status"]
+                        else:
+                            available = parser.has_auth_credentials()
+                            text = "账号 Cookie 已配置" if available else (
+                                "账号 Cookie 不完整" if cookie_configured else "账号 Cookie 未配置"
+                            )
                     else:
-                        text = "账号 Cookie 未配置"
+                        available = parser.has_auth_credentials()
+                        if available:
+                            text = "账号 Cookie 已配置"
+                        elif parser.has_cookie():
+                            text = "账号 Cookie 不完整"
+                        else:
+                            text = "账号 Cookie 未配置"
             except (AttributeError, TypeError, ValueError):
                 available, text = False, "状态读取失败"
             statuses.append({"key": key, "available": available, "text": text})
@@ -144,10 +163,16 @@ class ParserPlugin(Star):
             except Exception as exc:
                 logger.warning(f"[QQ音乐] Cookie 检查失败: {exc}")
                 continue
-            if available:
+            if isinstance(available, bool):
+                self.apple_music_backend.record_music_cookie_check(
+                    "qqmusic", self.apple_music_backend._music_cookie_value("qqmusic"), available
+                )
+            if available is True:
                 logger.info("[QQ音乐] Cookie 检查通过，可用于受限歌曲音频")
-            else:
+            elif available is False:
                 logger.warning("[QQ音乐] Cookie 检查未通过，受限歌曲可能无法获取音频")
+            else:
+                logger.warning("[QQ音乐] Cookie 检查暂时无法确认，保留待检查状态")
 
     async def _check_kugou_cookie(self):
         """Check configured Kugou account credentials after parser registration."""
@@ -162,6 +187,9 @@ class ParserPlugin(Star):
                 logger.info("[酷狗音乐] 未配置 Cookie，跳过 Cookie 可用性检查")
                 continue
             if not parser.has_auth_credentials():
+                self.apple_music_backend.record_music_cookie_check(
+                    "kugou", self.apple_music_backend._music_cookie_value("kugou"), False
+                )
                 logger.warning(
                     "[酷狗音乐] Cookie 缺少账号字段；会员播放至少需要 KugooID 和 t（通常位于 KuGoo 内）"
                 )
@@ -173,6 +201,10 @@ class ParserPlugin(Star):
                 # contain the signed URL, which includes the account token.
                 logger.warning("[酷狗音乐] Cookie 检查请求异常，暂时无法确认账号状态")
                 continue
+            if isinstance(available, bool):
+                self.apple_music_backend.record_music_cookie_check(
+                    "kugou", self.apple_music_backend._music_cookie_value("kugou"), available
+                )
             if available is True:
                 logger.info(
                     "[酷狗音乐] Cookie 检查通过，酷狗服务端接受了会员播放请求"

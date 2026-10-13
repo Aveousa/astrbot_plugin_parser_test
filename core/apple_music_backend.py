@@ -7,6 +7,7 @@ account secrets never appear in argv, configuration or subprocess output.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -192,6 +193,9 @@ class AppleMusicBackend:
         self.settings = settings or BackendSettings.from_config(config)
         self._platform_status_provider = platform_status_provider
         self._runtime_parser_provider = runtime_parser_provider
+        # Cookie validity is process-local and tied to a digest of the current
+        # value. Never persist or return Cookie contents from this registry.
+        self._music_cookie_checks: dict[str, dict[str, str | bool]] = {}
         self._last_auth_state = "unknown"
         self._session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
@@ -249,6 +253,174 @@ class AppleMusicBackend:
             return getter(key)
         return getattr(parsers, key, None)
 
+    def _music_cookie_value(self, parser_key: str) -> str:
+        """Read the effective Cookie for internal fingerprinting only."""
+
+        parser = next(
+            (
+                candidate
+                for candidate in self._runtime_parsers()
+                if getattr(getattr(candidate, "platform", None), "name", None)
+                == parser_key
+            ),
+            None,
+        )
+        if parser is not None:
+            header_method = (
+                getattr(parser, "_qq_cookie_header", None)
+                if parser_key == "qqmusic"
+                else getattr(parser, "_kugou_cookie_header", None)
+            )
+            target_url = (
+                getattr(parser, "_QQ_COOKIE_CHECK_URL", "")
+                if parser_key == "qqmusic"
+                else getattr(parser, "_WEB_PLAY_URL", "")
+            )
+            if callable(header_method) and target_url:
+                try:
+                    value = header_method(target_url)
+                    if isinstance(value, str) and value:
+                        return value
+                except Exception:
+                    pass
+            cookiejar = getattr(parser, "cookiejar", None)
+            value = getattr(cookiejar, "cookies_str", None)
+            if isinstance(value, str) and value:
+                return value
+        item = self._parser_item(parser_key)
+        value = getattr(item, "cookies", None) if item is not None else None
+        return value if isinstance(value, str) else ""
+
+    @staticmethod
+    def _cookie_fingerprint(cookie: object) -> str:
+        if not isinstance(cookie, str) or not cookie.strip():
+            return ""
+        return hashlib.sha256(cookie.encode("utf-8")).hexdigest()
+
+    def record_music_cookie_check(
+        self, parser_key: str, cookie: object, available: bool
+    ) -> None:
+        """Cache one definite validation result for the exact current Cookie."""
+
+        if parser_key not in {"qqmusic", "kugou"}:
+            return
+        fingerprint = self._cookie_fingerprint(cookie)
+        if not fingerprint:
+            self._music_cookie_checks.pop(parser_key, None)
+            return
+        self._music_cookie_checks[parser_key] = {
+            "fingerprint": fingerprint,
+            "available": available is True,
+        }
+
+    def _music_cookie_check_status(
+        self, parser_key: str, cookie: object
+    ) -> bool | None:
+        """Return a cached result only while the configured Cookie is unchanged."""
+
+        fingerprint = self._cookie_fingerprint(cookie)
+        result = self._music_cookie_checks.get(parser_key)
+        if not fingerprint or not isinstance(result, dict):
+            return None
+        if result.get("fingerprint") != fingerprint:
+            self._music_cookie_checks.pop(parser_key, None)
+            return None
+        available = result.get("available")
+        return available if isinstance(available, bool) else None
+
+    def music_cookie_status(
+        self,
+        parser_key: str,
+        cookie: object,
+        *,
+        has_credentials: bool | None = None,
+    ) -> dict[str, object]:
+        """Return the sanitized three-state view plus a checking state."""
+
+        configured = bool(self._cookie_fingerprint(cookie))
+        if not configured:
+            return {
+                "available": False,
+                "cookie_configured": False,
+                "cookie_validity": "unconfigured",
+                "cookie_status": "Cookie 未配置",
+            }
+        checked = self._music_cookie_check_status(parser_key, cookie)
+        if checked is True:
+            validity, label, available = "valid", "Cookie 有效", True
+        elif checked is False or has_credentials is False:
+            validity, label, available = "invalid", "Cookie 已配置但失效", False
+        else:
+            validity, label, available = "unknown", "Cookie 待检查", False
+        return {
+            "available": available,
+            "cookie_configured": True,
+            "cookie_validity": validity,
+            "cookie_status": label,
+        }
+
+    def _music_parser(self, parser_key: str):
+        return next(
+            (
+                candidate
+                for candidate in self._runtime_parsers()
+                if getattr(getattr(candidate, "platform", None), "name", None)
+                == parser_key
+            ),
+            None,
+        )
+
+    async def check_music_cookie(self, owner: str, parser_key: object) -> dict:
+        """Run one QQ Music/Kugou cookie check and return no credential data."""
+
+        if parser_key not in {"qqmusic", "kugou"}:
+            raise AppleMusicBackendError("仅支持检查 QQ 音乐或酷狗音乐 Cookie")
+        parser_key = str(parser_key)
+        if self._parser_item(parser_key) is None:
+            raise AppleMusicBackendError(
+                f"{PARSER_LABELS[parser_key]}解析器未配置，请先恢复解析器配置"
+            )
+        parser = self._music_parser(parser_key)
+        if parser is None:
+            raise AppleMusicBackendError(
+                f"{PARSER_LABELS[parser_key]}解析器未启用，无法检查 Cookie"
+            )
+
+        async with self.lock:
+            self.check_owner(owner)
+            cookie = self._music_cookie_value(parser_key)
+            if not cookie:
+                self._music_cookie_checks.pop(parser_key, None)
+                state = self.music_cookie_status(parser_key, cookie)
+                return {
+                    "parser_key": parser_key,
+                    **state,
+                    "message": f"{PARSER_LABELS[parser_key]} Cookie 未配置",
+                }
+
+            try:
+                has_credentials = bool(parser.has_auth_credentials())
+            except (AttributeError, TypeError, ValueError):
+                has_credentials = False
+            try:
+                result = await parser.check_cookie()
+            except Exception:
+                # Third-party exceptions can contain account tokens or signed URLs.
+                result = None
+
+            if isinstance(result, bool):
+                self.record_music_cookie_check(parser_key, cookie, result)
+            state = self.music_cookie_status(
+                parser_key, cookie, has_credentials=has_credentials
+            )
+            if result is True:
+                message = f"{PARSER_LABELS[parser_key]} Cookie 检查有效"
+            elif result is False:
+                message = f"{PARSER_LABELS[parser_key]} Cookie 已配置但失效"
+            else:
+                message = "检查暂时无法完成；Cookie 状态未更新"
+            return {"parser_key": parser_key, **state, "message": message}
+
     def _parser_config_entries(self) -> dict[str, dict]:
         """Describe three music parsers without returning cookie values."""
 
@@ -302,8 +474,13 @@ class AppleMusicBackend:
                     "available": False,
                     "cookie_configured": cookie_configured,
                     "cookie_status": (
+                        "Cookie 待检查" if cookie_configured and key in {"qqmusic", "kugou"} else
                         "Cookie 已配置（解析器未启用）" if cookie_configured else
                         "解析器未启用" if known else "未配置"
+                    ),
+                    "cookie_validity": (
+                        "unknown" if cookie_configured and key in {"qqmusic", "kugou"} else
+                        "unconfigured" if not cookie_configured else "unknown"
                     ),
                     "settings": settings,
                 }
@@ -318,16 +495,38 @@ class AppleMusicBackend:
                 ),
                 None,
             )
-            cookie_configured = bool(
-                getattr(cookiejar, "cookies_str", None) or raw_cookie
-                or (history_entry.get("cookie_configured") is True)
+            cookie_value = (
+                self._music_cookie_value(key)
+                if key in {"qqmusic", "kugou"}
+                else (getattr(cookiejar, "cookies_str", None) or raw_cookie)
             )
+            cookie_configured = bool(cookie_value)
             provided = provided_statuses.get(key)
             parser = next((
                 candidate for candidate in runtime_parsers
                 if getattr(getattr(candidate, "platform", None), "name", None) == key
             ), None)
-            if not getattr(item, "enable", True):
+            if key in {"qqmusic", "kugou"}:
+                checked = self._music_cookie_check_status(key, cookie_value)
+                if not cookie_configured:
+                    cookie_status, available = "Cookie 未配置", False
+                if checked is None:
+                    try:
+                        has_credentials = (
+                            parser.has_auth_credentials() if parser is not None else None
+                        )
+                    except (AttributeError, TypeError, ValueError):
+                        has_credentials = None
+                    if cookie_configured:
+                        cookie_status = (
+                            "Cookie 待检查" if has_credentials is not False else "Cookie 已配置但失效"
+                        )
+                    available = False
+                elif checked:
+                    cookie_status, available = "Cookie 有效", True
+                else:
+                    cookie_status, available = "Cookie 已配置但失效", False
+            elif not getattr(item, "enable", True):
                 cookie_status = "解析器未启用"
                 available = False
             elif provided is not None:
@@ -368,6 +567,11 @@ class AppleMusicBackend:
                 "available": available,
                 "cookie_configured": cookie_configured,
                 "cookie_status": cookie_status,
+                "cookie_validity": (
+                    "valid" if cookie_status == "Cookie 有效" else
+                    "invalid" if cookie_status == "Cookie 已配置但失效" else
+                    "unconfigured" if not cookie_configured else "unknown"
+                ),
                 "settings": settings,
             }
         return entries
@@ -708,6 +912,7 @@ class AppleMusicBackend:
                 if not isinstance(history_store, dict):
                     history_store = {}
                     raw_data["__parser_management_history_v1"] = history_store
+            previous_check = self._music_cookie_checks.pop(parser_key, None)
             history_snapshot = None
             if history_store is not None:
                 history_snapshot = json.loads(json.dumps(history_store))
@@ -729,6 +934,8 @@ class AppleMusicBackend:
                 if history_store is not None and history_snapshot is not None:
                     history_store.clear()
                     history_store.update(history_snapshot)
+                if previous_check is not None:
+                    self._music_cookie_checks[parser_key] = previous_check
                 for jar, raw, cookies, cookies_str in cookie_states:
                     jar.raw_cookies, jar.cookies, jar.cookies_str = raw, cookies, cookies_str
                     try:

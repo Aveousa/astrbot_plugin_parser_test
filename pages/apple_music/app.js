@@ -140,6 +140,7 @@
     const status = document.createElement("span");
     status.className = "music-cookie-state";
     status.dataset.available = String(parser.available === true);
+    status.dataset.validity = parser.cookie_validity || (parser.cookie_configured ? "unknown" : "unconfigured");
     status.textContent = parser.known ? parser.cookie_status || "Cookie 状态未确认" : "未配置";
     heading.append(identity, status);
     card.append(heading);
@@ -216,7 +217,21 @@
       if (!value) { notice("请先输入 Cookie；清除现有值请使用“清除 Cookie”。", true); return; }
       saveMusicCookie(key, value, false);
     });
-    actions.append(clear, save);
+    actions.append(clear);
+    if (key === "qqmusic" || key === "kugou") {
+      const check = document.createElement("button");
+      check.type = "button";
+      check.className = "quiet-button music-cookie-check";
+      check.dataset.cookieCheck = key;
+      check.textContent = "检查有效性";
+      check.disabled = !configured || !parser.cookie_configured;
+      check.setAttribute("aria-label", `检查${musicLabels[key]} Cookie 有效性`);
+      check.addEventListener("click", () => {
+        submit("check-music-cookie", { parser: key });
+      });
+      actions.append(check);
+    }
+    actions.append(save);
     editor.append(cookieLabel, actions);
     fieldset.append(editor);
     fieldset.addEventListener("change", scheduleMusicSave);
@@ -509,6 +524,9 @@
       const textarea = parserKey ? document.querySelector(`[data-music-cookie="${parserKey}"]`) : null;
       if (textarea) textarea.value = "";
     }
+    if (operation.action === "check-music-cookie" && operation.state === "complete") {
+      notice(operation.message || "Cookie 检查完成", operation.cookie_validity === "invalid");
+    }
     if (operation.action !== "save-settings") {
       activeAction = "";
       if (operation.state !== "running" && changedSettings()) scheduleSettingsSave();
@@ -556,7 +574,9 @@
     controls();
     notice(action === "save-settings" || action === "save-music-settings"
       ? "正在自动保存解析器设置…"
-      : action === "save-music-cookie" ? "正在安全保存 Cookie…" : "正在提交操作…");
+      : action === "save-music-cookie" ? "正在安全保存 Cookie…"
+      : action === "check-music-cookie" ? "正在检查 Cookie 有效性…"
+      : "正在提交操作…");
     try {
       const operation = await bridge.apiPost(`apple-music/${action}`, { ...body, nonce });
       showOperation(operation);
