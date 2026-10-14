@@ -1878,32 +1878,16 @@ class AppleMusicParser(PlaylistParserBase):
             )
             if not candidates:
                 return None
-            primary_name = next(
-                iter(self._artist_name_parts(artist_name)), None
-            )
-            primary_key = self._normalize_artist_name(primary_name)
-            primary_candidates = (
-                [
-                    item
-                    for item in candidates
-                    if self._normalize_artist_name(item.get("name"))
-                    == primary_key
-                ]
-                if primary_key
-                else []
-            )
-            # Prefer the first candidate backed by an Apple artist ID/page.
-            # Display-only names remain a fallback for iTunes Search, but a
-            # name-only link (often a collaboration label) must not shadow a
-            # later, unambiguous artist identity.
-            candidate = next(
-                (
-                    item
-                    for item in (primary_candidates or candidates)
-                    if item.get("id") or item.get("url")
-                ),
-                (primary_candidates or candidates)[0],
-            )
+            # ``_artist_candidates`` preserves the order exposed by the song
+            # page (artistLinks/subtitleLinks/artists/byArtist).  Always use
+            # that first candidate for collaborations: the first artist is
+            # the primary artist requested for the card avatar.  In
+            # particular, do not skip a name-only first artist just because a
+            # later guest artist happens to include a direct Apple Music ID;
+            # the name-only candidate can still be resolved through iTunes
+            # Search, while choosing the later ID would show the guest's
+            # portrait instead.
+            candidate = candidates[0]
             if (
                 not candidate.get("id")
                 and not candidate.get("url")

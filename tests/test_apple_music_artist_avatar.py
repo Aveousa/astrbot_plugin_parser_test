@@ -227,6 +227,59 @@ def test_multi_artist_prefers_first_link_with_id():
     assert candidates[0]["name"] == "Primary"
 
 
+def test_multi_artist_avatar_uses_first_artist_before_later_id(tmp_path):
+    """A guest link must not win merely because it has the first usable ID."""
+
+    def resolver(url):
+        if "itunes.apple.com/search" in url:
+            return 200, json.dumps(
+                {
+                    "results": [
+                        {
+                            "artistName": "Primary",
+                            "artistId": 10,
+                            "artistLinkUrl": "https://music.apple.com/us/artist/primary/10",
+                        }
+                    ]
+                }
+            )
+        if "/artist/primary/10" in url:
+            return 200, _artist_html(
+                "Primary",
+                image="https://cdn.example/primary.jpg",
+                artist_id="10",
+            )
+        return 200, _artist_html(
+            "Guest", image="https://cdn.example/guest.jpg", artist_id="11"
+        )
+
+    async def run():
+        parser = _parser(tmp_path, resolver)
+        image = await parser._get_artist_avatar(
+            track={
+                "artistLinks": [
+                    {"title": "Primary"},
+                    {
+                        "title": "Guest",
+                        "url": "https://music.apple.com/us/artist/guest/11",
+                    },
+                ]
+            },
+            album_header={},
+            fallback={},
+            artist_name="Primary / Guest",
+            cover_url=None,
+            storefront="us",
+        )
+        return image, parser._session.urls
+
+    image, urls = asyncio.run(run())
+
+    assert image == "https://cdn.example/primary.jpg"
+    assert any("term=Primary" in url for url in urls)
+    assert all("/artist/guest/11" not in url for url in urls)
+
+
 def test_multi_artist_display_name_keeps_commas_in_a_single_artist():
     parts = AppleMusicParser._artist_name_parts("Earth, Wind & Fire")
 
