@@ -280,6 +280,65 @@ def test_multi_artist_avatar_uses_first_artist_before_later_id(tmp_path):
     assert all("/artist/guest/11" not in url for url in urls)
 
 
+def test_single_artist_uses_json_ld_id_when_album_header_has_name_only(tmp_path):
+    artist_url = "https://music.apple.com/cn/artist/bigbang/318754656?l=en-GB"
+
+    def resolver(url):
+        if "/artist/bigbang/318754656" in url:
+            return 200, _artist_html(
+                "BIGBANG",
+                image="https://cdn.example/bigbang.jpg",
+                artist_id="318754656",
+            )
+        if "itunes.apple.com/search" in url:
+            # The name-only path is ambiguous in Apple's catalog. The song's
+            # JSON-LD artist URL below is sufficient to avoid this search.
+            return 200, json.dumps(
+                {
+                    "results": [
+                        {"artistName": "BIGBANG", "artistId": 318754656},
+                        {"artistName": "Bigbang", "artistId": 1447506949},
+                    ]
+                }
+            )
+        raise AssertionError(f"unexpected artist lookup: {url}")
+
+    async def run():
+        parser = _parser(tmp_path, resolver)
+        image = await parser._get_artist_avatar(
+            track={"artistName": "BIGBANG", "subtitleLinks": None},
+            album_header={
+                "subtitleLinks": [
+                    {
+                        "title": "BIGBANG",
+                        "segue": {
+                            "destination": {
+                                "contentDescriptor": {
+                                    "kind": "artist",
+                                    "identifiers": {"storeAdamID": "318754656"},
+                                    "url": artist_url,
+                                }
+                            }
+                        },
+                    }
+                ]
+            },
+            fallback={
+                "artists": [{"name": "BIGBANG", "url": artist_url}]
+            },
+            artist_name="BIGBANG",
+            cover_url="https://cdn.example/album.jpg",
+            storefront="cn",
+        )
+        return image, parser._session.urls
+
+    image, urls = asyncio.run(run())
+
+    assert image == "https://cdn.example/bigbang.jpg"
+    assert any("/artist/bigbang/318754656" in url for url in urls)
+    assert all("itunes.apple.com/search" not in url for url in urls)
+
+
 def test_multi_artist_display_name_keeps_commas_in_a_single_artist():
     parts = AppleMusicParser._artist_name_parts("Earth, Wind & Fire")
 
