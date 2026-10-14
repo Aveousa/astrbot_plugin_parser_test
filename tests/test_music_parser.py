@@ -1189,6 +1189,105 @@ def test_kugou_single_track_uses_first_artist_avatar_lazily():
     ]
 
 
+def test_kugou_activity_detail_route_resolves_song_and_audio():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                kugou=SimpleNamespace(
+                    use_proxy=False, return_audio=True, audio_send_format="voice"
+                )
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {"User-Agent": "test"}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: ""
+        )
+        requests = []
+
+        async def json_request(url, **kwargs):
+            requests.append((url, kwargs))
+            return {
+                "status": 1,
+                "data": {
+                    "hash": "activity-hash",
+                    "ori_audio_name": "Activity song",
+                    "author_name": "First、Second",
+                    "authors": [
+                        {
+                            "author_name": "First",
+                            "sizable_avatar": (
+                                "http://singerimg.kugou.com/uploadpic/softhead/"
+                                "{size}/20260101/first.jpg"
+                            ),
+                        },
+                        {"author_name": "Second"},
+                    ],
+                    "album_info": {
+                        "album_name": "Activity album",
+                        "sizable_cover": "http://imge.kugou.com/stdmusic/{size}/cover.jpg",
+                    },
+                    "audio_info": {"timelength": "157000"},
+                },
+            }
+
+        async def fetch_song_info(song_hash, **_kwargs):
+            assert song_hash == "activity-hash"
+            return {
+                "songName": "Activity song",
+                "author_name": "First、Second",
+                "authors": [
+                    {
+                        "avatar": (
+                            "http://singerimg.kugou.com/uploadpic/softhead/"
+                            "{size}/20260101/first.jpg"
+                        )
+                    },
+                    {"avatar": "http://example.com/second.jpg"},
+                ],
+                "album_name": "Activity album",
+                "album_img": "http://imge.kugou.com/stdmusic/{size}/cover.jpg",
+                "url": "https://audio.example/activity.mp3",
+                "timeLength": 157,
+            }
+
+        parser._json_request = json_request
+        parser._fetch_kugou_song_info = fetch_song_info
+        url = (
+            "https://activity.kugou.com/vo-activity/demo-activity/detail.html#/?"
+            "channel_id=16752399542&file_id=1740901401759611&t_uid=2134613718"
+        )
+        _, searched = KugouMusicParser.search_url(url)
+        result = await parser._handle_activity_track(searched)
+        await asyncio.gather(*(content.get_path() for content in result.contents))
+        return parser, result, requests
+
+    parser, result, requests = asyncio.run(build())
+
+    assert result.title == "Activity song"
+    assert result.author.name == "First、Second"
+    assert result.extra["audio_as_voice"] is True
+    assert result.extra["audio_send_url"] == "https://audio.example/activity.mp3"
+    assert parser.downloader.audio_urls == ["https://audio.example/activity.mp3"]
+    assert parser.downloader.image_urls == [
+        "https://imge.kugou.com/stdmusic/400/cover.jpg",
+        "https://singerimg.kugou.com/uploadpic/softhead/165/20260101/first.jpg",
+    ]
+    assert len(requests) == 1
+    request_url, request_kwargs = requests[0]
+    assert request_url.startswith("https://gateway.kugou.com/v1/get_song_detail?")
+    params = parse_qs(urlparse(request_url).query)
+    assert params["fileid"] == ["1740901401759611"]
+    assert params["global_collection_id"] == ["16752399542"]
+    unsigned = {
+        key: values[0] for key, values in params.items() if key != "signature"
+    }
+    assert params["signature"] == [KugouMusicParser._signature(unsigned)]
+    assert request_kwargs["headers"]["x-router"] == "youth.kugou.com"
+
+
 def test_kugou_member_cookie_uses_signed_web_player_endpoint():
     async def build():
         parser = KugouMusicParser.__new__(KugouMusicParser)

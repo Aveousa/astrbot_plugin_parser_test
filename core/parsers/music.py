@@ -3601,6 +3601,120 @@ class KugouMusicParser(PlaylistParserBase):
             self._set_audio_delivery(result, audio_url)
         return result
 
+    @staticmethod
+    def _kugou_activity_params(url: str) -> tuple[str | None, str | None]:
+        """Extract the activity page's file and channel identifiers.
+
+        These pages put their parameters after ``#/?`` so a normal HTTP
+        request does not see them on the server.  Chat messages still contain
+        the fragment, therefore parse both the regular query and fragment.
+        """
+
+        parsed = urlparse(
+            url if url.startswith(("http://", "https://")) else f"https://{url}"
+        )
+        values = parse_qs(parsed.query, keep_blank_values=False)
+        fragment = parsed.fragment
+        if "?" in fragment:
+            fragment_values = parse_qs(
+                fragment.split("?", 1)[1], keep_blank_values=False
+            )
+            for key, items in fragment_values.items():
+                if key not in values or not values[key]:
+                    values[key] = items
+
+        def first(*keys: str) -> str | None:
+            for key in keys:
+                items = values.get(key)
+                if items and str(items[0]).strip():
+                    return str(items[0]).strip().rstrip(".,!?;:)]}")
+            return None
+
+        return first("file_id", "fileid"), first(
+            "channel_id", "global_collection_id", "global_collectionid"
+        )
+
+    @handle(
+        "activity.kugou.com/vo-activity",
+        r"activity\.kugou\.com/vo-activity/[A-Za-z0-9_-]+/detail\.html"
+        r"(?:\?[^#\s<>]*)?(?:#[^\s<>]*)?",
+    )
+    async def _handle_activity_track(self, searched):
+        """Parse a Kugou Concept activity detail page.
+
+        The page is only a JavaScript shell.  Its detail API accepts the
+        ``file_id`` and ``channel_id`` from the URL and returns regular Kugou
+        song metadata, including a hash that can be resolved by the existing
+        audio endpoint.
+        """
+
+        url = searched.group(0)
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        file_id, channel_id = self._kugou_activity_params(url)
+        if not file_id or not channel_id:
+            raise ParseException("酷狗活动页缺少歌曲标识")
+
+        request_params = self._signed_params(
+            {
+                "appid": 1058,
+                "fileid": file_id,
+                "global_collection_id": channel_id,
+            }
+        )
+        api_url = (
+            "https://gateway.kugou.com/v1/get_song_detail?"
+            + urlencode(request_params)
+        )
+        body = await self._json_request(
+            api_url,
+            headers={
+                "Referer": "https://activity.kugou.com/",
+                "x-router": "youth.kugou.com",
+            },
+        )
+        data = body.get("data") if isinstance(body, Mapping) else None
+        if not isinstance(data, Mapping) or _as_int(body.get("status")) != 1:
+            raise ParseException("酷狗活动页歌曲不存在或暂时无法访问")
+
+        album_info = data.get("album_info")
+        album_info = album_info if isinstance(album_info, Mapping) else {}
+        audio_info = data.get("audio_info")
+        audio_info = audio_info if isinstance(audio_info, Mapping) else {}
+        song_hash = _first_text(data, "hash") or _first_text(audio_info, "hash")
+        if not song_hash:
+            raise ParseException("酷狗活动页歌曲缺少音频标识")
+
+        # Normalize the activity response to the fallback shape consumed by
+        # ``_kugou_single_result``.  That keeps title/cover/avatar handling
+        # and the regular Kugou audio resolver in one place.
+        fallback = dict(data)
+        fallback.update(
+            {
+                "song_name": _first_text(
+                    data, "ori_audio_name", "song_name", "audio_name"
+                ),
+                "album_name": _first_text(album_info, "album_name", "name"),
+                "album_img": _first_text(
+                    album_info, "sizable_cover", "cover", "picUrl"
+                )
+                or _first_text(data, "cover_pic", "pic"),
+                "timelength": _first_text(
+                    audio_info, "timelength", "timelength_128", "timelength_320"
+                ),
+                "hash": song_hash,
+                "album_id": _first_text(album_info, "album_id", "id"),
+                "album_audio_id": _first_text(data, "album_audio_id"),
+                "mixsongid": _first_text(data, "mixsongid"),
+            }
+        )
+        return await self._kugou_single_result(
+            source_url=url,
+            song_hash=song_hash,
+            fallback=fallback,
+            album_name=_first_text(album_info, "album_name", "name"),
+        )
+
     @handle(
         "m.kugou.com/share",
         r"m\.kugou\.com/share/\?[^\s]+",
