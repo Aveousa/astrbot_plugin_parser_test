@@ -321,6 +321,66 @@ def test_netease_track_resolves_audio_url(
     assert result.extra["audio_send_url"] == expected_url
 
 
+def test_netease_single_track_resolves_first_artist_avatar_from_artist_endpoint():
+    async def build():
+        parser = NetEaseMusicParser.__new__(NetEaseMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                netease=SimpleNamespace(use_proxy=False, return_audio=False)
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: ""
+        )
+        requested = []
+
+        async def request(url, **_kwargs):
+            requested.append(url)
+            if "/api/artist/6452" in url:
+                return {"artist": {"img1v1Url": "https://cdn.example/first.jpg"}}
+            if "/api/artist/11127" in url:
+                return {"artist": {"img1v1Url": "https://cdn.example/second.jpg"}}
+            return {
+                "songs": [
+                    {
+                        "id": 186016,
+                        "name": "Song",
+                        "artists": [
+                            {
+                                "id": 6452,
+                                "name": "First",
+                                "picId": 0,
+                                "img1v1Id": 0,
+                                "picUrl": "https://cdn.example/default.jpg",
+                            },
+                            {"id": 11127, "name": "Second"},
+                        ],
+                        "album": {"name": "Album"},
+                        "duration": 180000,
+                    }
+                ]
+            }
+
+        parser._json_request = request
+        _, searched = NetEaseMusicParser.search_url(
+            "https://music.163.com/song?id=186016"
+        )
+        result = await parser._handle_track(searched)
+        avatar_path = await result.author.get_avatar_path()
+        return parser, result, avatar_path, requested
+
+    parser, result, avatar_path, requested = asyncio.run(build())
+
+    assert result.author.name == "First / Second"
+    assert avatar_path == Path("first.jpg")
+    assert parser.downloader.image_urls == ["https://cdn.example/first.jpg"]
+    assert requested[-1] == "https://music.163.com/api/artist/6452"
+    assert all("/api/artist/11127" not in url for url in requested)
+
+
 @pytest.mark.parametrize(
     ("api_base", "body", "expected_url", "expected_params"),
     [
@@ -471,6 +531,48 @@ def test_qq_track_route_strips_trailing_punctuation_from_song_id():
     )
 
     assert QQMusicParser._track_mid_from_match(searched) == "453455745"
+
+
+def test_qq_single_track_uses_first_singer_avatar():
+    async def build():
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                qqmusic=SimpleNamespace(use_proxy=False, return_audio=False)
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+
+        async def fetch_song_details(_song_ids):
+            return [
+                {
+                    "mid": "song-mid",
+                    "name": "Song",
+                    "singer": [
+                        {"mid": "first-mid", "name": "First"},
+                        {"mid": "second-mid", "name": "Second"},
+                    ],
+                    "interval": 180,
+                }
+            ]
+
+        parser._fetch_song_details = fetch_song_details
+        _, searched = QQMusicParser.search_url(
+            "https://y.qq.com/n/ryqq/songDetail/song-mid"
+        )
+        result = await parser._handle_track(searched)
+        avatar_path = await result.author.get_avatar_path()
+        return parser, result, avatar_path
+
+    parser, result, avatar_path = asyncio.run(build())
+
+    assert result.author.name == "First / Second"
+    assert avatar_path == Path("T001R300x300M000first-mid.jpg")
+    assert parser.downloader.image_urls == [
+        "https://y.gtimg.cn/music/photo_new/T001R300x300M000first-mid.jpg"
+    ]
 
 
 def test_qq_track_uses_numeric_songid_when_media_mid_has_no_metadata():
@@ -1023,6 +1125,68 @@ def test_kugou_return_audio_disabled_skips_playback_request_and_keeps_card():
     assert not any(isinstance(content, AudioContent) for content in result.contents)
     assert requests == []
     assert downloader.audio_urls == []
+
+
+def test_kugou_single_track_uses_first_artist_avatar_lazily():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                kugou=SimpleNamespace(use_proxy=False, return_audio=False)
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: ""
+        )
+        requested = []
+
+        async def request(url, **_kwargs):
+            requested.append(url)
+            return {
+                "authors": [
+                    {
+                        "author_name": "First",
+                        "avatar": (
+                            "http://singerimg.kugou.com/uploadpic/softhead/"
+                            "{size}/20260101/first.jpg"
+                        ),
+                    },
+                    {
+                        "author_name": "Second",
+                        "avatar": (
+                            "http://singerimg.kugou.com/uploadpic/softhead/"
+                            "{size}/20260101/second.jpg"
+                        ),
+                    },
+                ],
+                "author_name": "First、Second",
+            }
+
+        parser._json_request = request
+        result = await parser._kugou_single_result(
+            source_url="https://www.kugou.com/mixsong/demo.html",
+            song_hash="song-hash",
+            fallback={
+                "song_name": "Song",
+                "author_name": "First、Second",
+            },
+        )
+        avatar_path = await result.author.get_avatar_path()
+        return parser, result, avatar_path, requested
+
+    parser, result, avatar_path, requested = asyncio.run(build())
+
+    assert result.author.name == "First、Second"
+    assert avatar_path == Path("first.jpg")
+    assert parser.downloader.image_urls == [
+        "https://singerimg.kugou.com/uploadpic/softhead/165/20260101/first.jpg"
+    ]
+    assert requested == [
+        "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=song-hash"
+    ]
 
 
 def test_kugou_member_cookie_uses_signed_web_player_endpoint():

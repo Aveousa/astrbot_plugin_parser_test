@@ -430,6 +430,29 @@ def _track_cover_url(track: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _qq_artist_avatar_url(track: Mapping[str, Any], *, size: int = 300) -> str | None:
+    """Build QQ Music's artist portrait URL from the first singer MID.
+
+    The QQ song-detail response exposes singer identities in ``singer`` but
+    does not include a portrait URL.  QQ's public image CDN uses the singer
+    MID in the ``T001`` path.  Keep this helper limited to the first singer so
+    collaborations use the primary artist's avatar consistently.
+    """
+
+    singers = track.get("singer")
+    if isinstance(singers, Mapping):
+        singers = [singers]
+    if not isinstance(singers, list) or not singers:
+        return None
+    first_singer = singers[0]
+    if not isinstance(first_singer, Mapping):
+        return None
+    singer_mid = _first_text(first_singer, "mid", "singer_mid")
+    if not singer_mid:
+        return None
+    return f"https://y.gtimg.cn/music/photo_new/T001R{size}x{size}M000{singer_mid}.jpg"
+
+
 def _track_summary(index: int, track: Mapping[str, Any]) -> dict[str, Any] | None:
     title = _track_title(track)
     if not title:
@@ -2764,6 +2787,7 @@ class QQMusicParser(PlaylistParserBase):
             duration=track.get("interval"),
             url=url,
             identifier=song_mid,
+            author_avatar=_qq_artist_avatar_url(track),
             timestamp=_date_timestamp(track.get("time_public")),
             audio_url=audio_url,
         )
@@ -2883,6 +2907,49 @@ class NetEaseMusicParser(PlaylistParserBase):
     def _lyrics_enabled(self) -> bool:
         parser_config = self._music_parser_config()
         return bool(getattr(parser_config, "parse_lyrics", False))
+
+    async def _fetch_netease_artist_avatar(
+        self, artist: Mapping[str, Any]
+    ) -> str | None:
+        """Resolve the first NetEase artist's real portrait lazily.
+
+        ``api/song/detail`` commonly returns ``picUrl``/``img1v1Url`` with a
+        shared placeholder and zero image IDs.  The artist endpoint contains
+        the current portrait, so use the artist ID when one is available and
+        only fall back to the song payload when it already carries a real
+        image identity.
+        """
+
+        artist_id = _first_text(artist, "id", "artistId")
+        if artist_id and _as_int(artist_id) == 0:
+            artist_id = None
+        fallback = None
+        if not artist_id or any(
+            _as_int(artist.get(key))
+            for key in ("picId", "img1v1Id", "pic_id", "img1v1_id")
+        ):
+            fallback = _cover_url(
+                artist.get("img1v1Url") or artist.get("picUrl"), size=300
+            )
+        if not artist_id:
+            return fallback
+
+        detail_url = f"https://music.163.com/api/artist/{quote(artist_id, safe='')}"
+        headers = {"Referer": "https://music.163.com/"}
+        if cookie := self._netease_cookie_header(detail_url):
+            headers["Cookie"] = cookie
+        try:
+            body = await self._json_request(detail_url, headers=headers)
+        except (ParseException, ClientError, TimeoutError):
+            return fallback
+        detail = body.get("artist") if isinstance(body, Mapping) else None
+        if isinstance(detail, Mapping):
+            image = _cover_url(
+                detail.get("img1v1Url") or detail.get("picUrl"), size=300
+            )
+            if image:
+                return image
+        return fallback
 
     async def _fetch_netease_lyrics(self, song_id: str) -> str | None:
         lyric_url = "https://music.163.com/api/song/lyric"
@@ -3008,8 +3075,11 @@ class NetEaseMusicParser(PlaylistParserBase):
         if isinstance(raw_artists, list) and raw_artists:
             first_artist = raw_artists[0]
             if isinstance(first_artist, Mapping):
-                author_avatar = _cover_url(
-                    first_artist.get("picUrl") or first_artist.get("img1v1Url")
+                # Resolve only the primary artist.  NetEase's song-detail
+                # image fields are often a generic placeholder, so the
+                # actual portrait lookup happens when the card needs it.
+                author_avatar = lambda artist=first_artist: (
+                    self._fetch_netease_artist_avatar(artist)
                 )
         song_id = _first_text(track, "id") or searched.group("song_id")
         cover = _track_cover_url(track)
@@ -3400,6 +3470,56 @@ class KugouMusicParser(PlaylistParserBase):
         info.setdefault("url", play_url)
         return info
 
+    @staticmethod
+    def _kugou_artist_avatar_url(value: Mapping[str, Any] | None) -> str | None:
+        """Return only the first artist portrait exposed by Kugou metadata."""
+
+        if not isinstance(value, Mapping):
+            return None
+        authors = value.get("authors")
+        if isinstance(authors, Mapping):
+            authors = [authors]
+        if isinstance(authors, list):
+            if authors and isinstance(authors[0], Mapping):
+                first_artist = authors[0]
+                if avatar := _cover_url(
+                    first_artist.get("avatar")
+                    or first_artist.get("imgUrl")
+                    or first_artist.get("imgurl")
+                    or first_artist.get("sizable_avatar"),
+                    size=165,
+                ):
+                    return avatar
+        return _cover_url(
+            value.get("imgUrl") or value.get("singerHead"), size=165
+        )
+
+    async def _fetch_kugou_artist_avatar(
+        self,
+        song_hash: str,
+        *,
+        fallback: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """Fetch Kugou's lightweight song metadata for the primary portrait."""
+
+        request_url = (
+            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
+            + song_hash
+        )
+        headers = {"Referer": self._MOBILE_REFERER}
+        if cookie := self._kugou_cookie_header(request_url):
+            headers["Cookie"] = cookie
+        try:
+            payload = await self._json_request(request_url, headers=headers)
+        except (ParseException, ClientError, TimeoutError):
+            payload = None
+        if isinstance(payload, Mapping):
+            data = payload.get("data")
+            data = data if isinstance(data, Mapping) else payload
+            if avatar := self._kugou_artist_avatar_url(data):
+                return avatar
+        return self._kugou_artist_avatar_url(fallback)
+
     async def _kugou_single_result(
         self,
         *,
@@ -3452,6 +3572,14 @@ class KugouMusicParser(PlaylistParserBase):
         audio_headers = dict(self.headers)
         if audio_url and (cookie := self._kugou_cookie_header(audio_url)):
             audio_headers["Cookie"] = cookie
+        author_avatar = (
+            self._kugou_artist_avatar_url(info)
+            or self._kugou_artist_avatar_url(fallback)
+        )
+        if not author_avatar:
+            author_avatar = lambda: self._fetch_kugou_artist_avatar(
+                song_hash, fallback=fallback
+            )
         result = self._single_track_result(
             title=title,
             artist_name=artist_name,
@@ -3464,7 +3592,7 @@ class KugouMusicParser(PlaylistParserBase):
                 or _first_text(fallback, "mixsongid", "encode_album_audio_id")
                 or song_hash
             ),
-            author_avatar=_cover_url(info.get("imgUrl"), size=165),
+            author_avatar=author_avatar,
             audio_url=audio_url,
             audio_headers=audio_headers,
             stats={},
