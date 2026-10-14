@@ -120,12 +120,14 @@ wrapper 登录管理，但无法验证下载。
 验证音频仅写入插件缓存，由现有缓存清理器统一清理，不在管理页暴露带账号的播放 URL。
 管理页「缓存空间」统计和清理的是整个插件 `cache_dir`，包括各平台解析媒体、卡片、歌词图、Emoji
 和临时文件，不只是 Apple Music 生成的文件；清理不会删除 wrapper 的持久登录缓存。
-开启返回音频后，Bot 保留已有卡片并附加单曲音频。Apple Music 音频使用 OneBot v11 消息段，
-不经 AstrBot 原生 `File` / `Record` 组件发送。语音模式使用 AAC Web；文件模式按“文件音质优先级”
+开启返回音频后，Bot 保留已有卡片并附加单曲音频。Apple Music 音频通过 OneBot v11 action
+发送，不经 AstrBot 原生 `File` / `Record` 组件序列化。语音模式使用 `record` 消息段；文件模式
+使用 `upload_group_file` / `upload_private_file` 上传。文件模式按“文件音质优先级”
 的顺序请求编码，首个可用音质成功后即停止，不再请求后续编码。默认先尝试 ALAC，随后回退到
 AAC Web。文件模式发送时使用歌曲标题作为附件文件名，并保留 `.m4a` 扩展名。两种模式都需要
 AstrBot 的 `callback_api_base` 可被 OneBot 实现（例如 NapCat）访问，
-让 OneBot 直接拉取临时文件 URL；如果 OneBot 或文件 URL 服务不可用，音频会跳过发送，不会回退
+让 OneBot 直接拉取临时文件 URL。临时 URL 默认有效期为 300 秒，注册和文件上传状态会写入
+`info` 日志，便于排查 NapCat 延迟拉取；如果 OneBot 或文件 URL 服务不可用，音频会跳过发送，不会回退
 到 AstrBot 本地序列化大文件。目标平台是否接收 `m4a` 语音仍由 OneBot 实现决定。下载失败沿用现有下载失败提示。
 仍需遵守歌曲地区、订阅和账号授权限制；不保证每首歌可下载。
 

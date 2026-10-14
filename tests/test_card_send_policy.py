@@ -363,16 +363,76 @@ def test_apple_file_uses_onebot_file_protocol(sender_module):
     asyncio.run(sender.send_parse_result(event, result))
 
     assert len(event.sent) == 1  # card only; file went directly through OneBot
-    assert actions[0][0] == "send_group_msg"
-    assert actions[0][1]["message"] == [
-        {
-                "type": "file",
-                "data": {
-                    "file": "http://astrbot:6185/api/file/one-shot-token",
-                    "name": "月声尽,心灯明.m4a",
-                },
-        }
+    assert actions == [
+        (
+            "upload_group_file",
+            {
+                "group_id": 123,
+                "file": "http://astrbot:6185/api/file/one-shot-token",
+                "name": "月声尽,心灯明.m4a",
+            },
+        )
     ]
+
+
+def test_private_file_uses_onebot_private_upload_action(sender_module):
+    actions = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            actions.append((action, kwargs))
+
+    class _PrivateEvent(_Event):
+        def get_group_id(self):
+            return None
+
+    event = _PrivateEvent()
+    event.bot = _Bot()
+
+    assert asyncio.run(
+        sender_module.MessageSender._send_audio_url_via_onebot(
+            event,
+            "http://astrbot:6185/api/file/one-shot-token",
+            message_type="file",
+            name="song.m4a",
+            platform="netease",
+        )
+    )
+    assert actions == [
+        (
+            "upload_private_file",
+            {
+                "user_id": 456,
+                "file": "http://astrbot:6185/api/file/one-shot-token",
+                "name": "song.m4a",
+            },
+        )
+    ]
+
+
+def test_local_audio_url_logs_its_ttl(sender_module):
+    import sys
+
+    infos = []
+    sender_module.logger.info = infos.append
+    fake_core = sys.modules["astrbot.core"]
+    fake_core.astrbot_config = {"callback_api_base": "http://astrbot:6185"}
+
+    class _TokenService:
+        async def register_file(self, path, timeout=None):
+            assert path == "song.m4a"
+            assert timeout == 300
+            return "one-shot-token"
+
+    fake_core.file_token_service = _TokenService()
+    url = asyncio.run(
+        sender_module.MessageSender._register_local_audio_url(
+            Path("song.m4a"), platform="qqmusic", name="song.m4a"
+        )
+    )
+
+    assert url == "http://astrbot:6185/api/file/one-shot-token"
+    assert any("expires_in=300s" in message for message in infos)
 
 
 def test_music_attachment_filename_is_sanitized(sender_module):
@@ -526,14 +586,15 @@ def test_netease_file_uses_tokenized_onebot_file_path(sender_module):
     asyncio.run(sender.send_parse_result(event, result))
 
     assert len(event.sent) == 1
-    assert actions[0][1]["message"] == [
-        {
-            "type": "file",
-            "data": {
+    assert actions == [
+        (
+            "upload_group_file",
+            {
+                "group_id": 123,
                 "file": "http://astrbot:6185/api/file/netease-token",
                 "name": "试听歌曲.mp3",
             },
-        }
+        )
     ]
 
 

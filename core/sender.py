@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from itertools import chain
 import re
 from pathlib import Path
@@ -37,6 +38,34 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
+
+_AUDIO_URL_TTL_SECONDS = 300
+
+
+def _log_info(message: str) -> None:
+    """Write an informational log when the host logger exposes that level."""
+
+    info = getattr(logger, "info", None)
+    if callable(info):
+        info(message)
+
+
+def _safe_log_error(error: object) -> str:
+    """Keep temporary callback URLs out of diagnostic messages."""
+
+    value = re.sub(r"https?://[^\s\"'<>]+", "[URL]", str(error))
+    return value[:300]
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _size_label(size: int | None) -> str:
+    return f"{size / 1024 / 1024:.2f}MB" if size is not None else "未知"
 
 
 class MessageSender:
@@ -432,8 +461,14 @@ class MessageSender:
         *,
         message_type: str = "record",
         name: str | None = None,
+        platform: str = "music",
+        file_size: int | None = None,
     ) -> bool:
-        """让 OneBot 端按 URL 拉取音频，避免 AstrBot 本地序列化大文件。"""
+        """让 OneBot 端按 URL 拉取音频，避免 AstrBot 本地序列化大文件。
+
+        语音通过标准消息段发送；文件通过 OneBot 的 upload_*_file action
+        上传到对应会话。日志记录状态、文件名和体积，不记录临时文件 URL。
+        """
 
         bot = getattr(event, "bot", None)
         call_action = getattr(bot, "call_action", None)
@@ -445,9 +480,60 @@ class MessageSender:
         group_id = str(event.get_group_id() or "").strip()
         if message_type not in {"record", "file"}:
             raise RuntimeError("无效的 OneBot 音频消息类型")
+
+        if message_type == "file":
+            if not name:
+                raise RuntimeError("OneBot 文件上传缺少文件名")
+            if group_id:
+                if not group_id.isdigit():
+                    raise RuntimeError("无效的群号，无法上传 OneBot 群文件")
+                action = "upload_group_file"
+                action_args = {
+                    "group_id": int(group_id),
+                    "file": url,
+                    "name": name,
+                    **routing,
+                }
+                target = "group"
+            else:
+                user_id = str(event.get_sender_id() or "").strip()
+                if not user_id.isdigit():
+                    raise RuntimeError("无效的用户号，无法上传 OneBot 私聊文件")
+                action = "upload_private_file"
+                action_args = {
+                    "user_id": int(user_id),
+                    "file": url,
+                    "name": name,
+                    **routing,
+                }
+                target = "private"
+
+            _log_info(
+                f"开始 OneBot 音乐文件上传：platform={platform} target={target} "
+                f"action={action} name={name} size={_size_label(file_size)}"
+            )
+            try:
+                response = await call_action(action, **action_args)
+                if isinstance(response, Mapping) and response.get("status") == "failed":
+                    raise RuntimeError(
+                        response.get("wording")
+                        or response.get("message")
+                        or f"OneBot action {action} failed"
+                    )
+            except Exception as exc:
+                _log_info(
+                    f"OneBot 音乐文件上传失败：platform={platform} target={target} "
+                    f"action={action} name={name} size={_size_label(file_size)} "
+                    f"error={_safe_log_error(exc)}"
+                )
+                raise
+            _log_info(
+                f"OneBot 音乐文件上传成功：platform={platform} target={target} "
+                f"action={action} name={name} size={_size_label(file_size)}"
+            )
+            return True
+
         data = {"file": url}
-        if message_type == "file" and name:
-            data["name"] = name
         if group_id:
             if not group_id.isdigit():
                 raise RuntimeError("无效的群号，无法发送 OneBot 音频")
@@ -471,7 +557,13 @@ class MessageSender:
         return True
 
     @staticmethod
-    async def _register_local_audio_url(path: Path) -> str | None:
+    async def _register_local_audio_url(
+        path: Path,
+        *,
+        platform: str = "music",
+        name: str | None = None,
+        file_size: int | None = None,
+    ) -> str | None:
         """Expose a cached local audio file through AstrBot's one-shot file URL.
 
         This lets OneBot/NapCat fetch the m4a itself.  In particular, it avoids
@@ -479,16 +571,58 @@ class MessageSender:
         song to WAV and can consume substantial CPU/RAM.
         """
 
+        label = name or path.name
         try:
             from astrbot.core import astrbot_config, file_token_service
 
             callback_base = astrbot_config.get("callback_api_base", "")
             if not isinstance(callback_base, str) or not callback_base.strip():
+                _log_info(
+                    f"OneBot 音乐临时文件 URL 注册跳过：platform={platform} "
+                    f"name={label} size={_size_label(file_size)} "
+                    "原因=callback_api_base 未配置"
+                )
                 return None
-            token = await file_token_service.register_file(str(path), timeout=300)
-            return f"{callback_base.rstrip('/')}/api/file/{token}"
-        except (ImportError, AttributeError, KeyError, OSError, TypeError, ValueError):
+            callback_base = callback_base.strip()
+        except Exception as exc:
+            _log_info(
+                f"OneBot 音乐临时文件 URL 注册失败：platform={platform} "
+                f"name={label} size={_size_label(file_size)} "
+                f"error={_safe_log_error(exc)}"
+            )
             return None
+
+        _log_info(
+            f"开始注册 OneBot 音乐临时文件 URL：platform={platform} "
+            f"name={label} size={_size_label(file_size)} "
+            f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
+            f"有效期={_AUDIO_URL_TTL_SECONDS}秒"
+        )
+        try:
+            token = await file_token_service.register_file(
+                str(path), timeout=_AUDIO_URL_TTL_SECONDS
+            )
+            token = "" if token is None else str(token).strip()
+            if not token:
+                raise ValueError("file_token_service 未返回有效 token")
+            url = f"{callback_base.rstrip('/')}/api/file/{token}"
+        except Exception as exc:
+            _log_info(
+                f"OneBot 音乐临时文件 URL 注册失败：platform={platform} "
+                f"name={label} size={_size_label(file_size)} "
+                f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
+                f"有效期={_AUDIO_URL_TTL_SECONDS}秒 "
+                f"error={_safe_log_error(exc)}"
+            )
+            return None
+
+        _log_info(
+            f"OneBot 音乐临时文件 URL 注册成功：platform={platform} "
+            f"name={label} size={_size_label(file_size)} "
+            f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
+            f"有效期={_AUDIO_URL_TTL_SECONDS}秒"
+        )
+        return url
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
@@ -596,12 +730,24 @@ class MessageSender:
         use_local_audio_url = result.extra.get("audio_send_via_url") is True
         direct_audio_content: AudioContent | None = None
         direct_audio_name: str | None = None
-        if (
-            (
-                use_local_audio_url
-                or result.extra.get("audio_as_voice") is True
-                or result.extra.get("audio_delivery_mode") == "voice"
+        direct_audio_size: int | None = None
+        audio_is_voice = (
+            result.extra.get("audio_as_voice") is True
+            or result.extra.get("audio_delivery_mode") == "voice"
+        )
+        audio_is_file = (
+            result.extra.get("audio_as_file") is True
+            or result.extra.get("audio_delivery_mode") == "file"
+            or (
+                result.platform.name.lower() == "applemusic"
+                and not audio_is_voice
             )
+        )
+        has_onebot_action = callable(
+            getattr(getattr(event, "bot", None), "call_action", None)
+        )
+        if (
+            (use_local_audio_url or audio_is_voice or audio_is_file)
             and (
                 (
                     isinstance(direct_audio_url, str)
@@ -609,7 +755,7 @@ class MessageSender:
                 )
                 or use_local_audio_url
             )
-            and callable(getattr(getattr(event, "bot", None), "call_action", None))
+            and has_onebot_action
         ):
             direct_audio_content = next(
                 (
@@ -623,17 +769,15 @@ class MessageSender:
             if direct_audio_content is not None:
                 try:
                     # OneBot URL 发送前确保文件已下载并保存在解析缓存。
-                    await direct_audio_content.get_path()
-                except (
-                    DownloadException,
-                    DownloadLimitException,
-                    SizeLimitException,
-                    DurationLimitException,
-                    ZeroSizeException,
-                ):
+                    audio_path = await direct_audio_content.get_path()
+                except Exception as exc:
+                    _log_info(
+                        f"OneBot 音乐文件准备失败：platform={result.platform.name.lower()} "
+                        f"error={_safe_log_error(exc)}"
+                    )
                     direct_audio_content = None
                 else:
-                    audio_path = await direct_audio_content.get_path()
+                    direct_audio_size = _file_size(audio_path)
                     direct_audio_name = audio_path.name
                     if (
                         result.extra.get("audio_as_file") is True
@@ -657,7 +801,10 @@ class MessageSender:
                         and direct_audio_url.startswith(("http://", "https://"))
                     ):
                         direct_audio_url = await self._register_local_audio_url(
-                            audio_path
+                            audio_path,
+                            platform=result.platform.name.lower(),
+                            name=direct_audio_name,
+                            file_size=direct_audio_size,
                         )
                     if direct_audio_url:
                         groups = [
@@ -681,6 +828,11 @@ class MessageSender:
         # Music configured for OneBot-only local-URL delivery must not fall
         # back to AstrBot's native media serialization if URL registration
         # or the platform action is unavailable.
+        if use_local_audio_url and not has_onebot_action:
+            _log_info(
+                f"OneBot 音乐文件发送跳过：platform={result.platform.name.lower()} "
+                "原因=当前事件不支持 bot.call_action"
+            )
         if use_local_audio_url and direct_audio_content is None:
             groups = [
                 SendGroup(
@@ -699,25 +851,38 @@ class MessageSender:
             sent = await self._send_group(event, result, group) or sent
 
         if direct_audio_content is not None:
+            message_type = (
+                "record"
+                if (
+                    result.extra.get("audio_as_voice") is True
+                    or result.extra.get("audio_delivery_mode") == "voice"
+                )
+                else "file"
+            )
+            file_size = direct_audio_size
             try:
                 sent = (
                     await self._send_audio_url_via_onebot(
                         event,
                         direct_audio_url,
-                        message_type=(
-                            "record"
-                            if (
-                                result.extra.get("audio_as_voice") is True
-                                or result.extra.get("audio_delivery_mode") == "voice"
-                            )
-                            else "file"
-                        ),
+                        message_type=message_type,
                         name=direct_audio_name,
+                        platform=result.platform.name.lower(),
+                        file_size=file_size,
                     )
                     or sent
                 )
             except Exception as exc:
-                logger.error(f"Apple Music OneBot 音频发送失败：{exc}")
+                if message_type == "file":
+                    logger.error(
+                        f"OneBot 音乐文件上传失败：platform={result.platform.name.lower()} "
+                        f"name={direct_audio_name} error={_safe_log_error(exc)}"
+                    )
+                else:
+                    logger.error(
+                        f"OneBot 音乐语音发送失败：platform={result.platform.name.lower()} "
+                        f"error={_safe_log_error(exc)}"
+                    )
                 # 已经尝试发送音频，不再追加一条与原消息无关的文本兜底。
                 sent = True
 

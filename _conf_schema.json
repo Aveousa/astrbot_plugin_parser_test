@@ -235,7 +235,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
@@ -280,7 +280,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
@@ -332,7 +332,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 OneBot file 发送本地缓存的音频。默认语音。",
+            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
