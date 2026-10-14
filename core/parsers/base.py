@@ -1,9 +1,10 @@
 """Parser 基类定义"""
 
+import asyncio
 from abc import ABC
 from asyncio import Task, TimeoutError, sleep
-from collections.abc import Callable, Coroutine
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
+from inspect import isawaitable
 from pathlib import Path
 from re import Match, Pattern, compile
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
@@ -34,6 +35,84 @@ HandlerFunc = Callable[[T, Match[str]], Coroutine[Any, Any, ParseResult]]
 KeyPatterns = list[tuple[str, Pattern[str]]]
 
 _KEY_PATTERNS = "_key_patterns"
+
+
+class _LazyAvatarDownload:
+    """Resolve an optional avatar only when the card actually needs it.
+
+    Most parsers already have a concrete URL when they call ``create_author``.
+    A few metadata enrichments (such as Apple Music artist portraits) need a
+    small, best-effort lookup first.  Keeping that lookup lazy means an
+    optional enhancement cannot delay or fail the normal media parse when a
+    sender never renders a card.  The object is an awaitable rather than a
+    scheduled task, so its network work starts from ``Author.get_avatar_path``.
+    """
+
+    # Artist lookup plus image transfer must remain bounded independently of
+    # the global Downloader timeout.
+    _TIMEOUT_SECONDS = 5.0
+
+    def __init__(
+        self,
+        resolver: Callable[[], Any],
+        downloader: Downloader,
+        headers: dict[str, str],
+        proxy: str | None,
+        worker_proxy_url: str | None,
+    ) -> None:
+        self._resolver = resolver
+        self._downloader = downloader
+        self._headers = headers
+        self._proxy = proxy
+        self._worker_proxy_url = worker_proxy_url
+        self._task: asyncio.Task[Path | None] | None = None
+
+    def __await__(self):
+        return self._get().__await__()
+
+    def get_name(self) -> str:
+        return "lazy_avatar"
+
+    def done(self) -> bool:
+        return self._task is not None and self._task.done()
+
+    def cancel(self) -> bool:
+        return self._task.cancel() if self._task is not None else False
+
+    async def _get(self) -> Path | None:
+        if self._task is None or (self._task.done() and self._task.cancelled()):
+            self._task = asyncio.create_task(self._run())
+        return await self._task
+
+    async def _run(self) -> Path | None:
+        try:
+            async def resolve_and_download() -> Any:
+                value = self._resolver()
+                if isawaitable(value):
+                    value = await value
+                if not isinstance(value, str) or not value.strip():
+                    return None
+                downloaded = self._downloader.download_img(
+                    value.strip(),
+                    headers=self._headers,
+                    proxy=self._proxy,
+                    worker_proxy_url=self._worker_proxy_url,
+                )
+                return await downloaded if isawaitable(downloaded) else downloaded
+
+            path = await asyncio.wait_for(
+                resolve_and_download(), timeout=self._TIMEOUT_SECONDS
+            )
+            # Some test doubles and downloaders use ``Path()`` as a soft
+            # failure marker.  Treat it as missing rather than letting the
+            # renderer turn the current working directory into a file URI.
+            return None if isinstance(path, Path) and path == Path() else path
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - avatar enrichment must be optional
+            # Avatar lookup/download is deliberately an enhancement.  A
+            # missing local path makes the renderer fall back to its placeholder.
+            return None
 
 
 # 注册处理器装饰器
@@ -260,19 +339,27 @@ class BaseParser:
     def create_author(
         self,
         name: str,
-        avatar_url: str | None = None,
+        avatar_url: str | Callable[[], Any] | None = None,
         description: str | None = None,
         headers: dict[str, str] | None = None,
     ):
         """创建作者对象"""
 
         avatar_task = None
-        if avatar_url:
+        if isinstance(avatar_url, str) and avatar_url:
             avatar_task = self.downloader.download_img(
                 avatar_url,
                 headers=headers or self.headers,
                 proxy=self.proxy,
                 worker_proxy_url=self.worker_proxy_url,
+            )
+        elif callable(avatar_url):
+            avatar_task = _LazyAvatarDownload(
+                avatar_url,
+                self.downloader,
+                headers or self.headers,
+                self.proxy,
+                self.worker_proxy_url,
             )
         return Author(name=name, avatar=avatar_task, description=description)
 

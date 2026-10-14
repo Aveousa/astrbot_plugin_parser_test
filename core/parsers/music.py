@@ -11,14 +11,17 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
+import threading
 import time
-from collections.abc import Mapping
+import unicodedata
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from html import unescape
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from typing import Any, ClassVar
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 from aiohttp import ClientError
 
@@ -672,7 +675,7 @@ class PlaylistParserBase(BaseParser):
         duration: object,
         url: str,
         identifier: str,
-        author_avatar: str | None = None,
+        author_avatar: str | Callable[[], Any] | None = None,
         timestamp: int | None = None,
         audio_url: str | None = None,
         audio_headers: Mapping[str, str] | None = None,
@@ -891,6 +894,1042 @@ class KuwoMusicParser(PlaylistParserBase):
 class AppleMusicParser(PlaylistParserBase):
     platform = Platform(name="applemusic", display_name="Apple Music")
 
+    # Artist metadata is deliberately separate from the short-lived media
+    # files created for one parse.  The JSON file lives in the configured cache
+    # root and is written atomically, while a per-parser in-memory fallback is
+    # used by lightweight parser instances (and tests) without a cache path.
+    _ARTIST_CACHE_FILENAME = "apple_music_artist_meta.json"
+    _ARTIST_CACHE_SUCCESS_TTL = 7 * 24 * 60 * 60
+    _ARTIST_CACHE_MISS_TTL = 2 * 60 * 60
+    _ARTIST_TOTAL_TIMEOUT = 5.0
+    _ARTIST_MAX_REGIONS = 3
+    _ARTIST_RATE_BACKOFF = 45.0
+    _artist_cache_files: ClassVar[dict[str, dict[str, dict[str, Any]]]] = {}
+    _artist_cache_loaded: ClassVar[set[str]] = set()
+    _artist_cache_lock = threading.RLock()
+    _artist_rate_lock = threading.Lock()
+    _artist_rate_limit_until: ClassVar[dict[str, float]] = {}
+
+    @staticmethod
+    def _normalize_artist_name(value: object) -> str:
+        """Normalize names for exact (not substring) iTunes matching."""
+
+        if value is None:
+            return ""
+        text = unicodedata.normalize("NFKC", str(value)).casefold()
+        text = "".join(
+            char
+            for char in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(char)
+        )
+        # Keep word boundaries while making punctuation/case/width variants
+        # comparable.  We intentionally do not remove all punctuation without
+        # a boundary: ``AB`` must not match ``A&B`` by accident.
+        text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
+        return " ".join(text.split())
+
+    @classmethod
+    def _artist_name_parts(cls, value: object) -> list[str]:
+        if isinstance(value, list):
+            names: list[str] = []
+            for item in value:
+                if isinstance(item, Mapping):
+                    item_name = _first_text(item, "name", "title", "artistName")
+                else:
+                    item_name = str(item).strip()
+                if item_name:
+                    names.append(item_name)
+            return names
+        if isinstance(value, Mapping):
+            name = _first_text(value, "name", "title", "artistName")
+            return [name] if name else []
+        if not isinstance(value, str) or not value.strip():
+            return []
+        # Artist links are preferred for collaborations.  This fallback keeps
+        # the first primary artist when only a display string is available.
+        parts = re.split(
+            r"\s+(?:feat\.?|ft\.?|featuring|with)\s+|[/\uFF0F|\uFF5C|\u3001]",
+            value.strip(),
+            flags=re.IGNORECASE,
+        )
+        return [part.strip() for part in parts if part.strip()]
+
+    @staticmethod
+    def _is_apple_host(host: str) -> bool:
+        host = host.lower().rstrip(".")
+        return (
+            host in {"music.apple.com", "itunes.apple.com"}
+            or host.endswith((".music.apple.com", ".itunes.apple.com", ".mzstatic.com"))
+        )
+
+    @classmethod
+    def _is_apple_artist_url(cls, value: object) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        try:
+            parsed = urlparse(value.strip())
+        except ValueError:
+            return False
+        return cls._is_apple_host(parsed.hostname or "") and bool(
+            re.search(
+                r"/(?:[a-z]{2}/)?artists?/(?:[^/?#]+/)?(?:id)?\d+(?:[/?#]|$)",
+                parsed.path,
+                re.IGNORECASE,
+            )
+            or re.search(r"/(?:[a-z]{2}/)?artists?(?:/|$)", parsed.path, re.IGNORECASE)
+        )
+
+    @classmethod
+    def _artist_id_from_url(cls, value: object) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = urlparse(value.strip())
+        except ValueError:
+            return None
+        if not cls._is_apple_host(parsed.hostname or ""):
+            return None
+        match = re.search(
+            r"/(?:[a-z]{2}/)?artists?/(?:[^/?#]+/)?(?:id)?(\d+)(?:[/?#]|$)",
+            parsed.path,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return match.group(1)
+        # Do not interpret a generic Apple Music ``?id=...`` URL (for
+        # example a song or album link) as an artist identity.  Query IDs are
+        # accepted only on an explicitly artist-shaped path.
+        if not cls._is_apple_artist_url(value):
+            return None
+        query = parse_qs(parsed.query)
+        for key in ("id", "artistId", "artist_id"):
+            values = query.get(key)
+            if values and str(values[0]).strip().isdigit():
+                return str(values[0]).strip()
+        return None
+
+    @staticmethod
+    def _artist_url_region(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parts = [part for part in urlparse(value).path.split("/") if part]
+        except ValueError:
+            return None
+        if parts and re.fullmatch(r"[a-zA-Z]{2}", parts[0]):
+            return parts[0].lower()
+        return None
+
+    @classmethod
+    def _artist_candidate_from_mapping(
+        cls, value: object, *, allow_generic_id: bool = False
+    ) -> dict[str, str] | None:
+        if not isinstance(value, Mapping):
+            return None
+        name = _first_text(value, "title", "name", "artistName", "artistname", "label")
+        url: str | None = None
+        for key in (
+            "url",
+            "@id",
+            "href",
+            "link",
+            "target",
+            "uri",
+            "artistLinkUrl",
+        ):
+            raw = value.get(key)
+            if isinstance(raw, Mapping):
+                raw = _first_text(raw, "url", "href", "link", "target")
+            if isinstance(raw, str) and raw.strip():
+                url = urljoin("https://music.apple.com/", raw.strip())
+                break
+
+        if url:
+            if not cls._is_apple_artist_url(url):
+                url = None
+
+        artist_id = cls._artist_id_from_url(url)
+        artist_id_keys = {
+            "artistid",
+            "artist_id",
+            "artistadamid",
+            "artistadam_id",
+        }
+        for key, raw in value.items():
+            normalized_key = re.sub(r"[^a-z0-9_]", "", str(key).lower())
+            if normalized_key in artist_id_keys:
+                candidate = str(raw).strip()
+                if candidate.isdigit():
+                    artist_id = candidate
+                    break
+        descriptor = value.get("contentDescriptor")
+        if isinstance(descriptor, Mapping):
+            descriptor_kind = str(descriptor.get("kind") or "").lower()
+            for key in ("artistId", "artistAdamID", "artistAdamId", "artist_id"):
+                raw = descriptor.get(key)
+                if str(raw).strip().isdigit():
+                    artist_id = str(raw).strip()
+                    break
+            identifiers = descriptor.get("identifiers")
+            if isinstance(identifiers, Mapping):
+                identifier_keys = (
+                    "artistId",
+                    "artistAdamID",
+                    "artistAdamId",
+                    "artist_id",
+                )
+                if descriptor_kind in {"artist", "musicartist", "music-artist"}:
+                    identifier_keys += ("storeAdamID",)
+                for key in identifier_keys:
+                    raw = identifiers.get(key)
+                    if str(raw).strip().isdigit():
+                        artist_id = str(raw).strip()
+                        break
+        value_kind = str(value.get("kind") or "").lower()
+        value_identifiers = value.get("identifiers")
+        if value_kind in {"artist", "musicartist", "music-artist"} and isinstance(
+            value_identifiers, Mapping
+        ):
+            raw = value_identifiers.get("storeAdamID")
+            if str(raw).strip().isdigit():
+                artist_id = str(raw).strip()
+        if not artist_id and allow_generic_id:
+            raw = value.get("id")
+            if str(raw).strip().isdigit():
+                artist_id = str(raw).strip()
+        if not (name or artist_id or url):
+            return None
+        result: dict[str, str] = {}
+        if name:
+            result["name"] = name
+        if artist_id:
+            result["id"] = artist_id
+        if url:
+            result["url"] = url
+        return result
+
+    @classmethod
+    def _collect_artist_candidates(
+        cls,
+        value: object,
+        *,
+        allow_generic_id: bool = False,
+        _depth: int = 0,
+    ) -> list[dict[str, str]]:
+        if _depth > 4:
+            return []
+        result: list[dict[str, str]] = []
+        if isinstance(value, Mapping):
+            if candidate := cls._artist_candidate_from_mapping(
+                value, allow_generic_id=allow_generic_id
+            ):
+                result.append(candidate)
+            for key, child in value.items():
+                key_text = str(key).lower()
+                if key_text in {
+                    "artistlinks",
+                    "subtitlelinks",
+                    "artists",
+                    "artist",
+                    "byartist",
+                    "artistdata",
+                    "contentdescriptor",
+                    "identifiers",
+                } or "artist" in key_text:
+                    result.extend(
+                        cls._collect_artist_candidates(
+                            child,
+                            allow_generic_id=allow_generic_id
+                            or "link" in key_text
+                            or key_text in {"artist", "artists", "byartist"},
+                            _depth=_depth + 1,
+                        )
+                    )
+        elif isinstance(value, list):
+            for child in value:
+                result.extend(
+                    cls._collect_artist_candidates(
+                        child,
+                        allow_generic_id=allow_generic_id,
+                        _depth=_depth + 1,
+                    )
+                )
+        return result
+
+    @classmethod
+    def _artist_candidates(
+        cls,
+        track: Mapping[str, Any],
+        album_header: Mapping[str, Any],
+        fallback: Mapping[str, Any],
+        artist_name: str | None,
+    ) -> list[dict[str, str]]:
+        candidates: list[dict[str, str]] = []
+        # Ordered from the most song-specific fields to page-level fallbacks.
+        for source in (track, album_header):
+            for key in (
+                "artistLinks",
+                "subtitleLinks",
+                "artists",
+                "artist",
+                "byArtist",
+                "contentDescriptor",
+            ):
+                candidates.extend(
+                    cls._collect_artist_candidates(
+                        source.get(key), allow_generic_id="link" in key.lower()
+                    )
+                )
+        for key in ("artists", "artist", "byArtist"):
+            candidates.extend(cls._collect_artist_candidates(fallback.get(key)))
+
+        display_names = cls._artist_name_parts(artist_name)
+        if not display_names:
+            display_names = cls._artist_name_parts(
+                _first_text(track, "artistName", "artists")
+                or cls._first_link_title(track.get("subtitleLinks"))
+                or cls._first_link_title(track.get("artistLinks"))
+                or cls._first_link_title(album_header.get("subtitleLinks"))
+                or _first_text(fallback, "artist")
+            )
+        for name in display_names:
+            candidates.append({"name": name})
+
+        unique: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for candidate in candidates:
+            name = candidate.get("name", "").strip()
+            artist_id = candidate.get("id", "").strip()
+            url = candidate.get("url", "").strip()
+            if not (name or artist_id or url):
+                continue
+            key = (artist_id or cls._normalize_artist_name(name), url)
+            if key in seen:
+                continue
+            seen.add(key)
+            if name:
+                candidate["name"] = name
+            unique.append(candidate)
+        return unique
+
+    @classmethod
+    def _artist_cache_key(cls, artist_id: str, region: str) -> str:
+        return f"{artist_id}:{region}"
+
+    @classmethod
+    def _artist_search_cache_key(cls, artist_name: str, region: str) -> str:
+        return f"search:{cls._normalize_artist_name(artist_name)}:{region}"
+
+    def _artist_cache_path(self) -> Path | None:
+        # ``cache_dir`` is scoped to one parse and is periodically removed by
+        # CacheCleaner.  Keep metadata beside it under the plugin data root so
+        # the seven-day/two-hour TTL can actually span songs and messages;
+        # lightweight test/config objects without ``data_dir`` still fall back
+        # to their supplied cache directory.
+        root = getattr(self.cfg, "data_dir", None) or getattr(self.cfg, "cache_dir", None)
+        if root is None:
+            return None
+        try:
+            data_root = Path(getattr(self.cfg, "data_dir", None) or root)
+            cache_root = Path(getattr(self.cfg, "cache_dir", None) or root)
+            # Keep the metadata persistent across the ordinary generated-media
+            # cache clear.  If both configured roots are identical, retain the
+            # metadata in its own subdirectory rather than the cleaned root.
+            metadata_root = (
+                data_root
+                if data_root != cache_root and data_root.name.lower() != "cache"
+                else data_root / "metadata"
+            )
+            return metadata_root / self._ARTIST_CACHE_FILENAME
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _load_artist_cache_file(
+        cls, path: Path, path_key: str
+    ) -> dict[str, dict[str, Any]]:
+        with cls._artist_cache_lock:
+            with cls._artist_cache_lock:
+                if path_key in cls._artist_cache_loaded:
+                    return cls._artist_cache_files.setdefault(path_key, {})
+            cache: dict[str, dict[str, Any]] = {}
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                raw_entries = payload.get("entries") if isinstance(payload, Mapping) else payload
+                if isinstance(raw_entries, Mapping):
+                    cache = {
+                        str(key): dict(value)
+                        for key, value in raw_entries.items()
+                        if isinstance(value, Mapping)
+                    }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                cache = {}
+            with cls._artist_cache_lock:
+                cls._artist_cache_files[path_key] = cache
+                cls._artist_cache_loaded.add(path_key)
+                return cache
+
+    @classmethod
+    def _write_artist_cache_file(
+        cls, path: Path, cache: Mapping[str, Mapping[str, Any]]
+    ) -> None:
+        path_key = str(path)
+        with cls._artist_cache_lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temp = path.with_name(
+                    f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+                )
+                temp.write_text(
+                    json.dumps({"version": 1, "entries": cache}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                os.replace(temp, path)
+            except (OSError, TypeError, ValueError):
+                try:
+                    temp.unlink(missing_ok=True)
+                except (UnboundLocalError, OSError):
+                    pass
+            finally:
+                with cls._artist_cache_lock:
+                    cls._artist_cache_files[path_key] = dict(cache)
+
+    def _artist_cache_get(self, key: str) -> dict[str, Any] | None:
+        path = self._artist_cache_path()
+        path_key = str(path) if path is not None else f"memory:{id(self)}"
+        if path is None:
+            with self._artist_cache_lock:
+                cache = type(self)._artist_cache_files.setdefault(path_key, {})
+        else:
+            path_key = str(path)
+            cache = self._load_artist_cache_file(path, path_key)
+        now = time.time()
+        with self._artist_cache_lock:
+            entry = cache.get(key)
+            if not isinstance(entry, Mapping):
+                return None
+            try:
+                if float(entry.get("expires_at", 0)) <= now:
+                    cache.pop(key, None)
+                    if path is not None:
+                        self._write_artist_cache_file(path, cache)
+                    return None
+            except (TypeError, ValueError):
+                cache.pop(key, None)
+                if path is not None:
+                    self._write_artist_cache_file(path, cache)
+                return None
+            return dict(entry)
+
+    def _artist_cache_put(
+        self,
+        key: str,
+        *,
+        found: bool,
+        image_url: str | None = None,
+        artist_id: str | None = None,
+        artist_url: str | None = None,
+        ttl: int | None = None,
+    ) -> None:
+        path = self._artist_cache_path()
+        path_key = str(path) if path is not None else f"memory:{id(self)}"
+        if path is None:
+            with self._artist_cache_lock:
+                cache = type(self)._artist_cache_files.setdefault(path_key, {})
+        else:
+            path_key = str(path)
+            cache = self._load_artist_cache_file(path, path_key)
+        entry: dict[str, Any] = {
+            "found": bool(found),
+            "image_url": image_url if found else None,
+            "artist_id": artist_id,
+            "artist_url": artist_url,
+            "expires_at": time.time()
+            + (ttl if ttl is not None else (self._ARTIST_CACHE_SUCCESS_TTL if found else self._ARTIST_CACHE_MISS_TTL)),
+        }
+        with self._artist_cache_lock:
+            cache[key] = entry
+            if path is not None:
+                self._write_artist_cache_file(path, cache)
+
+    def _artist_rate_limited(self) -> bool:
+        scope = self._artist_rate_scope()
+        with self._artist_rate_lock:
+            return time.monotonic() < type(self)._artist_rate_limit_until.get(
+                scope, 0.0
+            )
+
+    def _artist_rate_scope(self) -> str:
+        path = self._artist_cache_path()
+        return str(path.parent) if path is not None else f"memory:{id(self)}"
+
+    def _trip_artist_rate_limit(self) -> None:
+        scope = self._artist_rate_scope()
+        with self._artist_rate_lock:
+            limits = type(self)._artist_rate_limit_until
+            limits[scope] = max(
+                limits.get(scope, 0.0),
+                time.monotonic() + self._ARTIST_RATE_BACKOFF,
+            )
+
+    @classmethod
+    def _regions_for_storefront(cls, storefront: str | None) -> list[str]:
+        preferred = str(storefront or "").strip().lower()
+        regions: list[str] = []
+        for region in (preferred, "us", "cn", "jp"):
+            if re.fullmatch(r"[a-z]{2}", region) and region not in regions:
+                regions.append(region)
+            if len(regions) >= cls._ARTIST_MAX_REGIONS:
+                break
+        return regions or ["us"]
+
+    async def _artist_get_text(self, url: str) -> tuple[int | None, str | None]:
+        if self._artist_rate_limited():
+            return None, None
+        try:
+            async with self.session.get(
+                url,
+                headers={
+                    **getattr(self, "headers", {}),
+                    "Referer": "https://music.apple.com/",
+                    "Accept": "text/html,application/json;q=0.9,*/*;q=0.5",
+                },
+            ) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                if status in (403, 429):
+                    self._trip_artist_rate_limit()
+                    return status, None
+                if status >= 400:
+                    return status, None
+                return status, await response.text()
+        except (ClientError, TimeoutError, OSError, RuntimeError, ValueError):
+            return None, None
+
+    async def _search_artist(
+        self, artist_name: str, region: str
+    ) -> dict[str, str] | None:
+        self._artist_search_ambiguous = False
+        self._artist_search_incomplete = False
+        if not artist_name or self._artist_rate_limited():
+            return None
+        query = urlencode(
+            {
+                "term": artist_name,
+                "entity": "musicArtist",
+                "limit": "10",
+                "country": region,
+            }
+        )
+        status, text = await self._artist_get_text(
+            f"https://itunes.apple.com/search?{query}"
+        )
+        if status is None or not text:
+            self._artist_search_incomplete = True
+            return None
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self._artist_search_incomplete = True
+            return None
+        results = payload.get("results") if isinstance(payload, Mapping) else None
+        if not isinstance(results, list):
+            self._artist_search_incomplete = True
+            return None
+        target = self._normalize_artist_name(artist_name)
+        matches: list[dict[str, str]] = []
+        for item in results:
+            if not isinstance(item, Mapping):
+                continue
+            result_kind = str(item.get("wrapperType") or item.get("kind") or "").lower()
+            if result_kind and result_kind not in {"artist", "musicartist"}:
+                continue
+            result_name = _first_text(item, "artistName", "name")
+            if not result_name or self._normalize_artist_name(result_name) != target:
+                continue
+            result_url = _first_text(item, "artistLinkUrl", "url")
+            if result_url:
+                if not self._is_apple_artist_url(result_url):
+                    result_url = None
+            result_id = self._artist_id_from_url(result_url)
+            if not result_id:
+                for key in ("artistId", "artistID", "id"):
+                    raw = item.get(key)
+                    if str(raw).strip().isdigit():
+                        result_id = str(raw).strip()
+                        break
+            if result_id or result_url:
+                candidate: dict[str, str] = {"name": result_name}
+                if result_id:
+                    candidate["id"] = result_id
+                if result_url:
+                    candidate["url"] = result_url
+                matches.append(candidate)
+        # More than one exact-name artist is inherently ambiguous.  A direct
+        # Apple page link/ID from the track is handled before this fallback.
+        unique_ids = {item.get("id") or item.get("url") for item in matches}
+        if len(unique_ids) != 1:
+            self._artist_search_ambiguous = bool(matches)
+            return None
+        return matches[0]
+
+    @staticmethod
+    def _json_ld_nodes(html: str) -> list[Mapping[str, Any]]:
+        nodes: list[Mapping[str, Any]] = []
+        for match in re.finditer(
+            r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        ):
+            try:
+                value = json.loads(match.group(1).strip())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            pending = [value]
+            while pending:
+                current = pending.pop()
+                if isinstance(current, list):
+                    pending.extend(reversed(current))
+                elif isinstance(current, Mapping):
+                    nodes.append(current)
+                    for key in ("@graph", "mainEntity", "subjectOf"):
+                        if key in current:
+                            pending.append(current[key])
+        return nodes
+
+    @classmethod
+    def _image_urls_from_value(cls, value: object, *, _depth: int = 0) -> list[str]:
+        if _depth > 4:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            result: list[str] = []
+            for item in value:
+                result.extend(cls._image_urls_from_value(item, _depth=_depth + 1))
+            return result
+        if isinstance(value, Mapping):
+            result: list[str] = []
+            for key in ("url", "contentUrl", "thumbnailUrl", "src", "href", "@id"):
+                if key in value:
+                    result.extend(
+                        cls._image_urls_from_value(value[key], _depth=_depth + 1)
+                    )
+            return result
+        return []
+
+    @classmethod
+    def _valid_artist_image_url(
+        cls, value: object, *, cover_url: str | None = None
+    ) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        url = urljoin("https://music.apple.com/", unescape(value.strip()))
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+        ):
+            return None
+        lowered = f"{parsed.path}?{parsed.query}".lower()
+        if any(
+            token in lowered
+            for token in (
+                "logo",
+                "placeholder",
+                "no-image",
+                "noimage",
+                "default-image",
+                "blank-image",
+                "default-artist",
+                "default_artist",
+                "generic-artist",
+                "generic_artist",
+                "artist-art-placeholder",
+                "artist_art_placeholder",
+                "artist-placeholder",
+                "no_artwork",
+                "no-artwork",
+                "apple-music-logo",
+                "apple_music_logo",
+                "apple-music.png",
+                "apple_music.png",
+                "music-logo",
+                "music_logo",
+                "default_avatar",
+                "default-avatar",
+                "transparent",
+                "spacer",
+                "favicon",
+            )
+        ):
+            return None
+        if re.search(r"(?:^|[/_-])(?:0|1)x(?:0|1)(?:[a-z0-9._-]|$)", lowered):
+            return None
+
+        def canonical(raw: str) -> str:
+            parsed_raw = urlparse(raw)
+            path = re.sub(r"\d{2,5}x\d{2,5}", "", parsed_raw.path.lower())
+            return f"{parsed_raw.netloc.lower()}{path}"
+
+        if cover_url:
+            cover = urljoin("https://music.apple.com/", cover_url)
+            if url == cover or canonical(url) == canonical(cover):
+                return None
+        return url
+
+    @classmethod
+    def _artist_image_from_html(
+        cls,
+        html: str,
+        *,
+        artist_id: str | None = None,
+        artist_name: str | None = None,
+        cover_url: str | None = None,
+    ) -> str | None:
+        target_name = cls._normalize_artist_name(artist_name)
+        target_id = str(artist_id or "").strip()
+        for node in cls._json_ld_nodes(html):
+            raw_type = node.get("@type")
+            types = raw_type if isinstance(raw_type, list) else [raw_type]
+            type_names = {str(item).replace(" ", "").lower() for item in types}
+            if not any(
+                item in {"person", "musicgroup", "musicartist", "artist", "organization"}
+                or "musicartist" in item
+                for item in type_names
+            ):
+                continue
+            node_url = _first_text(node, "url", "@id")
+            node_id = cls._artist_id_from_url(node_url)
+            node_name = _first_text(node, "name")
+            if node_url:
+                if not cls._is_apple_artist_url(node_url):
+                    continue
+            if target_id:
+                # A known Adam ID is the strongest identity signal.  If a
+                # page omits ``url``/``@id``, only accept a node whose name
+                # still exactly identifies the requested artist.
+                if node_id and node_id != target_id:
+                    continue
+                if not node_id and (
+                    not target_name
+                    or not node_name
+                    or cls._normalize_artist_name(node_name) != target_name
+                ):
+                    continue
+            elif target_name and (
+                not node_name
+                or cls._normalize_artist_name(node_name) != target_name
+            ):
+                continue
+            for image in cls._image_urls_from_value(node.get("image")):
+                if valid := cls._valid_artist_image_url(image, cover_url=cover_url):
+                    return valid
+
+        # Apple has changed its server-state shape several times.  Only walk
+        # image fields under an explicitly artist-named branch so an album
+        # artwork object cannot silently become an author portrait.
+        try:
+            payload = cls._decode_server_data(html)
+        except ParseException:
+            payload = {}
+
+        def structured_images(value: object, artist_context: bool = False) -> list[str]:
+            if isinstance(value, list):
+                result: list[str] = []
+                for item in value:
+                    result.extend(structured_images(item, artist_context))
+                return result
+            if not isinstance(value, Mapping):
+                return []
+            result: list[str] = []
+            artist_context_keys = {
+                "artist",
+                "artists",
+                "artistdata",
+                "artistdetail",
+                "artistprofile",
+                "artistpage",
+                "musicartist",
+                "performer",
+                "profile",
+            }
+            if artist_context:
+                for key in (
+                    "image",
+                    "artwork",
+                    "portrait",
+                    "photo",
+                    "profileImage",
+                    "avatar",
+                ):
+                    if key in value:
+                        result.extend(cls._image_urls_from_value(value[key]))
+            for key, child in value.items():
+                child_context = artist_context or str(key).lower() in artist_context_keys
+                result.extend(structured_images(child, child_context))
+            return result
+
+        for image in structured_images(payload):
+            if valid := cls._valid_artist_image_url(image, cover_url=cover_url):
+                return valid
+
+        # Finally use Open Graph/Twitter image metadata.  It is common on
+        # public artist pages, but still passes the same placeholder/cover
+        # checks as JSON-LD candidates.
+        for match in re.finditer(r"<meta\b[^>]*>", html, flags=re.IGNORECASE):
+            attributes = {
+                key.lower(): unescape(value)
+                for key, _quote, value in re.findall(
+                    r"([\w:-]+)\s*=\s*([\"'])(.*?)\2",
+                    match.group(0),
+                    flags=re.DOTALL,
+                )
+            }
+            property_name = (
+                attributes.get("property", "") or attributes.get("name", "")
+            ).strip().lower()
+            if property_name not in {"og:image", "og:image:url", "twitter:image"}:
+                continue
+            if valid := cls._valid_artist_image_url(
+                attributes.get("content"), cover_url=cover_url
+            ):
+                return valid
+        return None
+
+    # Descriptive alias useful to small integrations/tests without exposing a
+    # second implementation.
+    _extract_artist_image = _artist_image_from_html
+    _extract_artist_image_url = _artist_image_from_html
+    _extract_artist_image_from_html = _artist_image_from_html
+
+    @classmethod
+    def _artist_page_url(
+        cls, candidate: Mapping[str, str], region: str
+    ) -> str | None:
+        artist_id = str(candidate.get("id") or "").strip()
+        direct_url = candidate.get("url")
+        if direct_url:
+            if (
+                cls._is_apple_artist_url(direct_url)
+                and (urlparse(direct_url).hostname or "").lower().endswith("music.apple.com")
+                and cls._artist_url_region(direct_url) in {None, region}
+            ):
+                return direct_url
+        slug = "artist"
+        if direct_url:
+            try:
+                parts = [part for part in urlparse(direct_url).path.split("/") if part]
+                if "artist" in parts:
+                    index = parts.index("artist")
+                    if index + 1 < len(parts):
+                        slug = parts[index + 1]
+            except (ValueError, IndexError):
+                pass
+        if not artist_id:
+            return direct_url
+        if candidate.get("name"):
+            slug = quote(candidate["name"], safe="")
+        return f"https://music.apple.com/{region}/artist/{slug}/{artist_id}"
+
+    async def _lookup_artist_image(
+        self,
+        candidate: Mapping[str, str],
+        *,
+        storefront: str | None,
+        cover_url: str | None,
+    ) -> str | None:
+        if self._artist_rate_limited():
+            return None
+        regions = self._regions_for_storefront(storefront)
+        artist_id = str(candidate.get("id") or "").strip()
+        artist_name = str(candidate.get("name") or "").strip()
+        if not artist_id and candidate.get("url"):
+            artist_id = self._artist_id_from_url(candidate.get("url")) or ""
+
+        if not artist_id and not candidate.get("url"):
+            if not artist_name:
+                return None
+            found: dict[str, str] | None = None
+            for search_region in regions:
+                search_key = self._artist_search_cache_key(artist_name, search_region)
+                cached = self._artist_cache_get(search_key)
+                if cached is not None:
+                    if cached.get("found"):
+                        found = {"name": artist_name}
+                        if cached.get("artist_id"):
+                            found["id"] = str(cached["artist_id"])
+                        if cached.get("artist_url"):
+                            found["url"] = str(cached["artist_url"])
+                        break
+                    continue
+                found = await self._search_artist(artist_name, search_region)
+                if found:
+                    self._artist_cache_put(
+                        search_key,
+                        found=True,
+                        artist_id=found.get("id"),
+                        artist_url=found.get("url"),
+                    )
+                    break
+                if getattr(self, "_artist_search_ambiguous", False):
+                    self._artist_cache_put(search_key, found=False)
+                    return None
+                if getattr(self, "_artist_search_incomplete", False):
+                    # Only cache a real, well-formed no-match response.  An
+                    # outage or changed API response must not suppress retries
+                    # for the full negative-cache TTL.
+                    return None
+                if self._artist_rate_limited():
+                    return None
+                self._artist_cache_put(search_key, found=False)
+            if not found:
+                return None
+            artist_id = str(found.get("id") or "")
+            candidate = {**candidate, **found}
+
+        cache_id = artist_id or "url:" + hashlib.sha1(
+            str(candidate.get("url") or artist_name).encode("utf-8")
+        ).hexdigest()
+        requested_region = regions[0]
+        for index, region in enumerate(regions):
+            if self._artist_rate_limited():
+                return None
+            key = self._artist_cache_key(cache_id, region)
+            cached = self._artist_cache_get(key)
+            if cached is not None:
+                if cached.get("found") and cached.get("image_url"):
+                    cached_image = self._valid_artist_image_url(
+                        cached["image_url"], cover_url=cover_url
+                    )
+                    if cached_image:
+                        return cached_image
+                    # The URL may be this song's album artwork (or a stale
+                    # placeholder) even though it was valid for an earlier
+                    # track.  Do not reuse it as an author avatar.
+                else:
+                    continue
+            page_url = self._artist_page_url(candidate, region)
+            if not page_url:
+                self._artist_cache_put(key, found=False)
+                continue
+            status, html = await self._artist_get_text(page_url)
+            if status is None:
+                # Network/timeout failures are not a confirmed miss and are
+                # therefore intentionally not cached for two hours.
+                continue
+            if status in (403, 429):
+                return None
+            if status in (408, 425) or status >= 500:
+                # A transient server response is not proof the artist page
+                # has no portrait.
+                continue
+            if status >= 400 or not html:
+                self._artist_cache_put(key, found=False)
+                continue
+            image_url = self._artist_image_from_html(
+                html,
+                artist_id=artist_id or None,
+                artist_name=artist_name or None,
+                cover_url=cover_url,
+            )
+            if image_url:
+                self._artist_cache_put(
+                    key,
+                    found=True,
+                    image_url=image_url,
+                    artist_id=artist_id or None,
+                    artist_url=page_url,
+                )
+                if region != requested_region:
+                    self._artist_cache_put(
+                        self._artist_cache_key(cache_id, requested_region),
+                        found=True,
+                        image_url=image_url,
+                        artist_id=artist_id or None,
+                        artist_url=page_url,
+                    )
+                return image_url
+            self._artist_cache_put(
+                key,
+                found=False,
+                artist_id=artist_id or None,
+                artist_url=page_url,
+            )
+        return None
+
+    async def _get_artist_avatar(
+        self,
+        *,
+        track: Mapping[str, Any],
+        album_header: Mapping[str, Any],
+        fallback: Mapping[str, Any],
+        artist_name: str | None,
+        cover_url: str | None,
+        storefront: str | None,
+    ) -> str | None:
+        """Best-effort artist portrait lookup used by the lazy author avatar."""
+
+        try:
+            candidates = self._artist_candidates(
+                track, album_header, fallback, artist_name
+            )
+            if not candidates:
+                return None
+            primary_name = next(
+                iter(self._artist_name_parts(artist_name)), None
+            )
+            primary_key = self._normalize_artist_name(primary_name)
+            primary_candidates = (
+                [
+                    item
+                    for item in candidates
+                    if self._normalize_artist_name(item.get("name"))
+                    == primary_key
+                ]
+                if primary_key
+                else []
+            )
+            # Prefer the first candidate backed by an Apple artist ID/page.
+            # Display-only names remain a fallback for iTunes Search, but a
+            # name-only link (often a collaboration label) must not shadow a
+            # later, unambiguous artist identity.
+            candidate = next(
+                (
+                    item
+                    for item in (primary_candidates or candidates)
+                    if item.get("id") or item.get("url")
+                ),
+                (primary_candidates or candidates)[0],
+            )
+            if (
+                not candidate.get("id")
+                and not candidate.get("url")
+                and self._normalize_artist_name(candidate.get("name") or artist_name)
+                in {"", "未知艺术家", "unknown artist", "unknown"}
+            ):
+                return None
+            # The ordered candidate list comes from artistLinks/subtitleLinks;
+            # the first identifiable main artist wins for collaborations.
+            return await asyncio.wait_for(
+                self._lookup_artist_image(
+                    candidate,
+                    storefront=storefront,
+                    cover_url=cover_url,
+                ),
+                timeout=self._ARTIST_TOTAL_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (TimeoutError, ClientError, OSError, ValueError):
+            return None
+        except Exception:  # noqa: BLE001 - optional page enrichment is fail-open
+            # Page shape changes and malformed third-party responses must never
+            # prevent the normal song card/audio result from being rendered.
+            return None
+
     @staticmethod
     def _decode_server_data(html: str) -> Mapping[str, Any]:
         match = re.search(
@@ -995,13 +2034,34 @@ class AppleMusicParser(PlaylistParserBase):
                 )
                 album = recording.get("inAlbum")
                 album = album if isinstance(album, Mapping) else {}
+                raw_artists = recording.get("byArtist") or node.get("byArtist")
+                artist_objects: list[dict[str, str]] = []
+                artist_values = (
+                    raw_artists
+                    if isinstance(raw_artists, list)
+                    else [raw_artists]
+                    if raw_artists is not None
+                    else []
+                )
+                for artist_value in artist_values:
+                    if isinstance(artist_value, Mapping):
+                        artist_item: dict[str, str] = {}
+                        if artist_title := _first_text(artist_value, "name", "title"):
+                            artist_item["name"] = artist_title
+                        if artist_url := _first_text(artist_value, "url", "@id"):
+                            artist_item["url"] = artist_url
+                        if artist_item:
+                            artist_objects.append(artist_item)
+                    elif isinstance(artist_value, str) and artist_value.strip():
+                        artist_objects.append({"name": artist_value.strip()})
                 return {
                     "title": _first_text(recording, "name") or _first_text(node, "name"),
                     "artist": " / ".join(
                         _track_artist_names(
-                            {"artists": recording.get("byArtist") or node.get("byArtist")}
+                            {"artists": raw_artists}
                         )
                     ),
+                    "artists": artist_objects,
                     "album": _first_text(album, "name"),
                     "cover": _cover_url(
                         album.get("image") or recording.get("image") or node.get("image"),
@@ -1108,28 +2168,45 @@ class AppleMusicParser(PlaylistParserBase):
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
             # Apple's serialized track-list uses milliseconds, even for short songs.
             duration /= 1000
+        artist_name = (
+            _first_text(track, "artistName", "artists")
+            or self._first_link_title(track.get("subtitleLinks"))
+            or self._first_link_title(track.get("artistLinks"))
+            or self._first_link_title(album_header.get("subtitleLinks"))
+            or _first_text(fallback, "artist")
+            or "未知艺术家"
+        )
+        album_name = (
+            _first_text(track, "albumName", "album")
+            or self._first_link_title(track.get("tertiaryLinks"))
+            or self._first_link_title(track.get("albumLinks"))
+            or _first_text(album_header, "title")
+            or _first_text(fallback, "album")
+        )
+        cover_url = (
+            self._artwork_url(track.get("artwork"))
+            or self._artwork_url(album_header.get("artwork"))
+            or _first_text(fallback, "cover")
+        )
+
+        # Keep the optional artist lookup lazy.  The normal parser result and
+        # audio task are available immediately; the renderer starts this
+        # best-effort enrichment only while resolving the author avatar.
+        artist_avatar = None
+        if not metadata_only:
+            artist_avatar = lambda: self._get_artist_avatar(
+                track=track,
+                album_header=album_header,
+                fallback=fallback,
+                artist_name=artist_name,
+                cover_url=cover_url,
+                storefront=searched.group("storefront"),
+            )
         result = self._single_track_result(
             title=title,
-            artist_name=(
-                _first_text(track, "artistName", "artists")
-                or self._first_link_title(track.get("subtitleLinks"))
-                or self._first_link_title(track.get("artistLinks"))
-                or self._first_link_title(album_header.get("subtitleLinks"))
-                or _first_text(fallback, "artist")
-                or "未知艺术家"
-            ),
-            album_name=(
-                _first_text(track, "albumName", "album")
-                or self._first_link_title(track.get("tertiaryLinks"))
-                or self._first_link_title(track.get("albumLinks"))
-                or _first_text(album_header, "title")
-                or _first_text(fallback, "album")
-            ),
-            cover=(
-                self._artwork_url(track.get("artwork"))
-                or self._artwork_url(album_header.get("artwork"))
-                or _first_text(fallback, "cover")
-            ),
+            artist_name=artist_name,
+            album_name=album_name,
+            cover=cover_url,
             duration=duration or fallback.get("duration"),
             timestamp=(
                 _date_timestamp(track.get("releaseDate"))
@@ -1137,6 +2214,7 @@ class AppleMusicParser(PlaylistParserBase):
             ),
             url=url,
             identifier=track_id,
+            author_avatar=artist_avatar,
             download_cover=not metadata_only,
         )
         backend = getattr(self, "apple_music_backend", None)
