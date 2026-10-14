@@ -410,6 +410,29 @@ def test_private_file_uses_onebot_private_upload_action(sender_module):
     ]
 
 
+def test_onebot_file_upload_logs_resolved_quality(sender_module):
+    infos = []
+    sender_module.logger.info = infos.append
+
+    class _Bot:
+        async def call_action(self, _action, **_kwargs):
+            return {"status": "ok"}
+
+    event = _Event()
+    event.bot = _Bot()
+    asyncio.run(sender_module.MessageSender._send_audio_url_via_onebot(
+        event,
+        "http://astrbot:6185/api/file/one-shot-token",
+        message_type="file",
+        name="song.flac",
+        platform="qqmusic",
+        quality="lossless",
+    ))
+
+    assert any("quality=lossless" in message for message in infos)
+    assert all("one-shot-token" not in message for message in infos)
+
+
 def test_local_audio_url_logs_its_ttl(sender_module):
     import sys
 

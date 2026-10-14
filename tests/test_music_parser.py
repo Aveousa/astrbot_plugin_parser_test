@@ -588,6 +588,114 @@ def test_qq_vkey_audio_url_uses_cookie_and_expands_sip_prefix():
     assert payload["comm"]["g_tk"] == QQMusicParser._qq_g_tk("key")
 
 
+def test_qq_vkey_resolves_requested_quality_order_and_reports_actual_tier():
+    async def resolve():
+        requests = []
+
+        class _Response:
+            status = 200
+            url = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def text(self):
+                return json.dumps({
+                    "req_1": {
+                        "code": 0,
+                        "data": {
+                            "sip": ["https://dl.stream.qqmusic.qq.com/"],
+                            # The response order differs from the preference order.
+                            "midurlinfo": [
+                                {"filename": "M500media.mp3", "purl": "M500media.mp3?vkey=std"},
+                                {"filename": "F000media.flac", "purl": "F000media.flac?vkey=lossless"},
+                                {"filename": "M800media.mp3", "purl": "M800media.mp3?vkey=high"},
+                            ],
+                        },
+                    },
+                })
+
+        class _Session:
+            closed = False
+
+            def request(self, method, url, **kwargs):
+                requests.append((method, url, kwargs))
+                return _Response()
+
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.headers = {"User-Agent": "test"}
+        parser._session = _Session()
+        parser.cookiejar = SimpleNamespace(cookies_str="uin=12345; qqmusic_key=key")
+        source = await parser._resolve_qq_audio_source(
+            "song", media_mid="media",
+            quality_priority=("lossless", "high", "standard"),
+        )
+        return source, requests
+
+    source, requests = asyncio.run(resolve())
+
+    assert source == (
+        "https://dl.stream.qqmusic.qq.com/F000media.flac?vkey=lossless",
+        "lossless",
+    )
+    payload = json.loads(requests[0][2]["data"])
+    assert payload["req_1"]["param"]["filename"] == [
+        "F000media.flac", "M800media.mp3", "M500media.mp3",
+    ]
+
+
+def test_qq_track_uses_configured_file_quality_order_but_fixed_voice_order():
+    async def build(send_format):
+        parser = QQMusicParser.__new__(QQMusicParser)
+        parser.cfg = SimpleNamespace(parser=SimpleNamespace(qqmusic=SimpleNamespace(
+            use_proxy=False,
+            return_audio=True,
+            audio_send_format=send_format,
+            file_quality_priority=["standard", "lossless"],
+        )))
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser._fetch_song_details = lambda _song_ids: None
+        requests = []
+
+        async def fetch_song_details(_song_ids):
+            return [{
+                "mid": "song-mid",
+                "name": "Test song",
+                "singer": [{"name": "Test artist"}],
+                "interval": 180,
+                "file": {"media_mid": "media-mid"},
+            }]
+
+        async def resolve(song_mid, *, media_mid=None, quality_priority):
+            requests.append((song_mid, media_mid, quality_priority))
+            return (
+                "https://dl.stream.qqmusic.qq.com/M500media-mid.mp3?vkey=test",
+                "standard",
+            )
+
+        parser._fetch_song_details = fetch_song_details
+        parser._resolve_qq_audio_source = resolve
+        _, searched = QQMusicParser.search_url(
+            "https://i.y.qq.com/v8/playsong.html?songmid=song-mid"
+        )
+        result = await parser._handle_track(searched)
+        return requests, result
+
+    file_requests, file_result = asyncio.run(build("file"))
+    voice_requests, voice_result = asyncio.run(build("voice"))
+
+    assert file_requests[0][2] == ("standard", "lossless")
+    assert file_result.extra["audio_quality"] == "standard"
+    assert file_result.extra["audio_as_file"] is True
+    assert voice_requests[0][2] == ("high", "standard")
+    assert voice_result.extra["audio_quality"] == "standard"
+    assert voice_result.extra["audio_as_voice"] is True
+
+
 def test_qq_single_track_audio_switch_can_disable_audio_resolution():
     async def build():
         parser = QQMusicParser.__new__(QQMusicParser)

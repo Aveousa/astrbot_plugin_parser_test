@@ -24,6 +24,10 @@ import aiohttp
 
 from .cache import clear_cache_dir, create_parse_cache_dir, get_active_cache_dir, get_cache_size
 from .exception import DownloadException
+from .music_quality import (
+    is_valid_qq_file_quality_priority,
+    normalize_qq_file_quality_priority,
+)
 
 
 WRAPPER_VERSION = "0.0.2"
@@ -52,7 +56,7 @@ MANAGED_SETTINGS = frozenset({
 })
 MUSIC_SETTINGS = {
     "netease": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
-    "qqmusic": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "qqmusic": frozenset({"enable", "return_audio", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"}),
     "kugou": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
 }
 MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "show_playlist_cover", "show_playlist_url"})
@@ -460,14 +464,17 @@ class AppleMusicBackend:
                 if not known:
                     settings = {}
                 else:
-                    settings = {
-                        field: (
-                            "file" if field == "audio_send_format" and str(previous_settings.get(field, default.get(field, "voice") if default else "voice")).lower() == "file"
-                            else "voice" if field == "audio_send_format"
-                            else bool(previous_settings.get(field, default.get(field, True) if default else True))
-                        )
-                        for field in fields
-                    }
+                    settings = {}
+                    for field in fields:
+                        fallback = default.get(field) if default else None
+                        value = previous_settings.get(field, fallback)
+                        if field == "audio_send_format":
+                            value = "file" if str(value or "voice").lower() == "file" else "voice"
+                        elif field == "file_quality_priority":
+                            value = list(normalize_qq_file_quality_priority(value))
+                        elif field in MUSIC_BOOLEAN_SETTINGS | {"enable"}:
+                            value = True if value is None else bool(value)
+                        settings[field] = value
                 entries[key] = {
                     "configured": False, "known": known,
                     "enabled": False,
@@ -557,6 +564,8 @@ class AppleMusicBackend:
                 value = getattr(item, field, None)
                 if field == "audio_send_format":
                     value = "file" if str(value or "voice").strip().lower() == "file" else "voice"
+                elif field == "file_quality_priority":
+                    value = list(normalize_qq_file_quality_priority(value))
                 elif field in MUSIC_BOOLEAN_SETTINGS:
                     value = True if value is None else bool(value)
                 settings[field] = value
@@ -834,11 +843,13 @@ class AppleMusicBackend:
                     raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}开关设置无效")
                 if field == "audio_send_format" and value not in {"voice", "file"}:
                     raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}音频发送模式无效")
+                if field == "file_quality_priority" and not is_valid_qq_file_quality_priority(value):
+                    raise AppleMusicBackendError("QQ 音乐文件音质优先级无效")
             item = self._parser_item(parser_key)
             if item is None:
                 raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
             for field, value in settings.items():
-                updates.append((item, field, value))
+                updates.append((item, field, list(value) if field == "file_quality_priority" else value))
 
         async with self.lock:
             self.check_owner(owner)

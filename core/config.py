@@ -174,6 +174,7 @@ class ParserItem(ConfigNode):
     backend_enabled: bool | None
     audio_send_format: str | None
     file_codec_priority: list | None
+    file_quality_priority: list | None
     wrapper_url: str | None
     wrapper_decrypt_host: str | None
     wrapper_decrypt_port: int | None
@@ -436,7 +437,7 @@ class PluginConfig(ConfigNode):
         history = self._data.get("__parser_management_history_v1")
         history = dict(history) if isinstance(history, Mapping) else {}
         history_fields = {
-            "qqmusic": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "qqmusic": ("enable", "return_audio", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "applemusic": ("enable", "backend_enabled", "return_audio", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),

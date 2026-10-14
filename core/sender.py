@@ -463,6 +463,7 @@ class MessageSender:
         name: str | None = None,
         platform: str = "music",
         file_size: int | None = None,
+        quality: str | None = None,
     ) -> bool:
         """让 OneBot 端按 URL 拉取音频，避免 AstrBot 本地序列化大文件。
 
@@ -484,6 +485,12 @@ class MessageSender:
         if message_type == "file":
             if not name:
                 raise RuntimeError("OneBot 文件上传缺少文件名")
+            quality_label = (
+                f" quality={quality}"
+                if isinstance(quality, str)
+                and re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", quality)
+                else ""
+            )
             if group_id:
                 if not group_id.isdigit():
                     raise RuntimeError("无效的群号，无法上传 OneBot 群文件")
@@ -510,7 +517,7 @@ class MessageSender:
 
             _log_info(
                 f"开始 OneBot 音乐文件上传：platform={platform} target={target} "
-                f"action={action} name={name} size={_size_label(file_size)}"
+                f"action={action} name={name} size={_size_label(file_size)}{quality_label}"
             )
             try:
                 response = await call_action(action, **action_args)
@@ -523,13 +530,13 @@ class MessageSender:
             except Exception as exc:
                 _log_info(
                     f"OneBot 音乐文件上传失败：platform={platform} target={target} "
-                    f"action={action} name={name} size={_size_label(file_size)} "
-                    f"error={_safe_log_error(exc)}"
+                    f"action={action} name={name} size={_size_label(file_size)}"
+                    f"{quality_label} error={_safe_log_error(exc)}"
                 )
                 raise
             _log_info(
                 f"OneBot 音乐文件上传成功：platform={platform} target={target} "
-                f"action={action} name={name} size={_size_label(file_size)}"
+                f"action={action} name={name} size={_size_label(file_size)}{quality_label}"
             )
             return True
 
@@ -869,6 +876,7 @@ class MessageSender:
                         name=direct_audio_name,
                         platform=result.platform.name.lower(),
                         file_size=file_size,
+                        quality=result.extra.get("audio_quality"),
                     )
                     or sent
                 )

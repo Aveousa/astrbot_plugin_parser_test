@@ -39,6 +39,7 @@
     "use_proxy": false,
     "return_audio": true,
     "audio_send_format": "voice",
+    "file_quality_priority": ["lossless", "high", "standard"],
     "parse_lyrics": false,
     "cookies": "",
     "show_playlist_cover": true,

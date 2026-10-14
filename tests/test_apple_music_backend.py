@@ -110,6 +110,7 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
             enable=True, cookies="", return_audio=True,
             audio_send_format="voice", show_playlist_cover=True,
             show_playlist_url=True,
+            file_quality_priority=["lossless", "high", "standard"],
         )
         cfg.parser.kugou = SimpleNamespace(
             enable=False, cookies="", return_audio=True,
@@ -126,6 +127,7 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
                     "enable": False,
                     "return_audio": False,
                     "audio_send_format": "file",
+                    "file_quality_priority": ["high", "lossless", "standard"],
                     "show_playlist_cover": False,
                     "show_playlist_url": False,
                 }},
@@ -134,8 +136,39 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
             assert entry["enabled"] is False
             assert entry["settings"]["audio_send_format"] == "file"
             assert entry["settings"]["return_audio"] is False
+            assert entry["settings"]["file_quality_priority"] == [
+                "high", "lossless", "standard",
+            ]
+            assert cfg.parser.qqmusic.file_quality_priority == [
+                "high", "lossless", "standard",
+            ]
             assert saves == [True]
             assert "private-cookie" not in json.dumps(result)
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("priority", [
+    [], ["high", "high"], ["hires"], ["lossless", "high", "standard", "lossless"],
+])
+def test_music_settings_reject_invalid_qq_file_quality_priority(tmp_path, priority):
+    async def run():
+        cfg = config(tmp_path)
+        cfg.parser.qqmusic = SimpleNamespace(
+            enable=True, cookies="", return_audio=True,
+            audio_send_format="file", show_playlist_cover=True,
+            show_playlist_url=True,
+            file_quality_priority=["lossless", "high", "standard"],
+        )
+        cfg.save_config = lambda: None
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        try:
+            with pytest.raises(AppleMusicBackendError, match="音质优先级无效"):
+                await backend.update_music_parser_settings(
+                    "admin", {"qqmusic": {"file_quality_priority": priority}}
+                )
         finally:
             await backend.close()
 

@@ -25,6 +25,11 @@ from aiohttp import ClientError
 from ..cookie import CookieJar
 from ..data import AudioContent, ImageContent, ParseResult, Platform
 from ..exception import DownloadException, ParseException, RedirectException
+from ..music_quality import (
+    QQ_QUALITY_FILENAMES,
+    QQ_VOICE_QUALITY_PRIORITY,
+    normalize_qq_file_quality_priority,
+)
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
 from .qqmusic_login import QQMusicLogin
@@ -1391,21 +1396,26 @@ class QQMusicParser(PlaylistParserBase):
             result += (result << 5) + ord(char)
         return result & 2_147_483_647
 
-    async def _resolve_qq_audio_url(
+    async def _resolve_qq_audio_source(
         self,
         song_mid: str,
         *,
         media_mid: str | None = None,
-    ) -> str | None:
-        """Request a signed QQ Music playback URL through the official vkey API."""
+        quality_priority: tuple[str, ...] = QQ_VOICE_QUALITY_PRIORITY,
+    ) -> tuple[str, str] | None:
+        """Resolve the first available URL in an ordered QQ quality chain."""
 
         cookie_header = self._qq_cookie_header(self._QQ_VKEY_URL)
         cookies = self._qq_cookie_values()
         uin = cookies.get("uin") or cookies.get("ptui_loginuin") or "0"
         filename_mid = media_mid or song_mid
+        qualities = tuple(
+            quality for quality in quality_priority if quality in QQ_QUALITY_FILENAMES
+        ) or QQ_VOICE_QUALITY_PRIORITY
         filenames = [
-            f"M800{filename_mid}.mp3",
-            f"M500{filename_mid}.mp3",
+            f"{QQ_QUALITY_FILENAMES[quality][0]}{filename_mid}"
+            f"{QQ_QUALITY_FILENAMES[quality][1]}"
+            for quality in qualities
         ]
         params: dict[str, object] = {
             "guid": str(int(time.time() * 1000) % 10_000_000_000),
@@ -1458,7 +1468,19 @@ class QQMusicParser(PlaylistParserBase):
         prefixes = prefixes if isinstance(prefixes, list) else []
         rows = data.get("midurlinfo")
         rows = rows if isinstance(rows, list) else []
-        for row in rows:
+        rows_by_filename = {
+            _first_text(row, "filename"): row
+            for row in rows
+            if isinstance(row, Mapping) and _first_text(row, "filename")
+        }
+        for index, (quality, filename) in enumerate(zip(qualities, filenames)):
+            row = rows_by_filename.get(filename)
+            if row is None and index < len(rows):
+                candidate = rows[index]
+                # Some QQ responses omit filename on individual rows; in that
+                # shape the API preserves the request order.
+                if isinstance(candidate, Mapping) and not _first_text(candidate, "filename"):
+                    row = candidate
             if not isinstance(row, Mapping):
                 continue
             purl = _first_text(row, "purl")
@@ -1466,12 +1488,27 @@ class QQMusicParser(PlaylistParserBase):
             if not purl or row_mid not in (None, song_mid):
                 continue
             if purl.startswith(("http://", "https://")):
-                return purl
+                return purl, quality
             for prefix in prefixes:
                 if isinstance(prefix, str) and prefix.strip():
-                    return urljoin(prefix, purl)
-            return purl
+                    return urljoin(prefix, purl), quality
+            return purl, quality
         return None
+
+    async def _resolve_qq_audio_url(
+        self,
+        song_mid: str,
+        *,
+        media_mid: str | None = None,
+    ) -> str | None:
+        """Backward-compatible voice resolver using the fixed quality chain."""
+
+        source = await self._resolve_qq_audio_source(
+            song_mid,
+            media_mid=media_mid,
+            quality_priority=QQ_VOICE_QUALITY_PRIORITY,
+        )
+        return source[0] if source else None
 
     async def check_cookie(self) -> bool | None:
         """Check QQ account authentication without treating transport errors as expiry.
@@ -1635,18 +1672,26 @@ class QQMusicParser(PlaylistParserBase):
         artist_names = _track_artist_names(track)
         song_mid = _first_text(track, "mid") or requested_id
         audio_url = None
+        resolved_quality = None
         if self._return_audio_enabled():
             media_mid = None
             file_info = track.get("file")
             if isinstance(file_info, Mapping):
                 media_mid = _first_text(file_info, "media_mid")
-            if media_mid:
-                audio_url = await self._resolve_qq_audio_url(
-                    song_mid,
-                    media_mid=media_mid,
+            if self._audio_send_format() == "file":
+                parser_config = self._music_parser_config()
+                quality_priority = normalize_qq_file_quality_priority(
+                    getattr(parser_config, "file_quality_priority", None)
                 )
             else:
-                audio_url = await self._resolve_qq_audio_url(song_mid)
+                quality_priority = QQ_VOICE_QUALITY_PRIORITY
+            source = await self._resolve_qq_audio_source(
+                song_mid,
+                media_mid=media_mid,
+                quality_priority=quality_priority,
+            )
+            if source:
+                audio_url, resolved_quality = source
             if audio_url is None and isinstance(file_info, Mapping):
                 audio_url = _first_text(file_info, "url")
         result = self._single_track_result(
@@ -1662,6 +1707,8 @@ class QQMusicParser(PlaylistParserBase):
         )
         if audio_url:
             self._set_audio_delivery(result, audio_url)
+            if resolved_quality:
+                result.extra["audio_quality"] = resolved_quality
         if self._lyrics_enabled():
             lyrics = await self._fetch_qq_lyrics(
                 song_mid,

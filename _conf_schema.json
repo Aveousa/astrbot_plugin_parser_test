@@ -240,6 +240,14 @@
             "options": ["voice", "file"],
             "default": "voice"
           },
+          "file_quality_priority": {
+            "description": "QQ 音乐文件音质优先级",
+            "hint": "仅文件模式使用；按顺序尝试 FLAC 无损、320 kbps、128 kbps。Hi-Res 暂无独立接口档位。",
+            "type": "list",
+            "options": ["lossless", "high", "standard"],
+            "labels": ["FLAC 无损", "高音质 320 kbps", "标准音质 128 kbps"],
+            "default": ["lossless", "high", "standard"]
+          },
           "parse_lyrics": {
             "description": "解析单曲时同时解析歌词",
             "hint": "开启后，解析 QQ 音乐单曲链接时会尝试获取并发送歌词卡片。",

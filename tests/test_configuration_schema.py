@@ -210,6 +210,25 @@ def test_apple_music_backend_is_optional_and_not_a_core_dependency():
     assert (ROOT / "pages" / "apple_music" / "index.html").is_file()
 
 
+def test_qq_music_exposes_file_quality_priority_with_verified_tiers():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+    qq = schema["parsers_template"]["templates"]["qqmusic"]["items"]
+    template = next(item for item in defaults if item["__template_key"] == "qqmusic")
+
+    assert qq["file_quality_priority"]["type"] == "list"
+    assert qq["file_quality_priority"]["options"] == [
+        "lossless", "high", "standard",
+    ]
+    assert qq["file_quality_priority"]["default"] == [
+        "lossless", "high", "standard",
+    ]
+    assert template["file_quality_priority"] == [
+        "lossless", "high", "standard",
+    ]
+    assert "Hi-Res 暂无独立" in qq["file_quality_priority"]["hint"]
+
+
 def test_douyin_exposes_dedicated_worker_proxy_settings():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -456,4 +475,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     qqmusic = raw["parsers_template"][4]
     assert qqmusic["cookies"] == "qq-music-cookie"
     assert qqmusic["return_audio"] is False
+    assert qqmusic["file_quality_priority"] == [
+        "lossless", "high", "standard",
+    ]
     assert raw.save_calls == 1

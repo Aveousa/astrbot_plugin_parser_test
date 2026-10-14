@@ -31,6 +31,10 @@
     ["aac-he-downmix", "HE-AAC 下混"], ["atmos", "Dolby Atmos"],
     ["ac3", "Dolby Digital"],
   ];
+  const qqQualityOptions = [
+    ["lossless", "FLAC 无损"], ["high", "高音质 · 320 kbps"],
+    ["standard", "标准音质 · 128 kbps"],
+  ];
 
   function notice(message, error = false) {
     $("notice").querySelector(".notice-text").textContent = message;
@@ -187,6 +191,40 @@
     formatLabel.append(format);
     fieldset.append(formatLabel);
 
+    if (key === "qqmusic") {
+      const qualityEditor = document.createElement("div");
+      qualityEditor.className = "music-quality-editor";
+      const qualityTitle = document.createElement("div");
+      qualityTitle.className = "codec-title";
+      const title = document.createElement("span");
+      const strong = document.createElement("strong");
+      strong.textContent = "文件音质优先级";
+      const help = document.createElement("small");
+      help.textContent = "仅文件模式使用；语音固定高音质优先并回退标准。QQ 接口暂无独立 Hi-Res 档。";
+      title.append(strong, help);
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "add-button";
+      add.dataset.fileQualityAdd = key;
+      add.textContent = "＋ 添加";
+      const list = document.createElement("div");
+      list.className = "codec-list";
+      list.dataset.fileQualityPriority = key;
+      const qualities = pending?.file_quality_priority ?? settings.file_quality_priority
+        ?? ["lossless", "high", "standard"];
+      list.replaceChildren(...qualities.map((quality) => musicQualityRow(key, quality)));
+      add.addEventListener("click", () => {
+        const selected = readMusicSettings()[key]?.file_quality_priority || [];
+        const next = qqQualityOptions.find(([value]) => !selected.includes(value));
+        if (next) list.append(musicQualityRow(key, next[0]));
+        updateMusicQualityControls(key);
+        scheduleMusicSave();
+      });
+      qualityTitle.append(title, add);
+      qualityEditor.append(qualityTitle, list);
+      fieldset.append(qualityEditor);
+    }
+
     const editor = document.createElement("div");
     editor.className = "music-cookie-editor";
     const cookieLabel = document.createElement("label");
@@ -236,6 +274,7 @@
     fieldset.append(editor);
     fieldset.addEventListener("change", scheduleMusicSave);
     card.append(fieldset);
+    if (key === "qqmusic") updateMusicQualityControls(key);
     return card;
   }
 
@@ -267,20 +306,99 @@
       result[key] ??= {};
       result[key][control.dataset.musicSetting] = control.type === "checkbox" ? control.checked : control.value;
     });
+    document.querySelectorAll("[data-file-quality-priority]").forEach((list) => {
+      const key = list.dataset.fileQualityPriority;
+      result[key] ??= {};
+      result[key].file_quality_priority = [...list.querySelectorAll("select")]
+        .map((select) => select.value);
+    });
     return result;
+  }
+
+  function musicQualityRow(parserKey, value) {
+    const row = document.createElement("div");
+    row.className = "codec-row";
+    const handle = document.createElement("span");
+    handle.className = "codec-order";
+    handle.setAttribute("aria-hidden", "true");
+    handle.textContent = "≡";
+    const select = document.createElement("select");
+    select.setAttribute("aria-label", "QQ 音乐文件音质");
+    qqQualityOptions.forEach(([optionValue, label]) => {
+      const option = document.createElement("option");
+      option.value = optionValue;
+      option.textContent = label;
+      option.selected = optionValue === value;
+      select.append(option);
+    });
+    const controls = document.createElement("span");
+    controls.className = "codec-controls";
+    [["↑", "上移", -1], ["↓", "下移", 1], ["×", "移除", 0]].forEach(([text, label, direction]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = text;
+      button.setAttribute("aria-label", label);
+      button.addEventListener("click", () => {
+        const list = row.parentElement;
+        if (!direction) {
+          if (list.children.length > 1) row.remove();
+        } else {
+          const sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+          if (sibling) list.insertBefore(direction < 0 ? row : sibling, direction < 0 ? sibling : row);
+        }
+        updateMusicQualityControls(parserKey);
+        scheduleMusicSave();
+      });
+      controls.append(button);
+    });
+    row.append(handle, select, controls);
+    select.addEventListener("change", () => {
+      updateMusicQualityControls(parserKey);
+      scheduleMusicSave();
+    });
+    return row;
+  }
+
+  function updateMusicQualityControls(parserKey) {
+    const list = document.querySelector(`[data-file-quality-priority='${parserKey}']`);
+    if (!list) return;
+    const rows = [...list.querySelectorAll(".codec-row")];
+    rows.forEach((row, index) => {
+      row.querySelector("button[aria-label='上移']").disabled = index === 0;
+      row.querySelector("button[aria-label='下移']").disabled = index === rows.length - 1;
+      row.querySelector("button[aria-label='移除']").disabled = rows.length === 1;
+    });
+    const values = rows.map((row) => row.querySelector("select").value);
+    const add = document.querySelector(`[data-file-quality-add='${parserKey}']`);
+    if (add) add.disabled = values.length >= qqQualityOptions.length;
+  }
+
+  function invalidMusicQualityPriority(settings) {
+    return Object.values(settings).some((parserSettings) => {
+      const values = parserSettings?.file_quality_priority;
+      return Array.isArray(values)
+        && (!values.length || values.length !== new Set(values).size);
+    });
   }
 
   function updateMusicSettingsState() {
     const state = $("music-settings-state");
     if (!state) return;
-    state.textContent = musicSaveFailed ? "自动保存失败；修改选项可重试。"
+    const invalid = invalidMusicQualityPriority(readMusicSettings());
+    state.textContent = invalid ? "同一音质不能重复添加。"
+      : musicSaveFailed ? "自动保存失败；修改选项可重试。"
       : musicDirty ? "正在保存音乐解析设置…" : "音乐解析设置已同步到磁盘。";
-    state.dataset.error = String(musicSaveFailed);
+    state.dataset.error = String(invalid || musicSaveFailed);
   }
 
   function scheduleMusicSave() {
     clearTimeout(musicTimer);
     const settings = readMusicSettings();
+    if (invalidMusicQualityPriority(settings)) {
+      musicDirty = false;
+      updateMusicSettingsState();
+      return;
+    }
     if (!nonce || !savedMusic || JSON.stringify(settings) === savedMusic) return;
     musicDirty = true;
     updateMusicSettingsState();
@@ -291,6 +409,11 @@
     clearTimeout(musicTimer);
     if (busy || !nonce || !savedMusic) return;
     const settings = readMusicSettings();
+    if (invalidMusicQualityPriority(settings)) {
+      musicDirty = false;
+      updateMusicSettingsState();
+      return;
+    }
     if (JSON.stringify(settings) === savedMusic) {
       musicDirty = false;
       updateMusicSettingsState();

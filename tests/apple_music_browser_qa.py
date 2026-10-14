@@ -32,7 +32,7 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
   file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true},
  music_parsers:{
   netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
-  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
+  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',file_quality_priority:['lossless','high','standard'],show_playlist_cover:true,show_playlist_url:true}},
   kugou:{key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,available:false,cookie_configured:false,cookie_status:'解析器未启用',settings:{enable:false,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}}},
  parsers:[
   {key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,cookie_configured:true,cookie_status:'Cookie 已配置'},
@@ -183,6 +183,9 @@ def run(output: Path):
             qq_music.locator("[data-music-setting='audio_send_format']").select_option("file")
             frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
             assert page.evaluate("qaState.music_parsers.qqmusic.settings.audio_send_format === 'file'")
+            qq_music.locator(".music-quality-editor .codec-row").first.locator("button[aria-label='下移']").click()
+            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
+            assert page.evaluate("qaState.music_parsers.qqmusic.settings.file_quality_priority.join(',') === 'high,lossless,standard'")
             qq_music.locator("[data-music-cookie]").fill("uin=12345; qqmusic_key=example-key")
             qq_music.locator(".music-cookie-save").click()
             page.wait_for_function("window.qaState.music_parsers.qqmusic.cookie_configured === true")
