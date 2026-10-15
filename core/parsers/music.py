@@ -1149,9 +1149,10 @@ class AppleMusicParser(PlaylistParserBase):
             return []
         result: list[dict[str, str]] = []
         if isinstance(value, Mapping):
-            if candidate := cls._artist_candidate_from_mapping(
+            candidate = cls._artist_candidate_from_mapping(
                 value, allow_generic_id=allow_generic_id
-            ):
+            )
+            if candidate:
                 result.append(candidate)
             for key, child in value.items():
                 key_text = str(key).lower()
@@ -1164,16 +1165,40 @@ class AppleMusicParser(PlaylistParserBase):
                     "artistdata",
                     "contentdescriptor",
                     "identifiers",
+                    # Apple wraps subtitle/artist links in
+                    # ``segue.destination.contentDescriptor``.  The old
+                    # walker stopped at ``segue``, leaving the first artist
+                    # as name-only while a later JSON-LD artist supplied the
+                    # first usable ID.
+                    "segue",
+                    "destination",
                 } or "artist" in key_text:
-                    result.extend(
-                        cls._collect_artist_candidates(
-                            child,
-                            allow_generic_id=allow_generic_id
-                            or "link" in key_text
-                            or key_text in {"artist", "artists", "byartist"},
-                            _depth=_depth + 1,
-                        )
+                    child_candidates = cls._collect_artist_candidates(
+                        child,
+                        allow_generic_id=allow_generic_id
+                        or "link" in key_text
+                        or key_text
+                        in {
+                            "artist",
+                            "artists",
+                            "byartist",
+                            "segue",
+                            "destination",
+                        },
+                        _depth=_depth + 1,
                     )
+                    # A subtitle link keeps the visible name on the outer
+                    # mapping and the Adam ID/URL in its nested descriptor.
+                    # Carry that name onto the nested identity so callers can
+                    # match the first displayed artist without a name search.
+                    if candidate and candidate.get("name"):
+                        for child_candidate in child_candidates:
+                            if not child_candidate.get("name") and (
+                                child_candidate.get("id")
+                                or child_candidate.get("url")
+                            ):
+                                child_candidate["name"] = candidate["name"]
+                    result.extend(child_candidates)
         elif isinstance(value, list):
             for child in value:
                 result.extend(
@@ -1232,6 +1257,21 @@ class AppleMusicParser(PlaylistParserBase):
             url = candidate.get("url", "").strip()
             if not (name or artist_id or url):
                 continue
+
+            # The nested Apple descriptor is visited both as a whole and via
+            # its ``identifiers`` child.  Merge those representations by Adam
+            # ID so a later URL is not lost behind an earlier ID-only entry.
+            if artist_id:
+                existing = next(
+                    (item for item in unique if item.get("id") == artist_id),
+                    None,
+                )
+                if existing is not None:
+                    if name and not existing.get("name"):
+                        existing["name"] = name
+                    if url and not existing.get("url"):
+                        existing["url"] = url
+                    continue
             key = (artist_id or cls._normalize_artist_name(name), url)
             if key in seen:
                 continue
@@ -1240,6 +1280,46 @@ class AppleMusicParser(PlaylistParserBase):
                 candidate["name"] = name
             unique.append(candidate)
         return unique
+
+    @classmethod
+    def _primary_artist_name(
+        cls,
+        artist_name: object,
+        candidates: list[Mapping[str, str]],
+    ) -> str | None:
+        """Return the displayed collaboration's first artist when known.
+
+        Apple commonly renders collaborations as ``A & B`` while exposing
+        ``A`` and ``B`` as separate subtitle links.  Splitting every ampersand
+        would break legitimate names such as ``Earth, Wind & Fire``.  Only use
+        a punctuation split when the first piece is corroborated by an
+        extracted artist candidate; otherwise retain the complete display
+        name for an exact-name lookup.
+        """
+
+        parts = cls._artist_name_parts(artist_name)
+        if not parts:
+            return None
+        primary = parts[0]
+        if len(parts) != 1 or not isinstance(primary, str):
+            return primary
+
+        for piece in re.split(
+            r"\s*(?:&|＆|・|,|，)\s*", primary
+        ):
+            piece = piece.strip()
+            if not piece or cls._normalize_artist_name(piece) == cls._normalize_artist_name(
+                primary
+            ):
+                continue
+            piece_key = cls._normalize_artist_name(piece)
+            if any(
+                piece_key
+                and cls._normalize_artist_name(item.get("name")) == piece_key
+                for item in candidates
+            ):
+                return piece
+        return primary
 
     @classmethod
     def _artist_cache_key(cls, artist_id: str, region: str) -> str:
@@ -1913,7 +1993,7 @@ class AppleMusicParser(PlaylistParserBase):
             # that case, since a name search may be ambiguous. This still
             # prevents a later guest artist's ID from winning when the primary
             # artist has only a name.
-            primary_name = next(iter(self._artist_name_parts(artist_name)), None)
+            primary_name = self._primary_artist_name(artist_name, candidates)
             primary_key = self._normalize_artist_name(primary_name)
             primary_candidates = (
                 [

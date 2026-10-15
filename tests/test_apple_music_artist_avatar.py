@@ -227,6 +227,93 @@ def test_multi_artist_prefers_first_link_with_id():
     assert candidates[0]["name"] == "Primary"
 
 
+def test_nested_subtitle_links_keep_artist_name_with_apple_id():
+    candidates = AppleMusicParser._artist_candidates(
+        {},
+        {
+            "subtitleLinks": [
+                {
+                    "title": "Primary",
+                    "segue": {
+                        "destination": {
+                            "contentDescriptor": {
+                                "kind": "artist",
+                                "identifiers": {"storeAdamID": "10"},
+                                "url": "https://music.apple.com/us/artist/p/10",
+                            }
+                        }
+                    },
+                },
+                {
+                    "title": "Guest",
+                    "segue": {
+                        "destination": {
+                            "contentDescriptor": {
+                                "kind": "artist",
+                                "identifiers": {"storeAdamID": "11"},
+                                "url": "https://music.apple.com/us/artist/g/11",
+                            }
+                        }
+                    },
+                },
+            ]
+        },
+        {},
+        "Primary & Guest",
+    )
+
+    assert next(
+        item for item in candidates if item.get("name") == "Primary" and item.get("id")
+    ) == {
+        "name": "Primary",
+        "id": "10",
+        "url": "https://music.apple.com/us/artist/p/10",
+    }
+
+
+def test_multi_artist_ampersand_uses_first_artist_avatar(tmp_path):
+    def link(title, slug, artist_id):
+        return {
+            "title": title,
+            "segue": {
+                "destination": {
+                    "contentDescriptor": {
+                        "kind": "artist",
+                        "identifiers": {"storeAdamID": artist_id},
+                        "url": f"https://music.apple.com/us/artist/{slug}/{artist_id}",
+                    }
+                }
+            },
+        }
+
+    def resolver(url):
+        if "/artist/primary/10" in url:
+            return 200, _artist_html(
+                "Primary",
+                image="https://cdn.example/primary.jpg",
+                artist_id="10",
+            )
+        raise AssertionError(f"guest or combined artist was selected: {url}")
+
+    async def run():
+        parser = _parser(tmp_path, resolver)
+        return await parser._get_artist_avatar(
+            track={"artistName": "Primary & Guest"},
+            album_header={
+                "subtitleLinks": [
+                    link("Primary", "primary", "10"),
+                    link("Guest", "guest", "11"),
+                ]
+            },
+            fallback={},
+            artist_name="Primary & Guest",
+            cover_url=None,
+            storefront="us",
+        )
+
+    assert asyncio.run(run()) == "https://cdn.example/primary.jpg"
+
+
 def test_multi_artist_avatar_uses_first_artist_before_later_id(tmp_path):
     """A guest link must not win merely because it has the first usable ID."""
 
