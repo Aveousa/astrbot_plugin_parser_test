@@ -169,6 +169,11 @@ class Renderer:
             "accent_deep": "#0875b7",
             "accent_soft": "#edf8ff",
         },
+        "applemusic": {
+            "accent_color": "#fa2d48",
+            "accent_deep": "#c41e3a",
+            "accent_soft": "#fff1f4",
+        },
     }
     _LIVE_PHOTO_ICON_NAME: ClassVar[str] = "livep.png"
     _LIVE_STREAM_ICON_NAME: ClassVar[str] = "live.png"

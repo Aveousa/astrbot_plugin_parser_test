@@ -87,6 +87,7 @@
     "use_proxy": false,
     "backend_enabled": false,
     "return_audio": false,
+    "parse_lyrics": false,
     "audio_send_format": "file",
     "file_codec_priority": ["alac", "aac-web"],
     "wrapper_url": "http://127.0.0.1:80",

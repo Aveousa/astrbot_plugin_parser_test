@@ -419,6 +419,11 @@
             "hint": "须有有效订阅、已登录 wrapper 和独立 gamdl 环境。默认关闭；先在管理页验证一首歌曲。歌单仍只返回卡片。",
             "type": "bool", "default": false
           },
+          "parse_lyrics": {
+            "description": "解析单曲时同时解析歌词",
+            "hint": "开启后按歌曲名、歌手、专辑和时长匹配 LRCLIB，获取到歌词时发送现有歌词卡片；匹配失败不影响歌曲卡片。",
+            "type": "bool", "default": false
+          },
           "audio_send_format": {
             "description": "Apple Music 音频发送格式",
             "hint": "选择“语音”时使用 AAC Web 并让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频；选择“文件”时优先下载 ALAC，不可用时自动回退 AAC Web。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",

@@ -916,6 +916,12 @@ class KuwoMusicParser(PlaylistParserBase):
 
 class AppleMusicParser(PlaylistParserBase):
     platform = Platform(name="applemusic", display_name="Apple Music")
+    # Apple exposes a ``hasLyrics`` flag in the public catalog response, but
+    # the actual lyric body is served through a MusicKit endpoint that needs a
+    # short-lived Apple token/subscription.  Keep lyric lookup optional and
+    # use LRCLIB's metadata-matched endpoint so the normal Apple card never
+    # depends on that private API.
+    _LYRICS_API_URL = "https://lrclib.net/api/get"
 
     # Artist metadata is deliberately separate from the short-lived media
     # files created for one parse.  The JSON file lives in the configured cache
@@ -2118,6 +2124,86 @@ class AppleMusicParser(PlaylistParserBase):
             return None
         return title or None
 
+    def _lyrics_enabled(self) -> bool:
+        parser_config = self._music_parser_config()
+        return bool(getattr(parser_config, "parse_lyrics", False))
+
+    async def _fetch_apple_lyrics(
+        self,
+        title: str,
+        artist_name: str | None = None,
+        album_name: str | None = None,
+        duration: object = None,
+    ) -> str | None:
+        """Fetch LRC/plain lyrics matched to Apple Music metadata.
+
+        Apple Music's public song page only exposes whether lyrics exist.  The
+        private MusicKit lyrics endpoint requires an Apple-issued token, so a
+        best-effort LRCLIB lookup is used when the optional parser setting is
+        enabled.  Any lookup failure is intentionally swallowed: lyrics are an
+        enrichment and must never make an otherwise valid Apple card fail.
+        """
+
+        title = str(title or "").strip()
+        if not title:
+            return None
+
+        # LRCLIB's ``get`` endpoint is exact for the complete artist string,
+        # while Apple sometimes renders collaborations as ``A / B``.  Try the
+        # full value first and then a few conservative primary-artist variants.
+        artist_candidates: list[str] = []
+        if artist_name and str(artist_name).strip():
+            raw_artist = str(artist_name).strip()
+            artist_candidates.append(raw_artist)
+            for part in re.split(
+                r"\s+(?:feat\.?|ft\.?|featuring|with)\s+|\s*[/\uFF0F|\uFF5C\u3001]\s*",
+                raw_artist,
+                flags=re.IGNORECASE,
+            ):
+                part = part.strip()
+                if part and part not in artist_candidates:
+                    artist_candidates.append(part)
+        else:
+            artist_candidates.append("")
+
+        duration_seconds = _duration_seconds(duration)
+        for artist in artist_candidates[:3]:
+            params: dict[str, str] = {"track_name": title}
+            if artist:
+                params["artist_name"] = artist
+            if album_name and str(album_name).strip():
+                params["album_name"] = str(album_name).strip()
+            if duration_seconds > 0:
+                params["duration"] = str(round(duration_seconds))
+            try:
+                body = await self._json_request(
+                    f"{self._LYRICS_API_URL}?{urlencode(params)}",
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "AstrBot Apple Music lyrics lookup",
+                    },
+                )
+            except (
+                ParseException,
+                ClientError,
+                TimeoutError,
+                OSError,
+                ValueError,
+                UnicodeError,
+                RuntimeError,
+            ):
+                continue
+            if not isinstance(body, Mapping):
+                continue
+            # Prefer time-synchronised lyrics so the existing renderer can
+            # preserve timestamps; fall back to plain lyrics for songs without
+            # an LRC version.
+            for key in ("syncedLyrics", "plainLyrics"):
+                value = body.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
     async def _handle_track(self, searched, *, metadata_only=False):
         track_id = searched.group("song_id") or searched.group("track_id")
         url = "https://" + searched.group(0)
@@ -2236,6 +2322,26 @@ class AppleMusicParser(PlaylistParserBase):
             author_avatar=artist_avatar,
             download_cover=not metadata_only,
         )
+        if not metadata_only and self._lyrics_enabled():
+            lyrics = await self._fetch_apple_lyrics(
+                title,
+                artist_name,
+                album_name,
+                duration or fallback.get("duration"),
+            )
+            if lyrics:
+                result.extra["lyrics"] = {
+                    "text": lyrics,
+                    "title": title,
+                    "artists": artist_name,
+                    "album": album_name,
+                    "duration_seconds": _duration_seconds(
+                        duration or fallback.get("duration")
+                    ),
+                    "release_text": _first_text(track, "releaseDate")
+                    or _first_text(fallback, "release_date"),
+                    "source_label": "歌词来源：LRCLIB（Apple Music 元数据匹配）",
+                }
         backend = getattr(self, "apple_music_backend", None)
         parser_config = self._music_parser_config()
         if (

@@ -668,7 +668,7 @@ class MessageSender:
         if result.extra.get("music_type") != "track":
             return
         platform_key = result.platform.name
-        if platform_key not in {"netease", "qqmusic"}:
+        if platform_key not in {"netease", "qqmusic", "applemusic"}:
             return
         parser_config = getattr(getattr(self.cfg, "parser", None), platform_key, None)
         if not bool(getattr(parser_config, "parse_lyrics", False)):
@@ -699,6 +699,7 @@ class MessageSender:
                 album=lyrics.get("album"),
                 duration_seconds=lyrics.get("duration_seconds"),
                 release_text=lyrics.get("release_text"),
+                source_label=lyrics.get("source_label"),
                 cover_path=cover_path,
             )
             if image_path:

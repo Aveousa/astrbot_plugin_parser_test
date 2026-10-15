@@ -440,7 +440,7 @@ class PluginConfig(ConfigNode):
             "qqmusic": ("enable", "return_audio", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "applemusic": ("enable", "backend_enabled", "return_audio", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
+            "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
         for key, old in existing.items():
             saved = history.get(key)
@@ -489,6 +489,11 @@ class PluginConfig(ConfigNode):
             # 即使它被选作迁移基准，也要为两个支持实况图的平台补上默认值。
             if key in {"douyin", "xhs"}:
                 merged.setdefault("motion_photo_send_mode", "livephoto_only")
+            if key == "applemusic":
+                # Older installed templates may predate the optional lyrics
+                # switch; keep upgrades able to use it without resetting the
+                # user's other Apple Music settings.
+                merged.setdefault("parse_lyrics", False)
             normalized.append(merged)
 
         if not normalized:
