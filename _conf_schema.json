@@ -60,7 +60,7 @@
   },
   "compact_forward_non_audio": {
     "description": "非音频内容统一折叠发送",
-    "hint": "关闭时按合并转发阈值和解析器分组决定；开启后，同一解析结果中的多个图片、视频、文本或普通文件会合并为一条转发消息，以减少刷屏。音频始终单独发送，单个非音频项目不折叠。",
+    "hint": "关闭时按合并转发阈值和解析器分组决定；开启后，会先收集信息卡片、歌词卡片及图片、视频、文本、普通文件等非音频内容，有多个项目时统一折叠为一条转发消息。音频始终单独发送，单个非音频项目不折叠。",
     "type": "bool",
     "default": false
   },
@@ -390,6 +390,28 @@
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
+          "return_audio": {
+            "description": "返回音频",
+            "hint": "控制汽水音乐单曲解析是否附带音频；视频解析的发送模式由 video_send_mode 控制",
+            "type": "bool",
+            "default": true
+          },
+          "audio_send_format": {
+            "description": "音频发送模式",
+            "hint": "选择语音或文件发送汽水音乐音频",
+            "type": "string",
+            "options": ["file", "voice"],
+            "labels": ["文件", "语音"],
+            "default": "voice"
+          },
+          "video_send_mode": {
+            "description": "视频发送模式",
+            "hint": "汽水音乐用户视频可发送完整视频，或仅提取并发送视频音频",
+            "type": "string",
+            "options": ["video", "audio"],
+            "labels": ["视频", "视频音频"],
+            "default": "video"
+          },
           "show_playlist_cover": {
             "description": "显示歌单封面",
             "hint": "关闭后歌单信息卡片不再显示歌单封面，但仍保留歌曲专辑缩略图",

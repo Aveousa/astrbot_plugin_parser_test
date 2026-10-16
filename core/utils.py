@@ -24,12 +24,22 @@ async def exec_ffmpeg_cmd(cmd: list[str]) -> None:
     Args:
         cmd (list[str]): 命令序列
     """
+    process = None
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         _, stderr = await process.communicate()
         return_code = process.returncode
+    except asyncio.CancelledError:
+        # A timed-out parser task must not leave an ffmpeg child behind.
+        if process is not None and process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+        raise
     except FileNotFoundError:
         raise RuntimeError("ffmpeg 未安装或无法找到可执行文件")
 

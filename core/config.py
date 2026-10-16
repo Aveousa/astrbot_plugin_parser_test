@@ -173,6 +173,7 @@ class ParserItem(ConfigNode):
     audio_api_base: str | None
     backend_enabled: bool | None
     audio_send_format: str | None
+    video_send_mode: str | None
     file_codec_priority: list | None
     file_quality_priority: list | None
     wrapper_url: str | None
@@ -446,6 +447,7 @@ class PluginConfig(ConfigNode):
             "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "qishui": ("enable", "return_audio", "audio_send_format", "video_send_mode", "show_playlist_cover", "show_playlist_url"),
             "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
         for key, old in existing.items():
@@ -500,6 +502,12 @@ class PluginConfig(ConfigNode):
                 # switch; keep upgrades able to use it without resetting the
                 # user's other music parser settings.
                 merged.setdefault("parse_lyrics", False)
+            if key == "qishui":
+                # Keep existing installations compatible when the UGC video
+                # and audio delivery settings are introduced.
+                merged.setdefault("return_audio", True)
+                merged.setdefault("audio_send_format", "voice")
+                merged.setdefault("video_send_mode", "video")
             normalized.append(merged)
 
         if not normalized:

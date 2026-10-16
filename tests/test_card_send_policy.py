@@ -166,11 +166,10 @@ def test_compact_forward_non_audio_mode_folds_multiple_contents(
 
     asyncio.run(sender.send_parse_result(event, result))
 
-    assert len(event.sent) == 2
-    assert event.sent[0][0].path == "card.png"
-    assert event.sent[1][0].__class__.__name__ == "Nodes"
-    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
-        "one.png", "two.png",
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[0][0].nodes] == [
+        "card.png", "one.png", "two.png",
     ]
 
 
@@ -194,10 +193,32 @@ def test_compact_forward_non_audio_mode_flattens_explicit_groups(
 
     asyncio.run(sender.send_parse_result(event, result))
 
-    assert len(event.sent) == 2
-    assert event.sent[1][0].__class__.__name__ == "Nodes"
-    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
-        "one.png", "two.png",
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[0][0].nodes] == [
+        "card.png", "one.png", "two.png",
+    ]
+
+
+def test_compact_forward_non_audio_mode_folds_card_with_single_video(
+    sender_module,
+):
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        contents=[VideoContent(Path("video.mp4"))],
+    )
+    sender = sender_module.MessageSender(
+        _card_config(forward_threshold=100, compact_forward_non_audio=True),
+        _Renderer(),
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[0][0].nodes] == [
+        "card.png", "video.mp4",
     ]
 
 
@@ -207,16 +228,20 @@ def test_compact_forward_non_audio_mode_keeps_single_content_unfolded(
     image = ImageContent(Path("one.png"))
     result = ParseResult(platform=Platform("bilibili", "Bilibili"), contents=[image])
     sender = sender_module.MessageSender(
-        _card_config(forward_threshold=0, compact_forward_non_audio=True),
+        _card_config(
+            forward_threshold=0,
+            compact_forward_non_audio=True,
+            card_enabled=False,
+        ),
         _Renderer(),
     )
     event = _Event()
 
     asyncio.run(sender.send_parse_result(event, result))
 
-    assert len(event.sent) == 2
-    assert event.sent[1][0].__class__.__name__ == "Image"
-    assert event.sent[1][0].path == "one.png"
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "Image"
+    assert event.sent[0][0].path == "one.png"
 
 
 def test_compact_forward_non_audio_mode_keeps_audio_outside_forward(
@@ -240,14 +265,51 @@ def test_compact_forward_non_audio_mode_keeps_audio_outside_forward(
 
     asyncio.run(sender.send_parse_result(event, result))
 
-    assert len(event.sent) == 3
-    assert event.sent[0][0].path == "card.png"
-    assert event.sent[1][0].__class__.__name__ == "Nodes"
-    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
-        "one.png", "two.png",
+    assert len(event.sent) == 2
+    assert event.sent[0][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[0][0].nodes] == [
+        "card.png", "one.png", "two.png",
     ]
-    assert event.sent[2][0].__class__.__name__ == "Record"
-    assert event.sent[2][0].path == "song.mp3"
+    assert event.sent[1][0].__class__.__name__ == "Record"
+    assert event.sent[1][0].path == "song.mp3"
+
+
+def test_compact_forward_non_audio_mode_folds_lyrics_card_with_audio(
+    sender_module,
+    tmp_path: Path,
+):
+    class LyricsRenderer(_Renderer):
+        async def render_lyrics_card(self, _lyrics, **_kwargs):
+            return tmp_path / "lyrics.png"
+
+    config = _card_config(
+        forward_threshold=100,
+        compact_forward_non_audio=True,
+        audio_to_file=False,
+        parser=SimpleNamespace(
+            netease=SimpleNamespace(parse_lyrics=True),
+        ),
+    )
+    result = ParseResult(
+        platform=Platform("netease", "缃戞槗浜戦煶涔?"),
+        contents=[AudioContent(Path("song.mp3"))],
+        extra={
+            "music_type": "track",
+            "lyrics": {"text": "[00:01.00]Line", "title": "Song"},
+        },
+    )
+    sender = sender_module.MessageSender(config, LyricsRenderer())
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[0][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[0][0].nodes] == [
+        "card.png", str(tmp_path / "lyrics.png"),
+    ]
+    assert event.sent[1][0].__class__.__name__ == "Record"
+    assert event.sent[1][0].path == "song.mp3"
 
 
 def test_single_card_switch_governs_render_and_send(sender_module):

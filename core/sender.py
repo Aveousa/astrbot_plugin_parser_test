@@ -75,9 +75,9 @@ class MessageSender:
 
     职责：
     - 根据解析结果（ParseResult）规划发送策略
-    - 在全局开关开启时为每个解析结果发送一张独立信息卡片
+    - 在全局开关开启时为每个解析结果生成信息卡片
     - 控制媒体是否强制合并转发
-    - 按可选全局策略将多个非音频内容集中折叠，音频保持独立发送
+    - 按可选全局策略将所有非音频内容集中折叠，音频保持独立发送
     - 将不同类型的内容转换为 AstrBot 消息组件并发送
 
     重要原则：
@@ -316,8 +316,16 @@ class MessageSender:
                 case VideoContent() | DynamicContent():
                     segs.append(self._video_from_path(path))
                 case AudioContent():
+                    qishui_audio_name = None
+                    if result.platform.name.lower() == "qishui":
+                        qishui_audio_name = self._audio_attachment_filename(
+                            result.title, path, "汽水音乐"
+                        )
                     segs.append(
-                        File(name=path.name, file=self._to_file_uri(path))
+                        File(
+                            name=qishui_audio_name or path.name,
+                            file=self._to_file_uri(path),
+                        )
                         if (
                             result.extra.get("audio_as_file") is True
                             or result.extra.get("audio_delivery_mode") == "file"
@@ -721,29 +729,35 @@ class MessageSender:
         # 激活结果目录，确保卡片、发送过程中新建的临时资源也归档到同一处。
         with cache_dir_scope(result.cache_dir):
             await self._send_parse_result(event, result)
-            await self._send_lyrics_card(event, result)
+            # The compact forwarding mode renders the lyric card before the
+            # media groups are sent and injects it into the same non-audio
+            # group.  The normal mode keeps the historical standalone lyric
+            # message and sends it after the regular result.
+            if not self._compact_forward_non_audio_enabled():
+                await self._send_lyrics_card(event, result)
 
-    async def _send_lyrics_card(
-        self,
-        event: AstrMessageEvent,
-        result: ParseResult,
-    ) -> None:
-        """Send an optional lyrics card after the regular single-track result."""
+    async def _render_lyrics_card(self, result: ParseResult) -> Path | None:
+        """Render an optional lyric card and return its local image path.
+
+        Rendering is kept separate from sending so the compact forwarding
+        policy can collect the lyric card together with the information card
+        and ordinary media before deciding whether a forward node is needed.
+        """
 
         if result.extra.get("music_type") != "track":
-            return
+            return None
         platform_key = result.platform.name
         if platform_key not in {"netease", "qqmusic", "applemusic"}:
-            return
+            return None
         parser_config = getattr(getattr(self.cfg, "parser", None), platform_key, None)
         if not bool(getattr(parser_config, "parse_lyrics", False)):
-            return
+            return None
         lyrics = result.extra.get("lyrics")
         if not isinstance(lyrics, dict) or not lyrics.get("text"):
-            return
+            return None
         render = getattr(self.renderer, "render_lyrics_card", None)
         if not callable(render):
-            return
+            return None
 
         # Keep the existing display by default for older configs.  This is a
         # presentation-only switch; lyric fetching and parsing have already
@@ -776,12 +790,25 @@ class MessageSender:
                 source_label=lyrics.get("source_label"),
                 cover_path=cover_path,
             )
-            if image_path:
-                await event.send(
-                    event.chain_result([self._image_from_path(Path(image_path))])
-                )
+            return Path(image_path) if image_path else None
         except Exception as exc:
-            logger.error(f"歌词卡片生成或发送失败，已跳过: {exc}")
+            logger.error(f"歌词卡片生成失败，已跳过: {exc}")
+            return None
+
+    async def _send_lyrics_card(
+        self,
+        event: AstrMessageEvent,
+        result: ParseResult,
+    ) -> None:
+        """Send an optional lyrics card after the regular single-track result."""
+
+        if image_path := await self._render_lyrics_card(result):
+            try:
+                await event.send(
+                    event.chain_result([self._image_from_path(image_path)])
+                )
+            except Exception as exc:
+                logger.error(f"歌词卡片发送失败，已跳过: {exc}")
 
     async def _send_parse_result(
         self,
@@ -797,14 +824,51 @@ class MessageSender:
         3. 必要时合并转发
         4. 发送媒体；没有可发送媒体时保留原有文本兜底
         """
-        # 全局卡片开关开启时，每个解析结果固定先发送一张信息卡片。媒体分组
-        # 只决定媒体本身是否折叠，避免图集因卡片计数而改变发送结构。
-        card_sent = await self._send_result_card(event, result)
+        # 默认模式固定先发送信息卡片；紧凑模式则只渲染卡片，稍后与所有
+        # 非音频内容一起整理，避免同一个解析结果产生多条独立消息。
+        compact_mode = self._compact_forward_non_audio_enabled()
+        card_path: Path | None = None
+        if compact_mode:
+            # In compact mode the information card is a non-audio item too.
+            # Render it now, but defer sending until all result contents have
+            # been collected so a video/image/card combination becomes one
+            # forward message instead of several standalone messages.
+            if self._card_enabled():
+                card_path = await self._render_card_safely(result)
+            card_sent = False
+        else:
+            # Keep the historical standalone information-card behavior when
+            # the anti-spam option is disabled.
+            card_sent = await self._send_result_card(event, result)
+
+        lyrics_path: Path | None = None
+        if compact_mode:
+            # Lyrics cards are generated content as well; collect them before
+            # the media groups are normalized.  The normal mode sends this
+            # card after the regular result in ``send_parse_result``.
+            lyrics_path = await self._render_lyrics_card(result)
 
         groups = self._prepare_motion_photo_group(
             result,
-            self._resolve_groups(result, omit_playlist_cover=card_sent),
+            self._resolve_groups(
+                result,
+                # A deferred compact card still contains the preview cover,
+                # so remove the parser's duplicate cover from the media list.
+                omit_playlist_cover=card_sent or card_path is not None,
+            ),
         )
+
+        if compact_mode:
+            generated_non_audio: list[MediaContent] = []
+            if card_path is not None:
+                generated_non_audio.append(ImageContent(Path(card_path)))
+            if lyrics_path is not None:
+                generated_non_audio.append(ImageContent(Path(lyrics_path)))
+            if generated_non_audio:
+                # ``_prepare_compact_forward_groups`` will flatten this
+                # synthetic group together with parser-owned groups while
+                # keeping every AudioContent in its own message.
+                groups = [SendGroup(contents=generated_non_audio), *groups]
 
         # 选择通过 OneBot URL 交付的音乐单曲先保存在本次解析目录，再注册
         # 临时 URL；Apple Music 与网易云/QQ/酷狗的文件模式共用此路径。
@@ -874,6 +938,7 @@ class MessageSender:
                             "netease": "网易云音乐",
                             "qqmusic": "QQ 音乐",
                             "kugou": "酷狗音乐",
+                            "qishui": "汽水音乐",
                         }.get(result.platform.name.lower(), "音乐")
                         direct_audio_name = self._audio_attachment_filename(
                             result.title, audio_path, fallback
