@@ -772,6 +772,7 @@ class MessageSender:
                 release_text=(
                     lyrics.get("release_text") if show_release_time else None
                 ),
+                show_release_time=show_release_time,
                 source_label=lyrics.get("source_label"),
                 cover_path=cover_path,
             )

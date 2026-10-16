@@ -1095,6 +1095,37 @@ def test_lyrics_card_renders_song_metadata_and_normalized_lrc(
     assert "lyrics_card" not in renderer.available_templates()
 
 
+def test_lyrics_card_hides_release_time_and_status_note_when_disabled(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    renderer = renderer_module.Renderer(config)
+    captured_html: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured_html.append(html)
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:01.00]Line",
+            platform_key="netease",
+            platform_display_name="Netease",
+            song_title="Song",
+            release_text="2024-04-24",
+            show_release_time=False,
+        )
+    )
+
+    assert output is not None
+    assert captured_html
+    html = captured_html[0]
+    assert "2024-04-24" not in html
+    assert '<div class="source-note">' not in html
+
+
 def test_lyrics_stanza_breaks_use_explicit_pauses_and_continuity(
     renderer_module,
 ):

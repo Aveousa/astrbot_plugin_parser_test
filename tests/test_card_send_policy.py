@@ -361,6 +361,7 @@ def test_lyrics_card_release_time_visibility_switch(
     assert captured["release_text"] == (
         "2024-04-24" if show_release_time else None
     )
+    assert captured["show_release_time"] is show_release_time
 
 
 @pytest.mark.parametrize("platform_name", ["bilibili", "douyin", "xhs", "pixiv"])

@@ -366,9 +366,9 @@
         <div class="song-meta">
           {% if album %}<span class="song-meta__item">{{ album }}</span>{% endif %}
           {% if duration_text %}<span class="song-meta__item">{{ duration_text }}</span>{% endif %}
-          {% if release_text %}<span class="song-meta__item">{{ release_text }}</span>{% endif %}
+          {% if show_release_time and release_text %}<span class="song-meta__item">{{ release_text }}</span>{% endif %}
         </div>
-        <div class="source-note"><span class="source-note__dot" aria-hidden="true"></span><span>歌词已解析</span></div>
+        {% if show_release_time %}<div class="source-note"><span class="source-note__dot" aria-hidden="true"></span><span>歌词已解析</span></div>{% endif %}
       </div>
     </div>
   </section>
