@@ -1005,6 +1005,55 @@ def test_qishui_track_payload_builds_card_and_audio():
     assert any(isinstance(content, AudioContent) for content in result.contents)
 
 
+def test_qishui_ugc_video_always_returns_complete_video():
+    async def build():
+        parser = QishuiMusicParser.__new__(QishuiMusicParser)
+        parser.cfg = SimpleNamespace(
+            card_enabled=True,
+            proxy=None,
+            parser=SimpleNamespace(
+                qishui=SimpleNamespace(
+                    use_proxy=False,
+                    audio_send_format="file",
+                    video_send_mode="audio",  # retired values are ignored
+                ),
+            ),
+        )
+
+        class VideoDownloader(_Downloader):
+            def download_video(self, url, **_kwargs):
+                async def complete() -> Path:
+                    return Path(url.rsplit("/", 1)[-1] or "video.mp4")
+
+                return asyncio.create_task(complete())
+
+        downloader = VideoDownloader()
+        parser.downloader = downloader
+        parser.headers = {}
+        result = parser._ugc_video_result(
+            {
+                "video_id": "ugc-1",
+                "videoName": "用户视频",
+                "artistName": "作者",
+                "duration": 151.4,
+                "url": "https://example.com/ugc.mp4",
+                "coverURL": "https://example.com/cover.jpg",
+            },
+            url="https://music.douyin.com/qishui/share/ugc_video?ugc_video_id=1",
+            video_id="1",
+        )
+        await asyncio.gather(*(content.get_path() for content in result.contents))
+        return result, downloader
+
+    result, downloader = asyncio.run(build())
+
+    assert len(result.video_contents) == 1
+    assert result.audio_contents == []
+    assert result.extra["music_type"] == "ugc_video"
+    assert "video_send_mode" not in result.extra
+    assert downloader.image_urls == ["https://example.com/cover.jpg"]
+
+
 @pytest.mark.parametrize(
     ("show_playlist_cover", "expected_contents"),
     [(True, 1), (False, 0), (None, 1)],

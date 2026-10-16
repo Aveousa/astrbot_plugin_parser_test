@@ -408,6 +408,20 @@ def test_kugou_exposes_optional_cookie_setting():
     assert kugou_defaults["cookies"] == ""
 
 
+def test_qishui_ugc_videos_are_always_returned_as_video():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    items = schema["parsers_template"]["templates"]["qishui"]["items"]
+    assert "video_send_mode" not in items
+    assert "完整视频" in items["return_audio"]["hint"]
+
+    qishui_defaults = next(
+        item for item in defaults if item["__template_key"] == "qishui"
+    )
+    assert "video_send_mode" not in qishui_defaults
+
+
 def test_bilibili_exposes_ai_summary_switch():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -448,6 +462,10 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
                     "__template_key": "qqmusic",
                     "cookies": "qq-music-cookie",
                     "return_audio": False,
+                },
+                {
+                    "__template_key": "qishui",
+                    "video_send_mode": "audio",
                 },
                 {"__template_key": "qzone", "enable": True},
             ]
@@ -506,4 +524,6 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     assert qqmusic["file_quality_priority"] == [
         "lossless", "high", "standard",
     ]
+    qishui = raw["parsers_template"][7]
+    assert "video_send_mode" not in qishui
     assert raw.save_calls == 1

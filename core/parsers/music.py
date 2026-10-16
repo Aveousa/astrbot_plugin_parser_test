@@ -23,12 +23,10 @@ from html import unescape
 from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
-from uuid import uuid4
 
 from aiohttp import ClientError
 from astrbot.api import logger
 
-from ..cache import get_active_cache_dir
 from ..cookie import CookieJar
 from ..data import AudioContent, ImageContent, ParseResult, Platform, SendGroup
 from ..exception import DownloadException, ParseException, RedirectException
@@ -37,7 +35,6 @@ from ..music_quality import (
     QQ_VOICE_QUALITY_PRIORITY,
     normalize_qq_file_quality_priority,
 )
-from ..utils import exec_ffmpeg_cmd, safe_unlink
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
 from .qqmusic_login import QQMusicLogin
@@ -4282,24 +4279,6 @@ class KugouMusicParser(PlaylistParserBase):
 
 class QishuiMusicParser(PlaylistParserBase):
     platform = Platform(name="qishui", display_name="汽水音乐")
-    _UGC_AUDIO_TIMEOUT_SECONDS = 120.0
-
-    def _video_send_mode(self) -> str:
-        value = getattr(self._music_parser_config(), "video_send_mode", None)
-        return "audio" if str(value or "video").strip().lower() in {
-            "audio",
-            "audio_only",
-        } else "video"
-
-    def _set_local_audio_delivery(self, result: ParseResult) -> None:
-        """Mark an extracted UGC audio file for the configured send format."""
-
-        if self._audio_send_format() == "file":
-            result.extra["audio_as_file"] = True
-            result.extra["audio_delivery_mode"] = "file"
-        else:
-            result.extra["audio_as_voice"] = True
-            result.extra["audio_delivery_mode"] = "voice"
 
     async def _qishui_page(self, url: str, *, error: str) -> Mapping[str, Any]:
         """Fetch and decode a Qishui SSR page."""
@@ -4316,85 +4295,6 @@ class QishuiMusicParser(PlaylistParserBase):
         loader_data = loader_data if isinstance(loader_data, Mapping) else {}
         return loader_data
 
-    async def _extract_ugc_audio(self, video_url: str, video_id: str) -> Path:
-        """Download a UGC MP4, extract its audio, and keep only the m4a file."""
-
-        cache_root = getattr(self.cfg, "cache_dir", None)
-        cache_dir = get_active_cache_dir(cache_root or Path.cwd())
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        token = uuid4().hex
-        safe_video_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(video_id))[:64] or "video"
-        video_name = f"qishui_{safe_video_id}_{token}.mp4"
-        expected_video_path = cache_dir / video_name
-        video_path: Path | None = expected_video_path
-        audio_path = cache_dir / f"qishui_{safe_video_id}_{token}.m4a"
-        timeout = max(
-            10.0,
-            float(
-                getattr(self.cfg, "download_timeout", self._UGC_AUDIO_TIMEOUT_SECONDS)
-                or self._UGC_AUDIO_TIMEOUT_SECONDS
-            ),
-        )
-        logger.info(f"[汽水音乐] 开始提取用户视频音频: video_id={video_id}")
-        try:
-            download_task = self.downloader.download_video(
-                video_url,
-                video_name=video_name,
-                headers={**self.headers, "Referer": "https://music.douyin.com/"},
-                proxy=self.proxy,
-                worker_proxy_url=self.worker_proxy_url,
-            )
-            video_path = Path(await asyncio.wait_for(download_task, timeout=timeout))
-            if not video_path.is_file() or video_path.stat().st_size <= 0:
-                raise DownloadException("汽水音乐视频文件为空")
-
-            await asyncio.wait_for(
-                exec_ffmpeg_cmd(
-                    [
-                        "ffmpeg",
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-y",
-                        "-i",
-                        str(video_path),
-                        "-map",
-                        "0:a:0",
-                        "-vn",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "192k",
-                        "-movflags",
-                        "+faststart",
-                        str(audio_path),
-                    ]
-                ),
-                timeout=timeout,
-            )
-            if not audio_path.is_file() or audio_path.stat().st_size <= 0:
-                raise DownloadException("汽水音乐视频没有可用音频")
-            logger.info(f"[汽水音乐] 用户视频音频提取成功: video_id={video_id}")
-            return audio_path
-        except asyncio.CancelledError:
-            await safe_unlink(audio_path)
-            raise
-        except DownloadException:
-            await safe_unlink(audio_path)
-            logger.warning(f"[汽水音乐] 用户视频音频不可用: video_id={video_id}")
-            raise
-        except Exception as exc:
-            await safe_unlink(audio_path)
-            logger.warning(
-                f"[汽水音乐] 用户视频音频提取失败: video_id={video_id}, "
-                f"error={type(exc).__name__}"
-            )
-            raise DownloadException("汽水音乐视频音频提取失败") from exc
-        finally:
-            for path in {video_path, expected_video_path}:
-                if path is not None:
-                    await safe_unlink(path)
-
     def _ugc_video_result(
         self,
         video: Mapping[str, Any],
@@ -4402,7 +4302,7 @@ class QishuiMusicParser(PlaylistParserBase):
         url: str,
         video_id: str,
     ) -> ParseResult:
-        """Build the standard card plus video or extracted audio content."""
+        """Build the standard card and complete video content."""
 
         video_url = _first_text(video, "url", "video_url", "play_url")
         if not video_url or not video_url.startswith(("http://", "https://")):
@@ -4424,44 +4324,11 @@ class QishuiMusicParser(PlaylistParserBase):
         if isinstance(avatar_values, list) and avatar_values:
             avatar = _cover_url(avatar_values[0], size=200)
         duration = _duration_seconds(video.get("duration"))
-        mode = self._video_send_mode()
-        logger.info(f"[汽水音乐] 用户视频解析成功: video_id={video_id}, mode={mode}")
+        logger.info(f"[汽水音乐] 用户视频解析成功: video_id={video_id}")
         info_lines: list[str] = []
         if duration:
             minutes, seconds = divmod(int(duration), 60)
             info_lines.append(f"时长: {minutes}:{seconds:02d}")
-
-        if mode == "audio":
-            contents = self.create_image_contents([cover], headers=self.headers) if cover else []
-            audio_content = AudioContent(
-                asyncio.create_task(
-                    self._extract_ugc_audio(video_url, video_id),
-                    name=f"qishui_ugc_audio_{video_id}",
-                ),
-                duration=duration,
-            )
-            contents.append(audio_content)
-            result = self.result(
-                author=self.create_author(artist_name, avatar),
-                title=title,
-                url=url,
-                contents=contents,
-                # The cover is needed by the information card but must not be
-                # sent as a second media item when this mode means audio-only.
-                send_groups=[SendGroup(contents=[audio_content])],
-                extra={
-                    "info": "\n".join(info_lines),
-                    "card_info": "\n".join(info_lines),
-                    "music_type": "ugc_video",
-                    "video_id": video_id,
-                    "video_send_mode": "audio",
-                    "duration": duration,
-                    "card_preview_only": bool(cover),
-                    "show_playlist_url": self._show_playlist_url(),
-                },
-            )
-            self._set_local_audio_delivery(result)
-            return result
 
         video_content = self.create_video_content(
             video_url,
@@ -4479,7 +4346,6 @@ class QishuiMusicParser(PlaylistParserBase):
                 "card_info": "\n".join(info_lines),
                 "music_type": "ugc_video",
                 "video_id": video_id,
-                "video_send_mode": "video",
                 "duration": duration,
                 "show_playlist_url": self._show_playlist_url(),
             },

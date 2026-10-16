@@ -173,7 +173,6 @@ class ParserItem(ConfigNode):
     audio_api_base: str | None
     backend_enabled: bool | None
     audio_send_format: str | None
-    video_send_mode: str | None
     file_codec_priority: list | None
     file_quality_priority: list | None
     wrapper_url: str | None
@@ -447,7 +446,7 @@ class PluginConfig(ConfigNode):
             "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "qishui": ("enable", "return_audio", "audio_send_format", "video_send_mode", "show_playlist_cover", "show_playlist_url"),
+            "qishui": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
         for key, old in existing.items():
@@ -458,6 +457,8 @@ class PluginConfig(ConfigNode):
             saved_settings.update(
                 {field: old[field] for field in history_fields.get(key, ()) if field in old}
             )
+            if key == "qishui":
+                saved_settings.pop("video_send_mode", None)
             saved.update(
                 settings=saved_settings,
                 cookie_configured=bool(old.get("cookies")),
@@ -504,10 +505,12 @@ class PluginConfig(ConfigNode):
                 merged.setdefault("parse_lyrics", False)
             if key == "qishui":
                 # Keep existing installations compatible when the UGC video
-                # and audio delivery settings are introduced.
+                # and audio delivery settings are introduced.  UGC videos are
+                # now always returned as complete videos; remove the retired
+                # audio-only switch from upgraded parser rows.
                 merged.setdefault("return_audio", True)
                 merged.setdefault("audio_send_format", "voice")
-                merged.setdefault("video_send_mode", "video")
+                merged.pop("video_send_mode", None)
             normalized.append(merged)
 
         if not normalized:

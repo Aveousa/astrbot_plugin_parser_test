@@ -392,7 +392,7 @@
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
           "return_audio": {
             "description": "返回音频",
-            "hint": "控制汽水音乐单曲解析是否附带音频；视频解析的发送模式由 video_send_mode 控制",
+            "hint": "控制汽水音乐单曲解析是否附带音频；用户视频链接始终返回完整视频",
             "type": "bool",
             "default": true
           },
@@ -403,14 +403,6 @@
             "options": ["file", "voice"],
             "labels": ["文件", "语音"],
             "default": "voice"
-          },
-          "video_send_mode": {
-            "description": "视频发送模式",
-            "hint": "汽水音乐用户视频可发送完整视频，或仅提取并发送视频音频",
-            "type": "string",
-            "options": ["video", "audio"],
-            "labels": ["视频", "视频音频"],
-            "default": "video"
           },
           "show_playlist_cover": {
             "description": "显示歌单封面",
