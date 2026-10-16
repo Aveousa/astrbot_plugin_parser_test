@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <style>
     {% if card_font_uri %}
-    @font-face { font-family: "Douyin Sans"; src: url("{{ card_font_uri }}") format("opentype");
+    @font-face { font-family: "Douyin Sans"; src: url("{{ card_font_uri }}") format("{{ card_font_format or 'opentype' }}");
                  font-style: normal; font-weight: normal; font-display: block; }
     {% endif %}
     @page { size: 760px 2000px; margin: 0; }

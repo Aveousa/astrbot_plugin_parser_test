@@ -78,6 +78,13 @@
     "type": "string",
     "default": ""
   },
+  "card_custom_font": {
+    "description": "信息卡片自定义字体",
+    "hint": "上传 OTF、TTF 或 WOFF2 字体；留空时使用内置 douyin_sans.otf",
+    "type": "file",
+    "file_types": ["otf", "ttf", "woff2"],
+    "default": []
+  },
   "card_dynamic_color": {
     "description": "Apple 卡片动态取色",
     "hint": "开启后 Apple 风格卡片会根据首张预览图生成柔和底色；预览图不可用时自动回退默认白底",

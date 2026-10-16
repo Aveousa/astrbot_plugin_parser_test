@@ -198,6 +198,47 @@ def test_builtin_templates_use_bundled_douyin_sans(
         assert (font_path.parent / icon_name).resolve().as_uri() in html
 
 
+def test_custom_card_font_is_used_for_html_and_format(
+    renderer_module, tmp_path: Path
+):
+    config = _Config(tmp_path)
+    config.card_template = "apple"
+    config.data_dir = tmp_path / "data"
+    custom_font = config.data_dir / "files" / "card_custom_font" / "custom.ttf"
+    custom_font.parent.mkdir(parents=True)
+    custom_font.write_bytes(b"fake-font")
+    config.card_custom_font = ["files/card_custom_font/custom.ttf"]
+
+    renderer = renderer_module.Renderer(config)
+    path, font_format = renderer._card_font()
+
+    assert path == custom_font.resolve()
+    assert font_format == "truetype"
+    result = ParseResult(platform=Platform("test", "Test"), title="custom font")
+    html = renderer.render_html(result, asyncio.run(renderer._result_context(result)))
+    assert f'url("{custom_font.resolve().as_uri()}")' in html
+    assert 'format("truetype")' in html
+
+
+@pytest.mark.parametrize(
+    "configured",
+    ["../outside.ttf", "C:/outside.ttf", "files/../outside.ttf", "files/font.txt"],
+)
+def test_invalid_custom_card_font_falls_back_to_bundled_font(
+    renderer_module, tmp_path: Path, configured: str
+):
+    config = _Config(tmp_path)
+    config.data_dir = tmp_path / "data"
+    config.data_dir.mkdir()
+    config.card_custom_font = [configured]
+    renderer = renderer_module.Renderer(config)
+
+    path, font_format = renderer._card_font()
+
+    assert path == renderer_module.Renderer._CARD_FONT_PATH
+    assert font_format == "opentype"
+
+
 def test_apple_dynamic_color_is_disabled_by_default(renderer_module, tmp_path: Path):
     config = _Config(tmp_path)
     config.card_template = "apple"

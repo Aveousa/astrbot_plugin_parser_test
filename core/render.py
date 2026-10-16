@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Mapping
 from html import escape as html_escape
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, ClassVar
 
 from astrbot.api import logger
@@ -134,6 +135,11 @@ class Renderer:
     _RESOURCES_DIR: ClassVar[Path] = Path(__file__).with_name("resources")
     _PLUGIN_LOGO_PATH: ClassVar[Path] = _TEMPLATES_DIR.parent.parent / "logo.png"
     _CARD_FONT_PATH: ClassVar[Path] = _RESOURCES_DIR / "douyin_sans.otf"
+    _CARD_FONT_FORMATS: ClassVar[dict[str, str]] = {
+        "otf": "opentype",
+        "ttf": "truetype",
+        "woff2": "woff2",
+    }
     _STAT_ICON_NAMES: ClassVar[dict[str, str]] = {
         "likes": "like.png",
         "comments": "comment.png",
@@ -548,6 +554,104 @@ class Renderer:
             return path.resolve().as_uri() if path.exists() else None
         except (OSError, TypeError, ValueError):
             return None
+
+    def _card_font(self) -> tuple[Path, str]:
+        """Return the configured card font, safely falling back to the bundled font.
+
+        AstrBot's ``file`` configuration stores uploaded files as relative paths
+        under the plugin data directory (normally ``files/...``).  Resolve only
+        those paths and reject absolute paths, traversal, symlinks escaping the
+        data directory, unsupported extensions, and empty files.  This keeps a
+        malformed or stale upload from breaking card rendering and avoids
+        allowing a configuration value to read arbitrary local files.
+        """
+
+        fallback = self._CARD_FONT_PATH
+        fallback_format = self._CARD_FONT_FORMATS.get(
+            fallback.suffix.lower().lstrip("."), "opentype"
+        )
+        configured = getattr(self.cfg, "card_custom_font", None)
+        if isinstance(configured, (str, Path)):
+            candidates: list[object] = [configured]
+        elif isinstance(configured, (list, tuple)):
+            candidates = list(configured)
+        else:
+            candidates = []
+
+        if not candidates:
+            return fallback, fallback_format
+
+        data_dir = getattr(self.cfg, "data_dir", None)
+        if data_dir is None:
+            self._log_warning(
+                "Custom card font is configured but the plugin data directory is unavailable; "
+                "using the bundled font"
+            )
+            return fallback, fallback_format
+
+        try:
+            data_root = Path(data_dir).resolve()
+        except (OSError, TypeError, ValueError):
+            self._log_warning(
+                "Custom card font data directory is invalid; using the bundled font"
+            )
+            return fallback, fallback_format
+
+        for value in candidates:
+            if not isinstance(value, (str, Path)):
+                continue
+            raw = str(value).strip()
+            if not raw:
+                continue
+
+            # Normalize separators before applying the prefix/traversal checks
+            # so a Windows-style value cannot bypass validation on Linux.
+            normalized = raw.replace("\\", "/")
+            if (
+                normalized.startswith("/")
+                or re.match(r"^[A-Za-z]:($|/)", normalized)
+            ):
+                continue
+            parts = PurePosixPath(normalized).parts
+            if (
+                not parts
+                or parts[0] != "files"
+                or any(part in {"", ".", ".."} for part in parts[1:])
+            ):
+                continue
+
+            try:
+                path = (data_root.joinpath(*parts)).resolve()
+                path.relative_to(data_root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+            extension = path.suffix.lower().lstrip(".")
+            font_format = self._CARD_FONT_FORMATS.get(extension)
+            if not font_format:
+                continue
+            try:
+                if not path.is_file() or path.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+
+            self._log_debug(
+                f"Using custom card font (format: {extension})"
+            )
+            return path, font_format
+
+        self._log_warning(
+            "Custom card font is unavailable; using bundled douyin_sans.otf"
+        )
+        return fallback, fallback_format
+
+    def _card_font_context(self) -> dict[str, str | None]:
+        path, font_format = self._card_font()
+        return {
+            "card_font_uri": self._file_uri(path),
+            "card_font_format": font_format,
+        }
 
     @staticmethod
     def _card_text(value: str | None) -> str | None:
@@ -1111,7 +1215,7 @@ class Renderer:
             config=self.cfg,
             template_name=self._template_name(),
             emoji_style=str(getattr(self.cfg, "emoji_style", "APPLE") or "APPLE").lower(),
-            card_font_uri=self._file_uri(self._CARD_FONT_PATH),
+            **self._card_font_context(),
         )
 
     async def _render_playwright_png(
@@ -1340,7 +1444,7 @@ class Renderer:
                 lyrics_lines=lyrics_lines,
                 lyric_count=len(lyrics_lines),
                 source_label=source_label or f"歌词来源：{platform_display_name}",
-                card_font_uri=self._file_uri(self._CARD_FONT_PATH),
+                **self._card_font_context(),
                 **theme,
             )
             template_base_dir = next(
@@ -1447,7 +1551,7 @@ class Renderer:
                 accent_warm="#fb7299" if platform_key == "bilibili" else "#ffda2e",
                 # Retain the previous context key for user-overridden QQ cards.
                 qqmusic_logo_uri=platform_logo_uri,
-                card_font_uri=self._file_uri(self._CARD_FONT_PATH),
+                **self._card_font_context(),
             )
             template_base_dir = next(
                 (

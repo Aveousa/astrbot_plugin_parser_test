@@ -24,6 +24,7 @@
 
 | 配置键 | 默认值 | 作用 |
 | --- | --- | --- |
+| `card_custom_font` | `[]` | 上传 OTF、TTF 或 WOFF2 字体；留空时使用内置 `core/resources/douyin_sans.otf` |
 | `card_enabled` | `true` | 是否渲染并发送信息卡片 |
 | `card_template` | `apple` | 选择模板名 |
 | `card_custom_template` | `""` | 选择 `custom` 后使用的模板文件名 |
