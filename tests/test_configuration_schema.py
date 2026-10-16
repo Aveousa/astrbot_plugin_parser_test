@@ -194,6 +194,21 @@ def test_supported_parser_templates_are_exposed():
     assert {item["__template_key"] for item in defaults} == supported
 
 
+def test_music_parser_titles_and_lyrics_switches_are_clear():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    templates = schema["parsers_template"]["templates"]
+
+    for name in ("qqmusic", "netease"):
+        parser = templates[name]
+        assert "歌单" not in parser["name"]
+        assert parser["items"]["parse_lyrics"]["description"] == "返回歌词解析"
+        assert parser["items"]["parse_lyrics"]["type"] == "bool"
+        assert parser["items"]["parse_lyrics"]["default"] is False
+
+    for name in ("kugou", "qishui", "kuwo", "applemusic"):
+        assert "歌单" not in templates[name]["name"]
+
+
 def test_apple_music_backend_is_optional_and_not_a_core_dependency():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -475,10 +490,12 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     netease = raw["parsers_template"][5]
     assert netease["cookies"] == "netease-vip-cookie"
     assert netease["audio_api_base"] == "https://api.qijieya.cn/meting/"
+    assert netease["parse_lyrics"] is False
     assert raw["parsers_template"][6]["cookies"] == ""
     qqmusic = raw["parsers_template"][4]
     assert qqmusic["cookies"] == "qq-music-cookie"
     assert qqmusic["return_audio"] is False
+    assert qqmusic["parse_lyrics"] is False
     assert qqmusic["file_quality_priority"] == [
         "lossless", "high", "standard",
     ]

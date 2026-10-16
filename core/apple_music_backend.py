@@ -59,11 +59,11 @@ MANAGED_SETTINGS = frozenset({
     "file_codec_priority",
 })
 MUSIC_SETTINGS = {
-    "netease": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
-    "qqmusic": frozenset({"enable", "return_audio", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"}),
+    "netease": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "qqmusic": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"}),
     "kugou": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
 }
-MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "show_playlist_cover", "show_playlist_url"})
+MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "parse_lyrics", "show_playlist_cover", "show_playlist_url"})
 PARSER_LABELS = {
     "netease": "网易云音乐",
     "qqmusic": "QQ 音乐",
@@ -482,6 +482,8 @@ class AppleMusicBackend:
                             value = "file" if str(value or "voice").lower() == "file" else "voice"
                         elif field == "file_quality_priority":
                             value = list(normalize_qq_file_quality_priority(value))
+                        elif field == "parse_lyrics":
+                            value = False if value is None else bool(value)
                         elif field in MUSIC_BOOLEAN_SETTINGS | {"enable"}:
                             value = True if value is None else bool(value)
                         settings[field] = value
@@ -576,6 +578,8 @@ class AppleMusicBackend:
                     value = "file" if str(value or "voice").strip().lower() == "file" else "voice"
                 elif field == "file_quality_priority":
                     value = list(normalize_qq_file_quality_priority(value))
+                elif field == "parse_lyrics":
+                    value = False if value is None else bool(value)
                 elif field in MUSIC_BOOLEAN_SETTINGS:
                     value = True if value is None else bool(value)
                 settings[field] = value

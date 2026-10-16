@@ -166,12 +166,22 @@
       note.textContent = "显示预设或历史配置；恢复解析器配置后可编辑。";
       fieldset.append(note);
     }
-    fieldset.append(
+    const toggles = [
       musicToggle(key, "enable", "启用解析器", configured && parser.enabled === true, configured),
       musicToggle(key, "return_audio", "解析单曲时返回音频", pending?.return_audio ?? settings.return_audio !== false, configured),
       musicToggle(key, "show_playlist_cover", "显示歌单封面", pending?.show_playlist_cover ?? settings.show_playlist_cover !== false, configured),
       musicToggle(key, "show_playlist_url", "显示歌单原始链接", pending?.show_playlist_url ?? settings.show_playlist_url !== false, configured),
-    );
+    ];
+    if (key === "qqmusic" || key === "netease") {
+      toggles.push(musicToggle(
+        key,
+        "parse_lyrics",
+        "返回歌词解析",
+        pending?.parse_lyrics ?? settings.parse_lyrics === true,
+        configured,
+      ));
+    }
+    fieldset.append(...toggles);
 
     const formatLabel = document.createElement("label");
     formatLabel.className = "music-format-setting";

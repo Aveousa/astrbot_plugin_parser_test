@@ -97,6 +97,20 @@ _LYRIC_CREDIT_PREFIXES = (
     "监制",
     "人声",
 )
+# Lyrics providers do not expose a portable stanza marker. Use the source's
+# blank lines and clear timing pauses first, then keep punctuation continuity
+# from turning a long vocal phrase into a new stanza.
+_LYRIC_STANZA_GAP_SECONDS = 6.0
+_LYRIC_HARD_STANZA_GAP_SECONDS = 12.0
+_LYRIC_CONTINUATION_ENDINGS = ("，", "、", "：", "；", ",", ":", ";", "（", "(")
+_LYRIC_CONTINUATION_PREFIXES = ("，", "、", "：", "；", ",", ":", ";", "）", ")", "】", "]")
+_LYRIC_SECTION_MARKER_RE = re.compile(
+    r"^(?:\[\s*(?:intro|verse|pre[- ]?chorus|prechorus|chorus|refrain|"
+    r"bridge|hook|interlude|outro|前奏|主歌|副歌|桥段|间奏|尾奏)"
+    r"(?:\s*\d+)?\s*\]|(?:前奏|主歌|副歌|桥段|间奏|尾奏)(?:\s*\d+)?)$",
+    re.IGNORECASE,
+)
+
 # Some platforms (notably Xiaohongshu) serialize adjacent topics as
 # ``#topic[话题]##next-topic[话题]#``.  Keep the generic extractor permissive
 # enough to recognize the second ``#`` while consuming the optional closing
@@ -1327,9 +1341,17 @@ class Renderer:
 
         lines: list[dict[str, Any]] = []
         previous_seconds: float | None = None
-        for raw_line in str(lyrics or "").replace("\r\n", "\n").splitlines():
-            raw_line = raw_line.strip().lstrip("\ufeff")
+        previous_text: str | None = None
+        previous_is_credit = False
+        pending_stanza_break = False
+        for source_line in str(lyrics or "").replace("\r\n", "\n").splitlines():
+            raw_line = source_line.strip().lstrip("\ufeff")
             if not raw_line:
+                # A blank line is an explicit stanza boundary in most LRC
+                # exports. Keep it until the next rendered lyric line instead
+                # of emitting an empty row in the card.
+                if lines:
+                    pending_stanza_break = True
                 continue
             match = _LRC_LINE_RE.match(raw_line)
             if match:
@@ -1340,27 +1362,68 @@ class Renderer:
                 seconds = float(match.group("seconds").replace(":", "."))
                 absolute_seconds = minutes * 60 + seconds
                 timestamp = f"{minutes:02d}:{int(seconds):02d}"
-                stanza_break = (
-                    previous_seconds is not None
-                    and absolute_seconds - previous_seconds >= 6
+                is_credit = text.startswith(_LYRIC_CREDIT_PREFIXES)
+                gap = (
+                    absolute_seconds - previous_seconds
+                    if previous_seconds is not None
+                    else None
+                )
+                continuation = bool(
+                    previous_text
+                    and (
+                        previous_text.endswith(_LYRIC_CONTINUATION_ENDINGS)
+                        or text.startswith(_LYRIC_CONTINUATION_PREFIXES)
+                    )
+                )
+                time_break = bool(
+                    gap is not None
+                    and (
+                        gap >= _LYRIC_HARD_STANZA_GAP_SECONDS
+                        or (
+                            gap >= _LYRIC_STANZA_GAP_SECONDS
+                            and not continuation
+                        )
+                    )
+                )
+                stanza_break = bool(
+                    lines
+                    and (
+                        pending_stanza_break
+                        or time_break
+                        or is_credit != previous_is_credit
+                    )
                 )
                 previous_seconds = absolute_seconds
             else:
                 # Ignore LRC metadata such as [ti:], [ar:] and [offset:].
+                if _LYRIC_SECTION_MARKER_RE.fullmatch(raw_line):
+                    if lines:
+                        pending_stanza_break = True
+                    continue
                 if raw_line.startswith("[") and "]" in raw_line:
                     continue
                 text = raw_line
                 timestamp = ""
-                stanza_break = False
+                is_credit = text.startswith(_LYRIC_CREDIT_PREFIXES)
+                stanza_break = bool(
+                    lines
+                    and (
+                        pending_stanza_break
+                        or is_credit != previous_is_credit
+                    )
+                )
 
             lines.append(
                 {
                     "timestamp": timestamp,
                     "text": text,
                     "stanza_break": stanza_break,
-                    "is_credit": text.startswith(_LYRIC_CREDIT_PREFIXES),
+                    "is_credit": is_credit,
                 }
             )
+            pending_stanza_break = False
+            previous_text = text
+            previous_is_credit = is_credit
         return lines
 
     async def render_lyrics_card(

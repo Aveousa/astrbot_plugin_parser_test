@@ -103,11 +103,13 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
         cfg = config(tmp_path)
         cfg.parser.netease = SimpleNamespace(
             enable=True, cookies="private-cookie", return_audio=True,
+            parse_lyrics=False,
             audio_send_format="voice", show_playlist_cover=True,
             show_playlist_url=True,
         )
         cfg.parser.qqmusic = SimpleNamespace(
             enable=True, cookies="", return_audio=True,
+            parse_lyrics=False,
             audio_send_format="voice", show_playlist_cover=True,
             show_playlist_url=True,
             file_quality_priority=["lossless", "high", "standard"],
@@ -126,6 +128,7 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
                 {"qqmusic": {
                     "enable": False,
                     "return_audio": False,
+                    "parse_lyrics": True,
                     "audio_send_format": "file",
                     "file_quality_priority": ["high", "lossless", "standard"],
                     "show_playlist_cover": False,
@@ -136,6 +139,8 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
             assert entry["enabled"] is False
             assert entry["settings"]["audio_send_format"] == "file"
             assert entry["settings"]["return_audio"] is False
+            assert entry["settings"]["parse_lyrics"] is True
+            assert cfg.parser.qqmusic.parse_lyrics is True
             assert entry["settings"]["file_quality_priority"] == [
                 "high", "lossless", "standard",
             ]
@@ -259,6 +264,7 @@ def test_missing_music_parser_uses_bundled_defaults_without_reporting_enabled(tm
             assert music["netease"]["enabled"] is False
             assert music["netease"]["settings"]["audio_send_format"] == "voice"
             assert music["netease"]["settings"]["return_audio"] is True
+            assert music["netease"]["settings"]["parse_lyrics"] is False
             assert "private-cookie" not in json.dumps(status)
         finally:
             await backend.close()

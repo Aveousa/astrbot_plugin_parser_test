@@ -439,8 +439,8 @@ class PluginConfig(ConfigNode):
         history = self._data.get("__parser_management_history_v1")
         history = dict(history) if isinstance(history, Mapping) else {}
         history_fields = {
-            "qqmusic": ("enable", "return_audio", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
-            "netease": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
+            "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
@@ -491,10 +491,10 @@ class PluginConfig(ConfigNode):
             # 即使它被选作迁移基准，也要为两个支持实况图的平台补上默认值。
             if key in {"douyin", "xhs"}:
                 merged.setdefault("motion_photo_send_mode", "livephoto_only")
-            if key == "applemusic":
+            if key in {"qqmusic", "netease", "applemusic"}:
                 # Older installed templates may predate the optional lyrics
                 # switch; keep upgrades able to use it without resetting the
-                # user's other Apple Music settings.
+                # user's other music parser settings.
                 merged.setdefault("parse_lyrics", False)
             normalized.append(merged)
 

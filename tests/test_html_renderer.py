@@ -1095,6 +1095,44 @@ def test_lyrics_card_renders_song_metadata_and_normalized_lrc(
     assert "lyrics_card" not in renderer.available_templates()
 
 
+def test_lyrics_stanza_breaks_use_explicit_pauses_and_continuity(
+    renderer_module,
+):
+    credit = f"{renderer_module._LYRIC_CREDIT_PREFIXES[0]} credit"
+    lines = renderer_module.Renderer._lyrics_lines(
+        "\n".join(
+            [
+                "[00:00.00]A,",
+                "[00:07.00]continuation of the phrase",
+                "[00:08.00]next line",
+                "",
+                "[00:09.00]new stanza",
+                "[00:09.50]still close",
+                "[Verse 2]",
+                "[00:09.60]section marker",
+                "[00:21.00]hard pause,",
+                "[00:33.00]after hard pause",
+                f"[00:34.00]{credit}",
+                f"[00:35.00]{credit} 2",
+            ]
+        )
+    )
+
+    assert [line["stanza_break"] for line in lines] == [
+        False,
+        False,
+        False,
+        True,
+        False,
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert lines[-1]["is_credit"] is True
+
+
 def test_kugou_login_card_uses_kugou_branding(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

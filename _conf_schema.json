@@ -230,7 +230,7 @@
         }
       },
       "qqmusic": {
-        "name": "QQ音乐歌单解析器",
+        "name": "QQ音乐解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -256,7 +256,7 @@
             "default": ["lossless", "high", "standard"]
           },
           "parse_lyrics": {
-            "description": "解析单曲时同时解析歌词",
+            "description": "返回歌词解析",
             "hint": "开启后，解析 QQ 音乐单曲链接时会尝试获取并发送歌词卡片。",
             "type": "bool",
             "default": false
@@ -283,7 +283,7 @@
         }
       },
       "netease": {
-        "name": "网易云音乐歌单解析器",
+        "name": "网易云音乐解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -301,7 +301,7 @@
             "default": "voice"
           },
           "parse_lyrics": {
-            "description": "解析单曲时同时解析歌词",
+            "description": "返回歌词解析",
             "hint": "开启后，解析网易云音乐单曲链接时会尝试获取并发送歌词卡片。",
             "type": "bool",
             "default": false
@@ -335,7 +335,7 @@
         }
       },
       "kugou": {
-        "name": "酷狗音乐歌单解析器",
+        "name": "酷狗音乐解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -374,7 +374,7 @@
         }
       },
       "qishui": {
-        "name": "汽水音乐歌单解析器",
+        "name": "汽水音乐解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -393,7 +393,7 @@
         }
       },
       "kuwo": {
-        "name": "酷我音乐歌单解析器",
+        "name": "酷我音乐解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
@@ -412,7 +412,7 @@
         }
       },
       "applemusic": {
-        "name": "Apple Music 单曲/歌单解析器",
+        "name": "Apple Music 单曲解析器",
         "items": {
           "enable": {"description": "启用", "type": "bool", "default": true},
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},

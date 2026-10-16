@@ -31,8 +31,8 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
  settings:{backend_enabled:true,return_audio:false,audio_send_format:'file',
   file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true},
  music_parsers:{
-  netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
-  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,audio_send_format:'voice',file_quality_priority:['lossless','high','standard'],show_playlist_cover:true,show_playlist_url:true}},
+  netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,parse_lyrics:false,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
+  qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,parse_lyrics:false,audio_send_format:'voice',file_quality_priority:['lossless','high','standard'],show_playlist_cover:true,show_playlist_url:true}},
   kugou:{key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,available:false,cookie_configured:false,cookie_status:'解析器未启用',settings:{enable:false,return_audio:true,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}}},
  parsers:[
   {key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,cookie_configured:true,cookie_status:'Cookie 已配置'},
@@ -180,6 +180,12 @@ def run(output: Path):
             music_list = frame.locator("#music-parser-list")
             assert music_list.locator("[data-music-parser]").count() == 3
             qq_music = music_list.locator("[data-music-parser='qqmusic']")
+            netease_music = music_list.locator("[data-music-parser='netease']")
+            assert qq_music.locator("[data-music-setting='parse_lyrics']").count() == 1
+            assert netease_music.locator("[data-music-setting='parse_lyrics']").count() == 1
+            qq_music.locator("[data-music-setting='parse_lyrics']").check()
+            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
+            assert page.evaluate("qaState.music_parsers.qqmusic.settings.parse_lyrics === true")
             qq_music.locator("[data-music-setting='audio_send_format']").select_option("file")
             frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
             assert page.evaluate("qaState.music_parsers.qqmusic.settings.audio_send_format === 'file'")
