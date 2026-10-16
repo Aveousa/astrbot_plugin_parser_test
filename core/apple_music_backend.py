@@ -22,13 +22,17 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import aiohttp
 
-from .cache import clear_cache_dir, create_parse_cache_dir, get_active_cache_dir, get_cache_size
+from .cache import (
+    clear_cache_dir,
+    create_parse_cache_dir,
+    get_active_cache_dir,
+    get_cache_size,
+)
 from .exception import DownloadException
 from .music_quality import (
     is_valid_qq_file_quality_priority,
     normalize_qq_file_quality_priority,
 )
-
 
 WRAPPER_VERSION = "0.0.2"
 GAMDL_VERSION = "3.9.1"
@@ -185,6 +189,12 @@ class BackendSettings:
 
 
 class AppleMusicBackend:
+    # Lyrics are an optional enrichment.  Keep their subprocess deadline
+    # bounded independently from the much longer audio-download timeout so a
+    # missing native lyric falls back to LRCLIB quickly.
+    _LYRICS_TIMEOUT = 30.0
+    _MAX_LYRICS_SIZE = 2 * 1024 * 1024
+
     def __init__(
         self,
         config,
@@ -1276,6 +1286,141 @@ class AppleMusicBackend:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
+
+    @staticmethod
+    def _valid_synced_lyrics(text: object) -> bool:
+        """Return whether *text* contains at least one real LRC line.
+
+        gamdl can finish successfully when a track has no lyrics (or when a
+        provider returned metadata only), so the subprocess exit status is not
+        enough.  Requiring a timestamp and non-empty lyric text keeps those
+        cases on the LRCLIB fallback path.
+        """
+
+        if not isinstance(text, str) or not text.strip():
+            return False
+        return bool(
+            re.search(
+                r"(?m)^\s*\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]\s*\S.*$",
+                text,
+            )
+        )
+
+    async def fetch_synced_lyrics(self, url: str) -> str:
+        """Fetch one song's native Apple Music synced lyrics through gamdl.
+
+        This deliberately shares the wrapper/account and subprocess plumbing
+        with :meth:`download`, but invokes gamdl in ``--synced-lyrics-only``
+        mode.  No audio codec, FFmpeg, or ``return_audio`` setting is involved.
+        The method raises :class:`AppleMusicBackendError` for every unavailable
+        or invalid result; callers treat that as an optional-enrichment miss.
+        """
+
+        canonical, identifier = normalize_track_url(url)
+        self._require_enabled()
+        if not self.settings.python:
+            raise AppleMusicBackendError("未配置独立 gamdl Python 环境")
+
+        # Probe before contacting wrapper so an unconfigured/broken optional
+        # backend falls back without an avoidable account request.
+        probe = await self.probe_gamdl()
+        if not isinstance(probe, dict) or probe.get("available") is not True:
+            raise AppleMusicBackendError("gamdl 不可用或版本不兼容")
+
+        me = await self._me()
+        auth = me.get("auth") if isinstance(me, dict) else None
+        if not isinstance(auth, dict) or auth.get("state") != "authenticated":
+            raise AppleMusicBackendError("Apple Music 账号尚未完成认证")
+        active, _storefront, _message = await self._subscription(me)
+        if active is not True:
+            raise AppleMusicBackendError("Apple Music 订阅无效或尚未核验")
+
+        try:
+            cache_root = get_active_cache_dir(self.cfg.cache_dir)
+            directory = create_parse_cache_dir(cache_root, "applemusic_lyrics")
+            output = directory / "output"
+            temporary = directory / "temporary"
+            output.mkdir()
+            temporary.mkdir()
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            raise AppleMusicBackendError("无法创建 Apple Music 歌词临时目录") from exc
+
+        # Use the same safe, explicit wrapper arguments as audio downloads.
+        # The unique output directory prevents concurrent parses from seeing
+        # each other's LRC files.
+        try:
+            configured_timeout = float(self.settings.timeout)
+        except (TypeError, ValueError, OverflowError):
+            configured_timeout = self._LYRICS_TIMEOUT
+        await self._run(
+            [
+                self.settings.python,
+                "-m",
+                "gamdl",
+                "--no-config-file",
+                "--no-exceptions",
+                "--log-level",
+                "ERROR",
+                "--use-wrapper",
+                "--wrapper-url",
+                self.settings.validate(),
+                "--wrapper-decrypt-host",
+                self.settings.decrypt_host,
+                "--wrapper-decrypt-port",
+                str(self.settings.decrypt_port),
+                "--synced-lyrics-only",
+                "--synced-lyrics-format",
+                "lrc",
+                "--output-path",
+                str(output),
+                "--temp-path",
+                str(temporary),
+                # Make the generated path deterministic, while still
+                # validating it by walking the isolated output directory below.
+                "--album-folder-template",
+                "album",
+                "--compilation-folder-template",
+                "album",
+                "--no-album-folder-template",
+                "album",
+                "--single-disc-file-template",
+                identifier,
+                "--multi-disc-file-template",
+                identifier,
+                "--no-album-file-template",
+                identifier,
+                canonical,
+            ],
+            timeout=min(self._LYRICS_TIMEOUT, max(1.0, configured_timeout)),
+            cwd=str(directory),
+        )
+
+        candidates: list[tuple[Path, str]] = []
+        try:
+            output_root = output.resolve()
+            for path in output.rglob("*"):
+                if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".lrc":
+                    continue
+                try:
+                    resolved = path.resolve()
+                    if not resolved.is_relative_to(output_root):
+                        continue
+                    if path.stat().st_size <= 0 or path.stat().st_size > self._MAX_LYRICS_SIZE:
+                        continue
+                    text = path.read_text(encoding="utf-8-sig")
+                except (OSError, UnicodeError):
+                    continue
+                if self._valid_synced_lyrics(text):
+                    candidates.append((path, text.strip()))
+        except OSError:
+            candidates = []
+
+        # A direct single-track request should produce exactly one LRC file.
+        # If gamdl emitted none or an ambiguous set, do not risk displaying a
+        # lyric belonging to another track.
+        if len(candidates) != 1:
+            raise AppleMusicBackendError("gamdl 未生成有效的同步歌词文件")
+        return candidates[0][1]
 
     async def download(
         self,

@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from datetime import datetime
 from html import unescape
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 from aiohttp import ClientError
+from astrbot.api import logger
 
 from ..cookie import CookieJar
 from ..data import AudioContent, ImageContent, ParseResult, Platform
@@ -36,6 +38,25 @@ from ..music_quality import (
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
 from .qqmusic_login import QQMusicLogin
+
+
+def _log_apple_lyrics(level: str, message: str, *args: object) -> None:
+    """Log optional lyric status without making parsing depend on logging."""
+
+    method = getattr(logger, level, None)
+    if not callable(method):
+        return
+    try:
+        method(message, *args)
+    except Exception:
+        # Logging adapters differ between AstrBot releases; a logger failure
+        # must never turn an optional lyric into a failed song parse.
+        return
+
+
+_APPLE_LYRICS_SOURCE: ContextVar[str | None] = ContextVar(
+    "apple_music_lyrics_source", default=None
+)
 
 
 class _JavaScriptReference:
@@ -916,12 +937,12 @@ class KuwoMusicParser(PlaylistParserBase):
 
 class AppleMusicParser(PlaylistParserBase):
     platform = Platform(name="applemusic", display_name="Apple Music")
-    # Apple exposes a ``hasLyrics`` flag in the public catalog response, but
-    # the actual lyric body is served through a MusicKit endpoint that needs a
-    # short-lived Apple token/subscription.  Keep lyric lookup optional and
-    # use LRCLIB's metadata-matched endpoint so the normal Apple card never
-    # depends on that private API.
+    # Native Apple Music lyrics are attempted through the optional gamdl
+    # backend first.  LRCLIB remains the metadata-matched fallback so cards
+    # still work when gamdl/account access is unavailable.
     _LYRICS_API_URL = "https://lrclib.net/api/get"
+    _APPLE_LYRICS_SOURCE_LABEL = "歌词来源：Apple Music 原生同步歌词"
+    _LRCLIB_LYRICS_SOURCE_LABEL = "歌词来源：LRCLIB（Apple Music 元数据匹配）"
 
     # Artist metadata is deliberately separate from the short-lived media
     # files created for one parse.  The JSON file lives in the configured cache
@@ -2208,21 +2229,27 @@ class AppleMusicParser(PlaylistParserBase):
         parser_config = self._music_parser_config()
         return bool(getattr(parser_config, "parse_lyrics", False))
 
-    async def _fetch_apple_lyrics(
+    @staticmethod
+    def _valid_synced_lyrics(text: object) -> bool:
+        """Check that native output contains a timestamped lyric line."""
+
+        if not isinstance(text, str) or not text.strip():
+            return False
+        return bool(
+            re.search(
+                r"(?m)^\s*\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]\s*\S.*$",
+                text,
+            )
+        )
+
+    async def _fetch_apple_lyrics_lrclib(
         self,
         title: str,
         artist_name: str | None = None,
         album_name: str | None = None,
         duration: object = None,
     ) -> str | None:
-        """Fetch LRC/plain lyrics matched to Apple Music metadata.
-
-        Apple Music's public song page only exposes whether lyrics exist.  The
-        private MusicKit lyrics endpoint requires an Apple-issued token, so a
-        best-effort LRCLIB lookup is used when the optional parser setting is
-        enabled.  Any lookup failure is intentionally swallowed: lyrics are an
-        enrichment and must never make an otherwise valid Apple card fail.
-        """
+        """Fetch LRC/plain lyrics matched to Apple Music metadata."""
 
         title = str(title or "").strip()
         if not title:
@@ -2283,6 +2310,93 @@ class AppleMusicParser(PlaylistParserBase):
                 if isinstance(value, str) and value.strip():
                     return value.strip()
         return None
+
+    async def _fetch_apple_lyrics_with_source(
+        self,
+        title: str,
+        artist_name: str | None = None,
+        album_name: str | None = None,
+        duration: object = None,
+        *,
+        url: str | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Try native Apple Music lyrics, then preserve the LRCLIB fallback."""
+
+        backend = getattr(self, "apple_music_backend", None)
+        fetch_native = getattr(backend, "fetch_synced_lyrics", None)
+        backend_settings = getattr(backend, "settings", None)
+        backend_enabled = (
+            backend_settings is None
+            or getattr(backend_settings, "enabled", False) is True
+        )
+        backend_closed = getattr(backend, "closed", False) is True
+        if url and callable(fetch_native) and backend_enabled and not backend_closed:
+            try:
+                native = fetch_native(url)
+                if hasattr(native, "__await__"):
+                    native = await native
+                if self._valid_synced_lyrics(native):
+                    _log_apple_lyrics("info", "[Apple Music] 使用 Apple Music 原生同步歌词")
+                    return str(native).strip(), self._APPLE_LYRICS_SOURCE_LABEL
+                _log_apple_lyrics("debug", "[Apple Music] gamdl 返回的同步歌词无效，回退 LRCLIB")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - lyric enrichment is optional
+                # Backend errors are intentionally sanitized before reaching
+                # this parser; only a short status is logged to aid diagnosis.
+                _log_apple_lyrics(
+                    "debug",
+                    "[Apple Music] 原生歌词获取失败，回退 LRCLIB (%s)",
+                    type(exc).__name__,
+                )
+
+        try:
+            lyrics = await self._fetch_apple_lyrics_lrclib(
+                title,
+                artist_name,
+                album_name,
+                duration,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - lyrics must not break parsing
+            _log_apple_lyrics(
+                "debug",
+                "[Apple Music] LRCLIB 获取失败，跳过歌词卡片 (%s)",
+                type(exc).__name__,
+            )
+            lyrics = None
+        if lyrics:
+            _log_apple_lyrics("info", "[Apple Music] 使用 LRCLIB 元数据匹配歌词")
+            return lyrics, self._LRCLIB_LYRICS_SOURCE_LABEL
+        _log_apple_lyrics("debug", "[Apple Music] 原生歌词与 LRCLIB 均未返回有效歌词")
+        return None, None
+
+    async def _fetch_apple_lyrics(
+        self,
+        title: str,
+        artist_name: str | None = None,
+        album_name: str | None = None,
+        duration: object = None,
+        *,
+        url: str | None = None,
+    ) -> str | None:
+        """Return lyrics while retaining the historical string-only API.
+
+        The source is stored in a task-local context variable for the card
+        builder, so concurrent parser requests cannot overwrite each other's
+        labels while the return value remains an ordinary ``str``.
+        """
+
+        lyrics, source = await self._fetch_apple_lyrics_with_source(
+            title,
+            artist_name,
+            album_name,
+            duration,
+            url=url,
+        )
+        _APPLE_LYRICS_SOURCE.set(source)
+        return lyrics
 
     async def _handle_track(self, searched, *, metadata_only=False):
         track_id = searched.group("song_id") or searched.group("track_id")
@@ -2403,13 +2517,16 @@ class AppleMusicParser(PlaylistParserBase):
             download_cover=not metadata_only,
         )
         if not metadata_only and self._lyrics_enabled():
+            _APPLE_LYRICS_SOURCE.set(None)
             lyrics = await self._fetch_apple_lyrics(
                 title,
                 artist_name,
                 album_name,
                 duration or fallback.get("duration"),
+                url=url,
             )
             if lyrics:
+                lyrics_source = _APPLE_LYRICS_SOURCE.get()
                 result.extra["lyrics"] = {
                     "text": lyrics,
                     "title": title,
@@ -2420,14 +2537,14 @@ class AppleMusicParser(PlaylistParserBase):
                     ),
                     "release_text": _first_text(track, "releaseDate")
                     or _first_text(fallback, "release_date"),
-                    "source_label": "歌词来源：LRCLIB（Apple Music 元数据匹配）",
+                    "source_label": lyrics_source or self._LRCLIB_LYRICS_SOURCE_LABEL,
                 }
         backend = getattr(self, "apple_music_backend", None)
         parser_config = self._music_parser_config()
         if (
             backend is not None
             and not metadata_only
-            and backend.settings.enabled
+            and getattr(getattr(backend, "settings", None), "enabled", False)
             and getattr(parser_config, "return_audio", False)
         ):
             # Keep Apple Music's send choice local to this parser.  The file
