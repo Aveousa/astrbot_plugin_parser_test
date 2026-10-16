@@ -81,6 +81,8 @@ def test_configuration_exposes_single_card_switch_and_template_selector():
     assert schema["card_custom_font"]["default"] == []
     assert schema["card_dynamic_color"]["default"] is False
     assert schema["card_dynamic_color"]["type"] == "bool"
+    assert schema["compact_forward_non_audio"]["default"] is False
+    assert schema["compact_forward_non_audio"]["type"] == "bool"
     assert "APPLE" in schema["emoji_style"]["options"]
     assert schema["single_heavy_render_card"]["invisible"] is True
 
@@ -156,6 +158,8 @@ def test_plugin_config_initialization_migrates_card_switches(
     assert config.card_template == "apple"
     assert config.card_custom_font == []
     assert config.card_dynamic_color is False
+    assert config.compact_forward_non_audio is False
+    assert raw["compact_forward_non_audio"] is False
     assert "card_render_enabled" not in raw
     assert "card_send_enabled" not in raw
     assert raw.save_calls >= 1

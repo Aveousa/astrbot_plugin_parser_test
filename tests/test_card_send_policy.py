@@ -144,12 +144,110 @@ class _Renderer:
 def _card_config(**overrides):
     config = {
         "forward_threshold": 2,
+        "compact_forward_non_audio": False,
         "card_enabled": True,
         "show_download_fail_tip": True,
         "audio_to_file": True,
     }
     config.update(overrides)
     return SimpleNamespace(**config)
+
+
+def test_compact_forward_non_audio_mode_folds_multiple_contents(
+    sender_module,
+):
+    images = [ImageContent(Path("one.png")), ImageContent(Path("two.png"))]
+    result = ParseResult(platform=Platform("bilibili", "Bilibili"), contents=images)
+    sender = sender_module.MessageSender(
+        _card_config(forward_threshold=100, compact_forward_non_audio=True),
+        _Renderer(),
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[0][0].path == "card.png"
+    assert event.sent[1][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
+        "one.png", "two.png",
+    ]
+
+
+def test_compact_forward_non_audio_mode_flattens_explicit_groups(
+    sender_module,
+):
+    first = ImageContent(Path("one.png"))
+    second = ImageContent(Path("two.png"))
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        send_groups=[
+            SendGroup(contents=[first], force_merge=False),
+            SendGroup(contents=[second], force_merge=False),
+        ],
+    )
+    sender = sender_module.MessageSender(
+        _card_config(forward_threshold=100, compact_forward_non_audio=True),
+        _Renderer(),
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[1][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
+        "one.png", "two.png",
+    ]
+
+
+def test_compact_forward_non_audio_mode_keeps_single_content_unfolded(
+    sender_module,
+):
+    image = ImageContent(Path("one.png"))
+    result = ParseResult(platform=Platform("bilibili", "Bilibili"), contents=[image])
+    sender = sender_module.MessageSender(
+        _card_config(forward_threshold=0, compact_forward_non_audio=True),
+        _Renderer(),
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[1][0].__class__.__name__ == "Image"
+    assert event.sent[1][0].path == "one.png"
+
+
+def test_compact_forward_non_audio_mode_keeps_audio_outside_forward(
+    sender_module,
+):
+    contents = [
+        ImageContent(Path("one.png")),
+        AudioContent(Path("song.mp3")),
+        ImageContent(Path("two.png")),
+    ]
+    result = ParseResult(platform=Platform("netease", "网易云音乐"), contents=contents)
+    sender = sender_module.MessageSender(
+        _card_config(
+            forward_threshold=100,
+            compact_forward_non_audio=True,
+            audio_to_file=False,
+        ),
+        _Renderer(),
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 3
+    assert event.sent[0][0].path == "card.png"
+    assert event.sent[1][0].__class__.__name__ == "Nodes"
+    assert [node.content[0].path for node in event.sent[1][0].nodes] == [
+        "one.png", "two.png",
+    ]
+    assert event.sent[2][0].__class__.__name__ == "Record"
+    assert event.sent[2][0].path == "song.mp3"
 
 
 def test_single_card_switch_governs_render_and_send(sender_module):

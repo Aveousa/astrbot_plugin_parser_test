@@ -100,7 +100,7 @@ _LYRIC_CREDIT_PREFIXES = (
 # Lyrics providers do not expose a portable stanza marker. Use the source's
 # blank lines and clear timing pauses first, then keep punctuation continuity
 # from turning a long vocal phrase into a new stanza.
-_LYRIC_STANZA_GAP_SECONDS = 6.0
+_LYRIC_STANZA_GAP_SECONDS = 8.0
 _LYRIC_HARD_STANZA_GAP_SECONDS = 12.0
 _LYRIC_CONTINUATION_ENDINGS = ("，", "、", "：", "；", ",", ":", ";", "（", "(")
 _LYRIC_CONTINUATION_PREFIXES = ("，", "、", "：", "；", ",", ":", ";", "）", ")", "】", "]")

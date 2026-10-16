@@ -1133,6 +1133,14 @@ def test_lyrics_stanza_breaks_use_explicit_pauses_and_continuity(
     assert lines[-1]["is_credit"] is True
 
 
+def test_lyrics_stanza_breaks_use_eight_second_pause_threshold(renderer_module):
+    lines = renderer_module.Renderer._lyrics_lines(
+        "[00:00.00]first\n[00:07.99]still same stanza\n[00:15.99]new stanza"
+    )
+
+    assert [line["stanza_break"] for line in lines] == [False, False, True]
+
+
 def test_kugou_login_card_uses_kugou_branding(
     renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

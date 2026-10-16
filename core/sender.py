@@ -24,6 +24,7 @@ from .data import (
     FileContent,
     GraphicsContent,
     ImageContent,
+    MediaContent,
     ParseResult,
     SendGroup,
     TextContent,
@@ -76,6 +77,7 @@ class MessageSender:
     - 根据解析结果（ParseResult）规划发送策略
     - 在全局开关开启时为每个解析结果发送一张独立信息卡片
     - 控制媒体是否强制合并转发
+    - 按可选全局策略将多个非音频内容集中折叠，音频保持独立发送
     - 将不同类型的内容转换为 AstrBot 消息组件并发送
 
     重要原则：
@@ -95,6 +97,11 @@ class MessageSender:
     def _card_enabled(self) -> bool:
         """卡片开关开启时，才允许渲染并发送信息卡片。"""
         return bool(getattr(self.cfg, "card_enabled", True))
+
+    def _compact_forward_non_audio_enabled(self) -> bool:
+        """Return whether non-audio content should use the anti-spam mode."""
+
+        return bool(getattr(self.cfg, "compact_forward_non_audio", False))
 
     async def _render_card_safely(self, result: ParseResult) -> Path | None:
         """隔离卡片渲染异常，确保不会阻断原媒体发送流程。
@@ -428,6 +435,58 @@ class MessageSender:
             )
         ]
 
+    def _prepare_compact_forward_groups(
+        self,
+        groups: list[SendGroup],
+    ) -> list[SendGroup]:
+        """Apply the optional global anti-spam policy to media groups.
+
+        The policy intentionally operates on ``MediaContent`` before download
+        and message-component conversion.  This keeps ``AudioContent``
+        distinguishable from ordinary files, so audio remains a normal voice
+        or file message while every other content type can be folded together.
+        Explicit parser groups are flattened only in this opt-in mode; the
+        default sender path keeps their existing semantics unchanged.
+        """
+
+        if not self._compact_forward_non_audio_enabled():
+            return groups
+
+        non_audio: list[MediaContent] = []
+        audio_groups: list[SendGroup] = []
+        for group in groups:
+            group_audio = [
+                content
+                for content in group.contents
+                if isinstance(content, AudioContent)
+            ]
+            non_audio.extend(
+                content
+                for content in group.contents
+                if not isinstance(content, AudioContent)
+            )
+            if group_audio:
+                # Audio must never be pulled into a forward node, even when a
+                # parser explicitly marked its original group as mergeable.
+                audio_groups.append(
+                    SendGroup(
+                        contents=group_audio,
+                        force_merge=False,
+                        render_card=group.render_card,
+                    )
+                )
+
+        compact_group = None
+        if non_audio:
+            # A single item does not benefit from a forward node and would
+            # make the message look more complicated rather than less noisy.
+            compact_group = SendGroup(
+                contents=non_audio,
+                force_merge=len(non_audio) > 1,
+            )
+
+        return ([compact_group] if compact_group is not None else []) + audio_groups
+
     async def _send_group(
         self,
         event: AstrMessageEvent,
@@ -441,7 +500,13 @@ class MessageSender:
         )
 
         segs = await self._build_segments(result, plan)
-        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
+        force_merge = plan["force_merge"]
+        if self._compact_forward_non_audio_enabled() and len(segs) < 2:
+            # A failed download or an empty TextContent can reduce a compact
+            # group to one actual component; do not leave a pointless single
+            # node behind in that case.
+            force_merge = False
+        segs = self._merge_segments_if_needed(event, segs, force_merge)
 
         if not segs:
             return False
@@ -853,6 +918,8 @@ class MessageSender:
                 )
                 for group in groups
             ]
+
+        groups = self._prepare_compact_forward_groups(groups)
 
         sent = False
         for group in groups:

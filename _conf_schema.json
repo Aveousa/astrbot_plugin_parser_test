@@ -58,6 +58,12 @@
     "slider": {"min": 0, "max": 10, "step": 1},
     "default": 2
   },
+  "compact_forward_non_audio": {
+    "description": "非音频内容统一折叠发送",
+    "hint": "关闭时按合并转发阈值和解析器分组决定；开启后，同一解析结果中的多个图片、视频、文本或普通文件会合并为一条转发消息，以减少刷屏。音频始终单独发送，单个非音频项目不折叠。",
+    "type": "bool",
+    "default": false
+  },
   "card_enabled": {
     "description": "渲染并发送信息卡片",
     "hint": "关闭后不生成 HTML/PNG，也不发送卡片；原媒体发送流程不受影响",

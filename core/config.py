@@ -253,6 +253,7 @@ class PluginConfig(ConfigNode):
     audio_to_file: bool
     single_heavy_render_card: bool
     forward_threshold: int
+    compact_forward_non_audio: bool
 
     # 信息卡片只有一个开关：开启即渲染并发送，关闭即完全跳过卡片链路。
     card_enabled: bool
@@ -300,6 +301,7 @@ class PluginConfig(ConfigNode):
             "card_custom_font": [],
             "card_dynamic_color": False,
             "emoji_style": "APPLE",
+            "compact_forward_non_audio": False,
         }
         for key, value in defaults.items():
             if config.get(key) is None:
