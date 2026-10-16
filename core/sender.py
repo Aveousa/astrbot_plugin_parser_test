@@ -745,6 +745,12 @@ class MessageSender:
         if not callable(render):
             return
 
+        # Keep the existing display by default for older configs.  This is a
+        # presentation-only switch; lyric fetching and parsing have already
+        # completed before the card is rendered.
+        show_release_time = bool(
+            getattr(self.cfg, "lyrics_show_release_time", True)
+        )
         cover_path = None
         for content in result.contents:
             if isinstance(content, ImageContent):
@@ -763,7 +769,9 @@ class MessageSender:
                 or (result.author.name if result.author else None),
                 album=lyrics.get("album"),
                 duration_seconds=lyrics.get("duration_seconds"),
-                release_text=lyrics.get("release_text"),
+                release_text=(
+                    lyrics.get("release_text") if show_release_time else None
+                ),
                 source_label=lyrics.get("source_label"),
                 cover_path=cover_path,
             )

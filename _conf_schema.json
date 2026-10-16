@@ -97,6 +97,12 @@
     "type": "bool",
     "default": false
   },
+  "lyrics_show_release_time": {
+    "description": "显示歌词卡片发布时间",
+    "hint": "关闭后只隐藏歌词卡片中的发布时间，不影响歌词解析和其他歌曲元数据",
+    "type": "bool",
+    "default": true
+  },
   "emoji_style": {
     "description": "表情样式",
     "hint": "APPLE 使用 Apple 风格资源；没有本地资源时回退为系统字体",

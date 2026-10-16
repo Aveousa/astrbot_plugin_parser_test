@@ -17,6 +17,7 @@ from core.parsers.music import (
     QishuiMusicParser,
     QQMusicParser,
     _duration_seconds,
+    _format_release_text,
 )
 
 
@@ -1853,6 +1854,12 @@ def test_netease_lyrics_are_read_from_lyric_endpoint():
     assert lyrics == "[00:01.00]Hello\n[00:02.00]world"
     assert "id=3395393731" in request["url"]
     assert request["headers"]["Cookie"] == "MUSIC_U=test"
+
+
+def test_release_text_formats_netease_millisecond_timestamp():
+    assert _format_release_text(1713888000000, milliseconds=True) == "2024-04-24"
+    assert _format_release_text("2024-04-24", milliseconds=True) == "2024-04-24"
+    assert _format_release_text("not-a-date", milliseconds=True) == "not-a-date"
 
 
 def test_qqmusic_lyrics_decode_base64_from_official_response():

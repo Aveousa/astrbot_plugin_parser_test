@@ -261,6 +261,7 @@ class PluginConfig(ConfigNode):
     card_custom_template: str | None
     card_custom_font: list[str]
     card_dynamic_color: bool
+    lyrics_show_release_time: bool
     emoji_style: str
 
     show_download_fail_tip: bool
@@ -300,6 +301,7 @@ class PluginConfig(ConfigNode):
             "card_custom_template": "",
             "card_custom_font": [],
             "card_dynamic_color": False,
+            "lyrics_show_release_time": True,
             "emoji_style": "APPLE",
             "compact_forward_non_audio": False,
         }

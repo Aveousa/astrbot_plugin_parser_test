@@ -286,6 +286,28 @@ def _date_timestamp(value: object, *, milliseconds: bool = False) -> int | None:
     return int(parsed.timestamp())
 
 
+def _format_release_text(value: object, *, milliseconds: bool = False) -> str | None:
+    """Return a compact, human-readable release date for card metadata.
+
+    Some platform payloads expose the release date as an epoch timestamp
+    (NetEase uses milliseconds), while others already provide a date string.
+    Keep non-date values intact so a malformed optional field never prevents
+    the rest of a track from being parsed.
+    """
+
+    if value is None:
+        return None
+    timestamp = _date_timestamp(value, milliseconds=milliseconds)
+    if timestamp is not None:
+        try:
+            return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+        except (OverflowError, OSError, ValueError):
+            # An out-of-range optional timestamp should not break parsing.
+            pass
+    text = str(value).strip()
+    return text or None
+
+
 def _duration_seconds(value: object) -> float:
     """Normalize the duration formats returned by music platforms.
 
@@ -3436,7 +3458,12 @@ class NetEaseMusicParser(PlaylistParserBase):
                     "duration_seconds": _duration_seconds(
                         track.get("duration") or track.get("dt")
                     ),
-                    "release_text": _first_text(track, "publishTime"),
+                    # NetEase returns publishTime as milliseconds.  Keep the
+                    # lyric card readable instead of exposing the raw epoch
+                    # value (which can look like a song ID).
+                    "release_text": _format_release_text(
+                        track.get("publishTime"), milliseconds=True
+                    ),
                 }
         return result
 

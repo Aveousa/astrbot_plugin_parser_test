@@ -325,6 +325,44 @@ def test_lyrics_card_is_sent_after_regular_result_and_uses_platform_logo(
     assert event.sent[0][0].path.endswith(f"{platform_name}.png")
 
 
+@pytest.mark.parametrize("show_release_time", [True, False])
+def test_lyrics_card_release_time_visibility_switch(
+    sender_module, tmp_path: Path, show_release_time: bool
+):
+    captured = {}
+
+    class LyricsRenderer:
+        async def render_lyrics_card(self, lyrics, **kwargs):
+            captured.update(kwargs)
+            return tmp_path / "lyrics.png"
+
+    config = _card_config(
+        lyrics_show_release_time=show_release_time,
+        parser=SimpleNamespace(
+            netease=SimpleNamespace(parse_lyrics=True),
+        ),
+    )
+    sender = sender_module.MessageSender(config, LyricsRenderer())
+    result = ParseResult(
+        platform=Platform("netease", "缃戞槗浜戦煶涔?"),
+        title="Song",
+        extra={
+            "music_type": "track",
+            "lyrics": {
+                "text": "[00:01.00]Line",
+                "title": "Song",
+                "release_text": "2024-04-24",
+            },
+        },
+    )
+
+    asyncio.run(sender._send_lyrics_card(_Event(), result))
+
+    assert captured["release_text"] == (
+        "2024-04-24" if show_release_time else None
+    )
+
+
 @pytest.mark.parametrize("platform_name", ["bilibili", "douyin", "xhs", "pixiv"])
 def test_global_card_is_sent_once_for_every_platform(
     sender_module, platform_name: str
