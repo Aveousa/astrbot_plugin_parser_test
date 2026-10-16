@@ -261,32 +261,29 @@
     }
 
     .lyric-line {
-      display: flex;
-      justify-content: center;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
       gap: 14px;
       align-items: baseline;
       min-height: 29px;
       color: var(--secondary);
       font-size: 16px;
       line-height: 1.55;
-      text-align: center;
     }
 
     .lyric-line--stanza { margin-top: 13px; }
 
     .lyric-time {
-      flex: 0 0 42px;
       color: #6F6D85;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 10px;
       font-variant-numeric: tabular-nums;
       letter-spacing: .01em;
-      text-align: right;
+      text-align: left;
     }
 
     .lyric-text {
       min-width: 0;
-      max-width: calc(100% - 56px);
       overflow-wrap: anywhere;
       text-align: center;
     }
@@ -296,7 +293,7 @@
     }
 
     .lyric-time:empty + .lyric-text {
-      max-width: 100%;
+      grid-column: 1 / -1;
     }
 
     .lyric-line--credit .lyric-text {
