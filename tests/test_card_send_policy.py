@@ -274,9 +274,13 @@ def test_compact_forward_non_audio_mode_keeps_audio_outside_forward(
     assert event.sent[1][0].path == "song.mp3"
 
 
+@pytest.mark.parametrize(
+    "platform_name", ["netease", "qqmusic", "applemusic", "kugou"]
+)
 def test_compact_forward_non_audio_mode_folds_lyrics_card_with_audio(
     sender_module,
     tmp_path: Path,
+    platform_name: str,
 ):
     class LyricsRenderer(_Renderer):
         async def render_lyrics_card(self, _lyrics, **_kwargs):
@@ -287,7 +291,7 @@ def test_compact_forward_non_audio_mode_folds_lyrics_card_with_audio(
         compact_forward_non_audio=True,
         audio_to_file=False,
         parser=SimpleNamespace(
-            netease=SimpleNamespace(parse_lyrics=True),
+            **{platform_name: SimpleNamespace(parse_lyrics=True)},
         ),
     )
     result = ParseResult(
@@ -298,6 +302,7 @@ def test_compact_forward_non_audio_mode_folds_lyrics_card_with_audio(
             "lyrics": {"text": "[00:01.00]Line", "title": "Song"},
         },
     )
+    result.platform = Platform(platform_name, platform_name)
     sender = sender_module.MessageSender(config, LyricsRenderer())
     event = _Event()
 
@@ -351,7 +356,9 @@ def test_disabled_card_switch_skips_direct_render_attempt(sender_module):
     assert not renderer.calls
 
 
-@pytest.mark.parametrize("platform_name", ["netease", "qqmusic"])
+@pytest.mark.parametrize(
+    "platform_name", ["netease", "qqmusic", "applemusic", "kugou"]
+)
 def test_lyrics_card_is_sent_after_regular_result_and_uses_platform_logo(
     sender_module, tmp_path: Path, platform_name: str
 ):
@@ -385,6 +392,42 @@ def test_lyrics_card_is_sent_after_regular_result_and_uses_platform_logo(
     assert order == [("regular",), ("render", platform_name, "[00:01.00]Line")]
     assert len(event.sent) == 1
     assert event.sent[0][0].path.endswith(f"{platform_name}.png")
+
+
+def test_kugou_lyrics_card_logs_render_and_send_states(
+    sender_module, tmp_path: Path,
+):
+    infos = []
+    sender_module.logger.info = infos.append
+
+    class LyricsRenderer:
+        async def render_lyrics_card(self, lyrics, **_kwargs):
+            assert lyrics == "[00:01.00]Line"
+            return tmp_path / "kugou.png"
+
+    config = _card_config(
+        parser=SimpleNamespace(kugou=SimpleNamespace(parse_lyrics=True))
+    )
+    sender = sender_module.MessageSender(config, LyricsRenderer())
+    result = ParseResult(
+        platform=Platform("kugou", "酷狗音乐"),
+        title="Song",
+        extra={
+            "music_type": "track",
+            "lyrics": {"text": "[00:01.00]Line", "title": "Song"},
+        },
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert event.sent[0][0].__class__.__name__ == "Plain"
+    assert event.sent[1][0].path.endswith("kugou.png")
+    assert any("已取得歌词，开始生成歌词卡片" in message for message in infos)
+    assert any("歌词卡片生成成功" in message for message in infos)
+    assert any("歌词卡片发送成功" in message for message in infos)
+    assert all("[00:01.00]Line" not in message for message in infos)
 
 
 @pytest.mark.parametrize("show_release_time", [True, False])

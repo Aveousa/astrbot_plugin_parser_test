@@ -744,20 +744,38 @@ class MessageSender:
         and ordinary media before deciding whether a forward node is needed.
         """
 
+        platform_key = result.platform.name.lower()
         if result.extra.get("music_type") != "track":
+            if platform_key == "kugou":
+                _log_info("[酷狗音乐] 歌词卡片跳过：解析结果不是单曲")
             return None
-        platform_key = result.platform.name
-        if platform_key not in {"netease", "qqmusic", "applemusic"}:
+        if platform_key not in {
+            "netease",
+            "qqmusic",
+            "kugou",
+            "applemusic",
+        }:
             return None
         parser_config = getattr(getattr(self.cfg, "parser", None), platform_key, None)
         if not bool(getattr(parser_config, "parse_lyrics", False)):
+            if platform_key == "kugou":
+                _log_info("[酷狗音乐] 歌词卡片跳过：解析歌词开关未开启")
             return None
         lyrics = result.extra.get("lyrics")
         if not isinstance(lyrics, dict) or not lyrics.get("text"):
+            if platform_key == "kugou":
+                _log_info("[酷狗音乐] 歌词卡片跳过：解析结果中没有可呈现的歌词")
             return None
         render = getattr(self.renderer, "render_lyrics_card", None)
         if not callable(render):
+            if platform_key == "kugou":
+                _log_info("[酷狗音乐] 歌词卡片跳过：歌词卡片渲染器不可用")
             return None
+        if platform_key == "kugou":
+            lyric_text = str(lyrics["text"])
+            _log_info(
+                f"[酷狗音乐] 已取得歌词，开始生成歌词卡片（chars={len(lyric_text)}）"
+            )
 
         # Keep the existing display by default for older configs.  This is a
         # presentation-only switch; lyric fetching and parsing have already
@@ -790,9 +808,18 @@ class MessageSender:
                 source_label=lyrics.get("source_label"),
                 cover_path=cover_path,
             )
-            return Path(image_path) if image_path else None
+            if not image_path:
+                if platform_key == "kugou":
+                    _log_info("[酷狗音乐] 歌词卡片渲染器未生成图片，卡片跳过")
+                return None
+            if platform_key == "kugou":
+                _log_info("[酷狗音乐] 歌词卡片生成成功")
+            return Path(image_path)
         except Exception as exc:
-            logger.error(f"歌词卡片生成失败，已跳过: {exc}")
+            logger.error(
+                f"[{result.platform.display_name}] 歌词卡片生成失败，已跳过: "
+                f"error_type={type(exc).__name__}"
+            )
             return None
 
     async def _send_lyrics_card(
@@ -807,8 +834,13 @@ class MessageSender:
                 await event.send(
                     event.chain_result([self._image_from_path(image_path)])
                 )
+                if result.platform.name.lower() == "kugou":
+                    _log_info("[酷狗音乐] 歌词卡片发送成功")
             except Exception as exc:
-                logger.error(f"歌词卡片发送失败，已跳过: {exc}")
+                logger.error(
+                    f"[{result.platform.display_name}] 歌词卡片发送失败，已跳过: "
+                    f"error_type={type(exc).__name__}"
+                )
 
     async def _send_parse_result(
         self,
@@ -997,7 +1029,19 @@ class MessageSender:
 
         sent = False
         for group in groups:
-            sent = await self._send_group(event, result, group) or sent
+            group_has_lyrics_card = lyrics_path is not None and any(
+                isinstance(content, ImageContent)
+                and content.path_task == Path(lyrics_path)
+                for content in group.contents
+            )
+            group_sent = await self._send_group(event, result, group)
+            if group_has_lyrics_card and result.platform.name.lower() == "kugou":
+                _log_info(
+                    "[酷狗音乐] 歌词卡片随紧凑转发消息发送成功"
+                    if group_sent
+                    else "[酷狗音乐] 歌词卡片所在紧凑转发消息发送失败或无可发送内容"
+                )
+            sent = group_sent or sent
 
         if direct_audio_content is not None:
             message_type = (

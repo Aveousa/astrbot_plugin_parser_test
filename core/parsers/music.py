@@ -54,6 +54,19 @@ def _log_apple_lyrics(level: str, message: str, *args: object) -> None:
         return
 
 
+def _log_kugou_lyrics(level: str, message: str, *args: object) -> None:
+    """Log optional Kugou lyric progress without exposing lyric contents."""
+
+    method = getattr(logger, level, None)
+    if not callable(method):
+        return
+    try:
+        method(message, *args)
+    except Exception:
+        # Optional diagnostics must not affect the normal track parse.
+        return
+
+
 _APPLE_LYRICS_SOURCE: ContextVar[str | None] = ContextVar(
     "apple_music_lyrics_source", default=None
 )
@@ -3919,32 +3932,67 @@ class KugouMusicParser(PlaylistParserBase):
         normalized_hash = str(song_hash or "").strip()
         normalized_keyword = str(keyword or "").strip()
         if not normalized_hash or not normalized_keyword:
+            _log_kugou_lyrics(
+                "info",
+                "[酷狗音乐] 歌词请求跳过：缺少单曲标识或歌曲关键词",
+            )
             return None
 
         cookie = self._kugou_cookie_header(self._LYRICS_API_URL)
-        request_url = self._LYRICS_API_URL + "?" + urlencode(
-            self._kugou_lyrics_params(
-                song_hash=normalized_hash,
-                keyword=normalized_keyword,
-                duration=duration,
-                cookie=cookie,
-            )
+        params = self._kugou_lyrics_params(
+            song_hash=normalized_hash,
+            keyword=normalized_keyword,
+            duration=duration,
+            cookie=cookie,
         )
+        request_url = self._LYRICS_API_URL + "?" + urlencode(params)
         headers = {"Referer": "https://h5.kugou.com/"}
         if cookie:
             headers["Cookie"] = cookie
+        _log_kugou_lyrics(
+            "info",
+            "[酷狗音乐] 开始请求单曲歌词接口（timelength_ms=%s）",
+            params["timelength"],
+        )
         try:
             body = await self._json_request(request_url, headers=headers)
-        except (ParseException, ClientError, TimeoutError):
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - lyrics must not break song parsing
+            _log_kugou_lyrics(
+                "warning",
+                "[酷狗音乐] 歌词接口请求失败，按无歌词继续（error_type=%s）",
+                type(exc).__name__,
+            )
             return None
 
         if not isinstance(body, Mapping):
+            _log_kugou_lyrics(
+                "info", "[酷狗音乐] 歌词接口返回格式无效：响应不是对象"
+            )
             return None
         data = body.get("data")
         if not isinstance(data, Mapping):
+            _log_kugou_lyrics(
+                "info", "[酷狗音乐] 歌词接口未返回有效数据字段"
+            )
             return None
         lyrics = _first_text(data, "lrc")
-        return lyrics.strip() if lyrics and lyrics.strip() else None
+        lyrics = lyrics.strip() if lyrics and lyrics.strip() else None
+        if not lyrics:
+            _log_kugou_lyrics(
+                "info", "[酷狗音乐] 歌词接口响应正常，但没有返回可用 LRC"
+            )
+            return None
+
+        line_count = sum(1 for line in lyrics.splitlines() if line.strip())
+        _log_kugou_lyrics(
+            "info",
+            "[酷狗音乐] 歌词接口已返回 LRC（chars=%s lines=%s）",
+            len(lyrics),
+            line_count,
+        )
+        return lyrics
 
     @staticmethod
     def _kugou_artist_avatar_url(value: Mapping[str, Any] | None) -> str | None:
@@ -4007,6 +4055,10 @@ class KugouMusicParser(PlaylistParserBase):
         fallback = fallback if isinstance(fallback, Mapping) else {}
         return_audio = self._return_audio_enabled()
         lyrics_enabled = self._lyrics_enabled()
+        if lyrics_enabled:
+            _log_kugou_lyrics(
+                "info", "[酷狗音乐] 歌词解析已开启，开始为单曲补充歌词"
+            )
         info = (
             await self._fetch_kugou_song_info(
                 song_hash,
@@ -4096,6 +4148,24 @@ class KugouMusicParser(PlaylistParserBase):
                     "album": album_name or _first_text(info, "album_name"),
                     "duration_seconds": _duration_seconds(duration),
                 }
+                line_count = sum(
+                    1 for line in lyrics.splitlines() if line.strip()
+                )
+                _log_kugou_lyrics(
+                    "info",
+                    "[酷狗音乐] 歌词已附加到解析结果（chars=%s lines=%s）",
+                    len(lyrics),
+                    line_count,
+                )
+            else:
+                _log_kugou_lyrics(
+                    "info",
+                    "[酷狗音乐] 未取得歌词，解析结果不包含歌词卡片数据",
+                )
+        else:
+            _log_kugou_lyrics(
+                "debug", "[酷狗音乐] 歌词解析开关未开启，跳过歌词请求"
+            )
         return result
 
     @staticmethod

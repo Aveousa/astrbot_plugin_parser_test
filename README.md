@@ -112,4 +112,5 @@ python -m playwright install chromium-headless-shell
 ## 致谢
 
 本项目核心代码来自 [nonebot-plugin-parser](https://github.com/fllesser/nonebot-plugin-parser)与[astrbot_plugin_parser](https://github.com/Zhalslar/astrbot_plugin_parser)。
-感谢[karin-plugin-kkk](https://github.com/ikenxuan/karin-plugin-kkk)项目提供的抖音实况图（组）的实现方式！
+感谢[karin-plugin-kkk](https://github.com/ikenxuan/karin-plugin-kkk)项目提供的抖音实况图（组）的实现方式。
+感谢[gamdl](https://github.com/glomatico/gamdl)项目提供的Apple music的下载提供支持。

@@ -19,6 +19,7 @@ from core.parsers.music import (
     _duration_seconds,
     _format_release_text,
 )
+import core.parsers.music as music_parser_module
 
 
 class _Downloader:
@@ -1194,6 +1195,104 @@ def test_kugou_fetches_lrc_from_public_h5_endpoint():
     assert params["keyword"] == ["Artist - Song"]
     assert params["timelength"] == ["61000"]
     assert request_kwargs["headers"]["Cookie"] == "kg_mid=test-mid"
+
+
+def test_kugou_lyrics_fetch_logs_empty_response_without_lyric_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    infos = []
+    monkeypatch.setattr(
+        music_parser_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: infos.append(
+                message % args if args else message
+            ),
+            warning=lambda message, *args: infos.append(
+                message % args if args else message
+            ),
+        ),
+    )
+
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: ""
+        )
+
+        async def request(_url, **_kwargs):
+            return {"status": 1, "data": {}}
+
+        parser._json_request = request
+        return await parser._fetch_kugou_lyrics(
+            "song-hash", keyword="Artist - Song", duration=61
+        )
+
+    assert asyncio.run(build()) is None
+    assert any("开始请求单曲歌词接口" in message for message in infos)
+    assert any("没有返回可用 LRC" in message for message in infos)
+    assert all("Artist - Song" not in message for message in infos)
+
+
+def test_kugou_single_track_attaches_lyrics_and_logs_progress(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    infos = []
+    monkeypatch.setattr(
+        music_parser_module,
+        "logger",
+        SimpleNamespace(
+            info=lambda message, *args: infos.append(
+                message % args if args else message
+            ),
+            debug=lambda message, *args: infos.append(
+                message % args if args else message
+            ),
+            warning=lambda message, *args: infos.append(
+                message % args if args else message
+            ),
+        ),
+    )
+
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(
+                kugou=SimpleNamespace(
+                    use_proxy=False, return_audio=False, parse_lyrics=True
+                )
+            ),
+        )
+        parser.downloader = _Downloader()
+        parser.headers = {}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: ""
+        )
+
+        async def fetch_song_info(*_args, **_kwargs):
+            return {}
+
+        async def fetch_lyrics(*_args, **_kwargs):
+            return "[00:01.00]Secret lyric text"
+
+        parser._fetch_kugou_song_info = fetch_song_info
+        parser._fetch_kugou_lyrics = fetch_lyrics
+        return await parser._kugou_single_result(
+            source_url="https://www.kugou.com/mixsong/demo.html",
+            song_hash="song-hash",
+            fallback={
+                "song_name": "Song",
+                "author_name": "Artist",
+                "timelength": 180000,
+            },
+        )
+
+    result = asyncio.run(build())
+
+    assert result.extra["lyrics"]["text"] == "[00:01.00]Secret lyric text"
+    assert any("歌词已附加到解析结果" in message for message in infos)
+    assert all("Secret lyric text" not in message for message in infos)
 
 
 def test_kugou_return_audio_disabled_skips_playback_request_and_keeps_card():
