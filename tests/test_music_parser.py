@@ -1137,6 +1137,65 @@ def test_kugou_track_uses_cookie_and_marks_audio_as_onebot_voice():
     )
 
 
+def test_kugou_lyrics_params_use_h5_client_signature_and_duration():
+    params = KugouMusicParser._kugou_lyrics_params(
+        song_hash="abc123",
+        keyword="Artist - Song",
+        duration=255582,
+        cookie="kg_mid=test-mid; kg_dfid=test-dfid",
+    )
+
+    assert params["clientver"] == "1000"
+    assert params["appid"] == "1058"
+    assert params["mid"] == "test-mid"
+    assert params["uuid"] == "test-mid"
+    assert params["dfid"] == "test-dfid"
+    assert params["hash"] == "ABC123"
+    assert params["timelength"] == "255000"
+    unsigned = {key: value for key, value in params.items() if key != "signature"}
+    assert params["signature"] == KugouMusicParser._signature(unsigned)
+
+
+def test_kugou_fetches_lrc_from_public_h5_endpoint():
+    async def build():
+        parser = KugouMusicParser.__new__(KugouMusicParser)
+        parser.cfg = SimpleNamespace(
+            proxy=None,
+            parser=SimpleNamespace(kugou=SimpleNamespace(use_proxy=False)),
+        )
+        parser.headers = {"User-Agent": "test"}
+        parser.cookiejar = SimpleNamespace(
+            get_cookie_header_for_url=lambda _url: "kg_mid=test-mid"
+        )
+        requested = []
+
+        async def request(url, **kwargs):
+            requested.append((url, kwargs))
+            return {"status": 1, "data": {"lrc": "[00:01.00]Hello"}}
+
+        parser._json_request = request
+        lyrics = await parser._fetch_kugou_lyrics(
+            "song-hash",
+            keyword="Artist - Song",
+            duration=61,
+        )
+        return lyrics, requested
+
+    lyrics, requested = asyncio.run(build())
+
+    assert lyrics == "[00:01.00]Hello"
+    assert len(requested) == 1
+    request_url, request_kwargs = requested[0]
+    assert request_url.startswith(
+        "https://m3ws.kugou.com/api/v1/krc/get_lyrics?"
+    )
+    params = parse_qs(urlparse(request_url).query)
+    assert params["hash"] == ["SONG-HASH"]
+    assert params["keyword"] == ["Artist - Song"]
+    assert params["timelength"] == ["61000"]
+    assert request_kwargs["headers"]["Cookie"] == "kg_mid=test-mid"
+
+
 def test_kugou_return_audio_disabled_skips_playback_request_and_keeps_card():
     async def build():
         parser = KugouMusicParser.__new__(KugouMusicParser)

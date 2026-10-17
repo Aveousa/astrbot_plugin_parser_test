@@ -445,7 +445,7 @@ class PluginConfig(ConfigNode):
         history_fields = {
             "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "kugou": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
+            "kugou": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "qishui": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
@@ -498,7 +498,7 @@ class PluginConfig(ConfigNode):
             # 即使它被选作迁移基准，也要为两个支持实况图的平台补上默认值。
             if key in {"douyin", "xhs"}:
                 merged.setdefault("motion_photo_send_mode", "livephoto_only")
-            if key in {"qqmusic", "netease", "applemusic"}:
+            if key in {"qqmusic", "netease", "kugou", "applemusic"}:
                 # Older installed templates may predate the optional lyrics
                 # switch; keep upgrades able to use it without resetting the
                 # user's other music parser settings.

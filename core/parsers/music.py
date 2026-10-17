@@ -3548,6 +3548,9 @@ class KugouMusicParser(PlaylistParserBase):
     _KUGOU_SECRET = "NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt"
     _MOBILE_REFERER = "https://m.kugou.com/"
     _WEB_PLAY_URL = "https://wwwapi.kugou.com/play/songinfo"
+    _LYRICS_API_URL = "https://m3ws.kugou.com/api/v1/krc/get_lyrics"
+    _LYRICS_APP_ID = "1058"
+    _LYRICS_CLIENT_VERSION = "1000"
     # This restricted track is used only for a lightweight, read-only startup
     # check that the web-player accepts the account token; its playback
     # entitlement is deliberately not part of Cookie validation.
@@ -3597,6 +3600,10 @@ class KugouMusicParser(PlaylistParserBase):
         cookie = self._kugou_cookie_header(self._WEB_PLAY_URL)
         user_id, token = self._kugou_account_credentials(cookie)
         return bool(user_id and token)
+
+    def _lyrics_enabled(self) -> bool:
+        parser_config = self._music_parser_config()
+        return bool(getattr(parser_config, "parse_lyrics", False))
 
     async def check_cookie(self) -> bool | None:
         """Check whether Kugou's signed web-player API accepts the account token.
@@ -3703,18 +3710,23 @@ class KugouMusicParser(PlaylistParserBase):
         album_id: str | None = None,
         album_audio_id: str | None = None,
         referer: str | None = None,
+        use_web: bool = True,
     ) -> Mapping[str, Any]:
         request_url = (
             "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=" + song_hash
         )
         cookie = self._kugou_cookie_header(request_url)
-        web_info = await self._fetch_kugou_web_song_info(
-            song_hash,
-            cookie=cookie,
-            encode_album_audio_id=encode_album_audio_id,
-            album_id=album_id,
-            album_audio_id=album_audio_id,
-            referer=referer,
+        web_info = (
+            await self._fetch_kugou_web_song_info(
+                song_hash,
+                cookie=cookie,
+                encode_album_audio_id=encode_album_audio_id,
+                album_id=album_id,
+                album_audio_id=album_audio_id,
+                referer=referer,
+            )
+            if use_web
+            else {}
         )
         if web_info:
             return web_info
@@ -3841,6 +3853,99 @@ class KugouMusicParser(PlaylistParserBase):
         info.setdefault("url", play_url)
         return info
 
+    @classmethod
+    def _kugou_lyrics_params(
+        cls,
+        *,
+        song_hash: str,
+        keyword: str,
+        duration: object = None,
+        cookie: str = "",
+    ) -> dict[str, str]:
+        """Build the signed public request used by Kugou's H5 lyric player.
+
+        The lyric bundle uses the public H5 client (``clientver=1000``), not
+        the desktop web-player defaults used by :meth:`_signed_params`.
+        ``kg_mid``/``kg_dfid`` are reused when available; a short-lived
+        browser-like ``mid`` is sufficient for anonymous lyric requests.
+        """
+
+        cookies: dict[str, str] = {}
+        for item in str(cookie or "").split(";"):
+            name, separator, value = item.strip().partition("=")
+            if separator and name:
+                cookies.setdefault(name, value)
+
+        mid = cookies.get("kg_mid", "").strip()
+        if not mid:
+            # Kugou only needs a browser-shaped identifier for this public
+            # endpoint.  Hashing a timestamp keeps it compact and avoids
+            # exposing a raw process timestamp in the request URL.
+            mid = hashlib.md5(
+                f"astrbot-kugou-lyrics-{time.time_ns()}".encode("utf-8")
+            ).hexdigest()
+
+        seconds = _duration_seconds(duration)
+        duration_ms = str(max(0, int(seconds)) * 1000)
+        params: dict[str, str] = {
+            "srcappid": "2919",
+            "clientver": cls._LYRICS_CLIENT_VERSION,
+            "clienttime": str(int(time.time() * 1000)),
+            "mid": mid,
+            "uuid": mid,
+            "dfid": cookies.get("kg_dfid", "-") or "-",
+            "appid": cls._LYRICS_APP_ID,
+            "keyword": str(keyword or "").strip(),
+            "hash": str(song_hash or "").strip().upper(),
+            "timelength": duration_ms,
+        }
+        params["signature"] = cls._signature(params)
+        return params
+
+    async def _fetch_kugou_lyrics(
+        self,
+        song_hash: str,
+        *,
+        keyword: str,
+        duration: object = None,
+    ) -> str | None:
+        """Fetch the public H5 LRC payload for one Kugou track.
+
+        Lyrics are an optional enrichment.  Any network, signature, or
+        response-format failure is treated as a miss so it cannot make the
+        normal song card fail.
+        """
+
+        normalized_hash = str(song_hash or "").strip()
+        normalized_keyword = str(keyword or "").strip()
+        if not normalized_hash or not normalized_keyword:
+            return None
+
+        cookie = self._kugou_cookie_header(self._LYRICS_API_URL)
+        request_url = self._LYRICS_API_URL + "?" + urlencode(
+            self._kugou_lyrics_params(
+                song_hash=normalized_hash,
+                keyword=normalized_keyword,
+                duration=duration,
+                cookie=cookie,
+            )
+        )
+        headers = {"Referer": "https://h5.kugou.com/"}
+        if cookie:
+            headers["Cookie"] = cookie
+        try:
+            body = await self._json_request(request_url, headers=headers)
+        except (ParseException, ClientError, TimeoutError):
+            return None
+
+        if not isinstance(body, Mapping):
+            return None
+        data = body.get("data")
+        if not isinstance(data, Mapping):
+            return None
+        lyrics = _first_text(data, "lrc")
+        return lyrics.strip() if lyrics and lyrics.strip() else None
+
     @staticmethod
     def _kugou_artist_avatar_url(value: Mapping[str, Any] | None) -> str | None:
         """Return only the first artist portrait exposed by Kugou metadata."""
@@ -3901,6 +4006,7 @@ class KugouMusicParser(PlaylistParserBase):
     ) -> ParseResult:
         fallback = fallback if isinstance(fallback, Mapping) else {}
         return_audio = self._return_audio_enabled()
+        lyrics_enabled = self._lyrics_enabled()
         info = (
             await self._fetch_kugou_song_info(
                 song_hash,
@@ -3908,8 +4014,9 @@ class KugouMusicParser(PlaylistParserBase):
                 album_id=_first_text(fallback, "album_id"),
                 album_audio_id=_first_text(fallback, "album_audio_id"),
                 referer=source_url,
+                use_web=return_audio,
             )
-            if return_audio
+            if return_audio or lyrics_enabled
             else {}
         )
         title = (
@@ -3970,6 +4077,25 @@ class KugouMusicParser(PlaylistParserBase):
         )
         if audio_url and audio_url.startswith(("http://", "https://")):
             self._set_audio_delivery(result, audio_url)
+        if lyrics_enabled:
+            lyrics_keyword = (
+                _first_text(info, "fileName", "filename")
+                or _first_text(fallback, "fileName", "filename")
+                or f"{artist_name} - {title}"
+            )
+            lyrics = await self._fetch_kugou_lyrics(
+                song_hash,
+                keyword=lyrics_keyword,
+                duration=duration,
+            )
+            if lyrics:
+                result.extra["lyrics"] = {
+                    "text": lyrics,
+                    "title": title,
+                    "artists": artist_name,
+                    "album": album_name or _first_text(info, "album_name"),
+                    "duration_seconds": _duration_seconds(duration),
+                }
         return result
 
     @staticmethod

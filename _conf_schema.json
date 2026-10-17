@@ -357,6 +357,12 @@
             "type": "bool",
             "default": true
           },
+          "parse_lyrics": {
+            "description": "返回歌词解析",
+            "hint": "开启后，解析酷狗音乐单曲链接时尝试获取官方 LRC 歌词；歌词获取失败不影响歌曲卡片。",
+            "type": "bool",
+            "default": false
+          },
           "audio_send_format": {
             "description": "单曲音频发送模式",
             "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",

@@ -61,7 +61,7 @@ MANAGED_SETTINGS = frozenset({
 MUSIC_SETTINGS = {
     "netease": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
     "qqmusic": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"}),
-    "kugou": frozenset({"enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "kugou": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
 }
 MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "parse_lyrics", "show_playlist_cover", "show_playlist_url"})
 PARSER_LABELS = {
