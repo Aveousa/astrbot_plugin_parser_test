@@ -359,10 +359,18 @@ class MessageSender:
             return segs
 
         nodes = Nodes([])
-        self_id = event.get_self_id()
+        sender_id = str(event.get_sender_id() or "").strip()
+        sender_name = str(event.get_sender_name() or "").strip()
+        # OneBot custom nodes have no separate avatar URL field. Using the
+        # triggering sender's QQ ID lets compatible adapters/clients resolve
+        # that user's avatar; fall back to the bot identity if it is missing.
+        node_uin = sender_id or event.get_self_id()
+        node_name = sender_name or sender_id or "解析器"
 
         for seg in segs:
-            nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
+            nodes.nodes.append(
+                Node(uin=node_uin, name=node_name, content=[seg])
+            )
 
         return [nodes]
 

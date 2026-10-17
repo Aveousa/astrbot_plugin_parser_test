@@ -114,6 +114,8 @@ class _Event:
     def __init__(self):
         self.sent = []
         self.bot = None
+        self.sender_id = "456"
+        self.sender_name = "Link sender"
 
     def chain_result(self, segments):
         return segments
@@ -128,7 +130,10 @@ class _Event:
         return "123"
 
     def get_sender_id(self):
-        return "456"
+        return self.sender_id
+
+    def get_sender_name(self):
+        return self.sender_name
 
 
 class _Renderer:
@@ -151,6 +156,44 @@ def _card_config(**overrides):
     }
     config.update(overrides)
     return SimpleNamespace(**config)
+
+
+def test_forward_nodes_use_triggering_sender_identity(sender_module):
+    sender = sender_module.MessageSender(
+        _card_config(),
+        _Renderer(),
+    )
+    event = _Event()
+
+    folded = sender._merge_segments_if_needed(
+        event,
+        [sender_module.Plain("parsed content")],
+        force_merge=True,
+    )
+
+    node = folded[0].nodes[0]
+    assert node.kwargs["uin"] == "456"
+    assert node.kwargs["name"] == "Link sender"
+
+
+def test_forward_nodes_fall_back_to_parser_identity_without_sender(sender_module):
+    sender = sender_module.MessageSender(
+        _card_config(),
+        _Renderer(),
+    )
+    event = _Event()
+    event.sender_id = ""
+    event.sender_name = ""
+
+    folded = sender._merge_segments_if_needed(
+        event,
+        [sender_module.Plain("parsed content")],
+        force_merge=True,
+    )
+
+    node = folded[0].nodes[0]
+    assert node.kwargs["uin"] == "bot"
+    assert node.kwargs["name"] == "解析器"
 
 
 def test_compact_forward_non_audio_mode_folds_multiple_contents(
