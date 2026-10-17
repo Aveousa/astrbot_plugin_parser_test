@@ -230,6 +230,8 @@ def test_music_cookie_status_is_checked_manually_and_bound_to_cookie_value(tmp_p
             result = await backend.check_music_cookie("admin", "qqmusic")
             assert result["cookie_validity"] == "valid"
             assert result["cookie_status"] == "Cookie 有效"
+            assert "账号 Cookie 有效" in result["message"]
+            assert "播放权限由平台决定" in result["message"]
             assert "private-key" not in json.dumps(result)
             assert backend._parser_config_entries()["qqmusic"]["cookie_validity"] == "valid"
 

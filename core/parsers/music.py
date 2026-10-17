@@ -2689,16 +2689,33 @@ class QQMusicParser(PlaylistParserBase):
             return str(getter(url) or "")
         return str(getattr(cookiejar, "cookies_str", "") or "")
 
-    def _qq_cookie_values(self) -> dict[str, str]:
-        cookie_header = self._qq_cookie_header(self._QQ_VKEY_URL)
+    @staticmethod
+    def _qq_cookie_values_from_header(cookie_header: str) -> dict[str, str]:
+        """Parse a Cookie header without interpreting values as URL/query data."""
+
         values: dict[str, str] = {}
         for item in cookie_header.split(";"):
-            if "=" not in item:
-                continue
-            name, value = item.split("=", 1)
-            if name.strip():
+            name, separator, value = item.strip().partition("=")
+            if separator and name.strip():
                 values[name.strip()] = value.strip()
         return values
+
+    def _qq_cookie_values(self) -> dict[str, str]:
+        return self._qq_cookie_values_from_header(
+            self._qq_cookie_header(self._QQ_VKEY_URL)
+        )
+
+    @staticmethod
+    def _qq_account_credentials(cookies: Mapping[str, str]) -> tuple[str, str]:
+        """Return QQ's account identity and auth key across cookie aliases."""
+
+        identity = str(
+            cookies.get("uin") or cookies.get("qqmusic_uin") or ""
+        ).strip()
+        auth_key = str(
+            cookies.get("qqmusic_key") or cookies.get("qm_keyst") or ""
+        ).strip()
+        return identity, auth_key
 
     def has_cookie(self) -> bool:
         return bool(self._qq_cookie_header(self._QQ_PROFILE_URL))
@@ -2706,9 +2723,7 @@ class QQMusicParser(PlaylistParserBase):
     def has_auth_credentials(self) -> bool:
         """Whether the Cookie contains QQ Music account identity and auth key."""
 
-        cookies = self._qq_cookie_values()
-        identity = cookies.get("uin") or cookies.get("qqmusic_uin")
-        auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst")
+        identity, auth_key = self._qq_account_credentials(self._qq_cookie_values())
         return bool(identity and auth_key)
 
     def _return_audio_enabled(self) -> bool:
@@ -2726,7 +2741,12 @@ class QQMusicParser(PlaylistParserBase):
         """Fetch QQ Music LRC lyrics from its song lyric API."""
 
         cookies = self._qq_cookie_values()
-        uin = cookies.get("uin") or cookies.get("ptui_loginuin") or "0"
+        uin = (
+            cookies.get("uin")
+            or cookies.get("qqmusic_uin")
+            or cookies.get("ptui_loginuin")
+            or "0"
+        )
         payload = {
             "comm": {
                 "cv": 0,
@@ -2829,7 +2849,13 @@ class QQMusicParser(PlaylistParserBase):
 
         cookie_header = self._qq_cookie_header(self._QQ_VKEY_URL)
         cookies = self._qq_cookie_values()
-        uin = cookies.get("uin") or cookies.get("ptui_loginuin") or "0"
+        uin = (
+            cookies.get("uin")
+            or cookies.get("qqmusic_uin")
+            or cookies.get("ptui_loginuin")
+            or "0"
+        )
+        auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst") or ""
         filename_mid = media_mid or song_mid
         qualities = tuple(
             quality for quality in quality_priority if quality in QQ_QUALITY_FILENAMES
@@ -2854,7 +2880,7 @@ class QQMusicParser(PlaylistParserBase):
                 "ct": 24,
                 "format": "json",
                 "uin": uin,
-                "g_tk": self._qq_g_tk(cookies.get("qqmusic_key", "")),
+                "g_tk": self._qq_g_tk(auth_key),
                 "platform": "yqq.json",
                 "needNewCode": 1,
             },
@@ -2943,8 +2969,7 @@ class QQMusicParser(PlaylistParserBase):
 
         cookie_header = self._qq_cookie_header(self._QQ_COOKIE_CHECK_URL)
         cookies = self._qq_cookie_values()
-        identity = cookies.get("uin") or cookies.get("qqmusic_uin")
-        auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst")
+        identity, auth_key = self._qq_account_credentials(cookies)
         if not cookie_header or not identity or not auth_key:
             return False
 
@@ -3524,7 +3549,8 @@ class KugouMusicParser(PlaylistParserBase):
     _MOBILE_REFERER = "https://m.kugou.com/"
     _WEB_PLAY_URL = "https://wwwapi.kugou.com/play/songinfo"
     # This restricted track is used only for a lightweight, read-only startup
-    # check of the web-player credentials; media bytes are never downloaded.
+    # check that the web-player accepts the account token; its playback
+    # entitlement is deliberately not part of Cookie validation.
     _COOKIE_CHECK_TRACK = {
         "hash": "DEC2BFFC693EFC0895809F0952244048",
         "album_id": "631501",
@@ -3575,10 +3601,13 @@ class KugouMusicParser(PlaylistParserBase):
     async def check_cookie(self) -> bool | None:
         """Check whether Kugou's signed web-player API accepts the account token.
 
-        ``True`` means the service returned a playable URL for the restricted
-        track probe, ``False`` means the request was rejected or no playable
-        URL was granted, and ``None`` means the endpoint could not be checked
-        (for example, a transient network or response-format error).
+        ``True`` means the service accepted the account token.  The probe track
+        is intentionally not used as a playback entitlement check: Kugou may
+        return a successful response while leaving ``play_url`` empty for a
+        copyrighted or otherwise restricted song.  ``False`` means the
+        request was explicitly rejected, and ``None`` means the endpoint could
+        not be checked (for example, a transient network or response-format
+        error).
         """
 
         cookie = self._kugou_cookie_header(self._WEB_PLAY_URL)
@@ -3607,10 +3636,10 @@ class KugouMusicParser(PlaylistParserBase):
         status = str(payload.get("status", ""))
         error_code = str(payload.get("err_code", ""))
         if status == "1" and error_code == "0":
-            data = payload.get("data")
-            return isinstance(data, Mapping) and bool(
-                _first_text(data, "play_url", "url")
-            )
+            # A successful account response does not imply that this one
+            # track is playable.  Keep authentication state independent from
+            # per-track copyright/member entitlement.
+            return True
         if status in {"0", "-1"} or (error_code and error_code != "0"):
             return False
         return None

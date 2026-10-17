@@ -168,11 +168,11 @@ class ParserPlugin(Star):
                     "qqmusic", self.apple_music_backend._music_cookie_value("qqmusic"), available
                 )
             if available is True:
-                logger.info("[QQ音乐] Cookie 检查通过，可用于受限歌曲音频")
+                logger.info("[QQ音乐] 账号 Cookie 校验通过；具体歌曲播放权限由 QQ 音乐决定")
             elif available is False:
-                logger.warning("[QQ音乐] Cookie 检查未通过，受限歌曲可能无法获取音频")
+                logger.warning("[QQ音乐] 账号 Cookie 校验未通过；请检查登录是否过期并重新扫码")
             else:
-                logger.warning("[QQ音乐] Cookie 检查暂时无法确认，保留待检查状态")
+                logger.warning("[QQ音乐] 账号 Cookie 校验暂时无法确认，保留待检查状态")
 
     async def _check_kugou_cookie(self):
         """Check configured Kugou account credentials after parser registration."""
@@ -207,14 +207,14 @@ class ParserPlugin(Star):
                 )
             if available is True:
                 logger.info(
-                    "[酷狗音乐] Cookie 检查通过，酷狗服务端接受了会员播放请求"
+                    "[酷狗音乐] 账号 Cookie 校验通过；具体歌曲播放权限由酷狗音乐决定"
                 )
             elif available is False:
                 logger.warning(
-                    "[酷狗音乐] Cookie 检查未通过；请检查登录是否过期及账号会员权限"
+                    "[酷狗音乐] 账号 Cookie 校验未通过；请检查登录是否过期并重新扫码"
                 )
             else:
-                logger.warning("[酷狗音乐] Cookie 检查暂不可用，无法确认登录状态")
+                logger.warning("[酷狗音乐] 账号 Cookie 校验暂不可用，无法确认登录状态")
 
     async def terminate(self):
         """插件卸载时触发"""

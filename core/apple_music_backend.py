@@ -428,9 +428,12 @@ class AppleMusicBackend:
                 parser_key, cookie, has_credentials=has_credentials
             )
             if result is True:
-                message = f"{PARSER_LABELS[parser_key]} Cookie 检查有效"
+                message = (
+                    f"{PARSER_LABELS[parser_key]} 账号 Cookie 有效；"
+                    "具体歌曲播放权限由平台决定"
+                )
             elif result is False:
-                message = f"{PARSER_LABELS[parser_key]} Cookie 已配置但失效"
+                message = f"{PARSER_LABELS[parser_key]} 账号 Cookie 无效或已过期"
             else:
                 message = "检查暂时无法完成；Cookie 状态未更新"
             return {"parser_key": parser_key, **state, "message": message}

@@ -58,6 +58,12 @@ def test_qqmusic_account_status_requires_identity_and_auth_key():
     assert parser.has_cookie() is True
     assert parser.has_auth_credentials() is False
 
+    # Browser-exported cookies and QR login responses may expose the same
+    # credentials through QQ's alternate names.
+    cookie = "qqmusic_uin=12345; qm_keyst=account-key"
+    assert parser.has_cookie() is True
+    assert parser.has_auth_credentials() is True
+
 
 def _build_result(show_playlist_cover: bool | None):
     async def build():
@@ -1405,7 +1411,7 @@ def test_kugou_member_cookie_uses_signed_web_player_endpoint():
     assert parser.downloader.audio_requests[0]["headers"]["Cookie"] == cookie
 
 
-def test_kugou_cookie_check_uses_signed_restricted_track_probe():
+def test_kugou_cookie_check_uses_account_response_not_track_entitlement():
     async def check(payload):
         parser = KugouMusicParser.__new__(KugouMusicParser)
         cookie = (
@@ -1439,7 +1445,10 @@ def test_kugou_cookie_check_uses_signed_restricted_track_probe():
     assert parser.has_auth_credentials() is True
     assert accepted is True
     assert rejected is False
-    assert no_audio is False
+    # The probe track is restricted, but the successful account response still
+    # proves that the Cookie was accepted.  Playback entitlement is checked
+    # separately when resolving an actual requested song.
+    assert no_audio is True
     request_url, headers = requests[0]
     assert request_url.startswith("https://wwwapi.kugou.com/play/songinfo?")
     params = parse_qs(urlparse(request_url).query)
