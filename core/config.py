@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
 import zoneinfo
 from collections.abc import Mapping, MutableMapping
 from datetime import timezone
@@ -260,6 +262,7 @@ class PluginConfig(ConfigNode):
     card_template: str
     card_custom_template: str | None
     card_custom_font: list[str]
+    custom_logo: list[str]
     card_dynamic_color: bool
     lyrics_show_release_time: bool
     emoji_style: str
@@ -300,6 +303,7 @@ class PluginConfig(ConfigNode):
             "card_template": "apple",
             "card_custom_template": "",
             "card_custom_font": [],
+            "custom_logo": [],
             "card_dynamic_color": False,
             "lyrics_show_release_time": True,
             "emoji_style": "APPLE",
@@ -361,6 +365,102 @@ class PluginConfig(ConfigNode):
         self._migrate_parser_template()
 
         self.parser = ParserConfig(self.parsers_template)
+
+    @property
+    def logo_path(self) -> Path:
+        """Return the uploaded plugin logo, falling back to the bundled image."""
+        fallback = self.plugin_dir / "logo.png"
+        configured = self.custom_logo
+        candidates = [configured] if isinstance(configured, str) else configured
+        if not isinstance(candidates, (list, tuple)):
+            candidates = []
+
+        try:
+            data_root = Path(self.data_dir).resolve()
+        except (OSError, TypeError, ValueError):
+            return fallback
+
+        selected: Path | None = None
+        for value in reversed(candidates):
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().replace("\\", "/")
+            if not normalized or normalized.startswith("/"):
+                continue
+            parts = normalized.split("/")
+            if (
+                len(parts) != 3
+                or parts[:2] != ["files", "custom_logo"]
+                or any(part in {"", ".", ".."} for part in parts[1:])
+            ):
+                continue
+            try:
+                path = (data_root / Path(*parts)).resolve()
+                path.relative_to(data_root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if path.suffix.lower() != ".png":
+                continue
+            try:
+                if path.is_file() and path.stat().st_size > 0:
+                    selected = path
+                    break
+            except OSError:
+                continue
+
+        if selected is not None:
+            # AstrBot preserves the uploaded basename. Keep a stable data-dir
+            # logo.png target so every plugin surface shares the same path.
+            target = Path(self.data_dir) / "logo.png"
+            temporary = target.with_name(f".logo-{uuid.uuid4().hex}.tmp")
+            try:
+                source_stat = selected.stat()
+                source_signature = (
+                    str(selected),
+                    source_stat.st_size,
+                    source_stat.st_mtime_ns,
+                    getattr(source_stat, "st_ino", None),
+                )
+                target_stat = target.stat() if target.is_file() else None
+                target_signature = (
+                    (
+                        target_stat.st_size,
+                        target_stat.st_mtime_ns,
+                        getattr(target_stat, "st_ino", None),
+                    )
+                    if target_stat is not None
+                    else None
+                )
+                if self.__dict__.get("_logo_sync_signature") == (
+                    source_signature,
+                    target_signature,
+                ):
+                    return target
+                if selected.resolve() != target.resolve():
+                    shutil.copy2(selected, temporary)
+                    temporary.replace(target)
+                target_stat = target.stat()
+                object.__setattr__(
+                    self,
+                    "_logo_sync_signature",
+                    (
+                        source_signature,
+                        (
+                            target_stat.st_size,
+                            target_stat.st_mtime_ns,
+                            getattr(target_stat, "st_ino", None),
+                        ),
+                    ),
+                )
+                return target
+            except (OSError, RuntimeError, ValueError):
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return selected
+
+        return fallback
 
     @staticmethod
     def _migrate_card_switches(config: MutableMapping[str, Any]) -> bool:

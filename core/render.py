@@ -667,6 +667,19 @@ class Renderer:
             "card_font_format": font_format,
         }
 
+    def _plugin_logo_path(self) -> Path:
+        """Resolve the configured logo, retaining compatibility with lightweight configs."""
+        configured = getattr(self.cfg, "logo_path", None)
+        if configured is not None:
+            try:
+                path = Path(configured)
+                if path.is_file():
+                    return path
+            except (OSError, TypeError, ValueError):
+                pass
+        plugin_dir = getattr(self.cfg, "plugin_dir", None)
+        return (Path(plugin_dir) if plugin_dir else self._PLUGIN_LOGO_PATH.parent) / "logo.png"
+
     @staticmethod
     def _card_text(value: str | None) -> str | None:
         """过滤空白与解析器常见的“简介：-”占位描述。"""
@@ -1226,6 +1239,7 @@ class Renderer:
             contents=context["card"]["contents"],
             extra=context["card"]["extra"],
             playlist_tracks=context["card"].get("playlist_tracks", []),
+            plugin_logo_uri=self._file_uri(self._plugin_logo_path()),
             config=self.cfg,
             template_name=self._template_name(),
             emoji_style=str(getattr(self.cfg, "emoji_style", "APPLE") or "APPLE").lower(),
@@ -1495,7 +1509,7 @@ class Renderer:
                 else None
             )
             html = template.render(
-                plugin_logo_uri=self._file_uri(self._PLUGIN_LOGO_PATH),
+                plugin_logo_uri=self._file_uri(self._plugin_logo_path()),
                 platform_key=platform_key,
                 platform_display_name=platform_display_name,
                 platform_logo_uri=platform_logo_uri,
@@ -1605,7 +1619,7 @@ class Renderer:
             )
             html = template.render(
                 qrcode_uri=self._file_uri(qr_path),
-                plugin_logo_uri=self._file_uri(self._PLUGIN_LOGO_PATH),
+                plugin_logo_uri=self._file_uri(self._plugin_logo_path()),
                 platform_key=platform_key,
                 platform_display_name=platform_display_name,
                 platform_logo_uri=platform_logo_uri,

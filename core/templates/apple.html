@@ -675,7 +675,7 @@
   {% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
   <footer class="card-brand" aria-label="插件标识">
-    <img class="card-brand__logo" src="{{ (config.plugin_dir ~ '/logo.png')|file_uri }}" alt="插件 Logo">
+    {% if plugin_logo_uri %}<img class="card-brand__logo" src="{{ plugin_logo_uri }}" alt="插件 Logo">{% endif %}
   </footer>
 </main>
 </body>

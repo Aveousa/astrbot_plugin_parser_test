@@ -1,4 +1,4 @@
-# astrbot_plugin_parser_test
+# 虚质解离器
 
 AstrBot 链接解析插件。当前支持 Bilibili、抖音、小红书和 Pixiv，解析结果会统一映射为 `ParseResult`，再按配置发送媒体和可选信息卡片。
 

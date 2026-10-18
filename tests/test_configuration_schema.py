@@ -79,6 +79,9 @@ def test_configuration_exposes_single_card_switch_and_template_selector():
     assert schema["card_custom_font"]["type"] == "file"
     assert schema["card_custom_font"]["file_types"] == ["otf", "ttf", "woff2"]
     assert schema["card_custom_font"]["default"] == []
+    assert schema["custom_logo"]["type"] == "file"
+    assert schema["custom_logo"]["file_types"] == ["png"]
+    assert schema["custom_logo"]["default"] == []
     assert schema["card_dynamic_color"]["default"] is False
     assert schema["card_dynamic_color"]["type"] == "bool"
     assert schema["lyrics_show_release_time"]["default"] is True
@@ -137,9 +140,15 @@ def test_plugin_config_initialization_migrates_card_switches(
     config_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     monkeypatch.setattr(
-        config_module, "get_astrbot_plugin_data_path", lambda: str(tmp_path)
+        config_module,
+        "get_astrbot_plugin_data_path",
+        lambda: str(tmp_path / "plugin-data"),
     )
-    monkeypatch.setattr(config_module, "get_astrbot_plugin_path", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        config_module,
+        "get_astrbot_plugin_path",
+        lambda: str(tmp_path / "plugins"),
+    )
     raw = config_module.AstrBotConfig(
         {
             "source_max_size": 90,
@@ -159,9 +168,23 @@ def test_plugin_config_initialization_migrates_card_switches(
     assert config.card_enabled is False
     assert config.card_template == "apple"
     assert config.card_custom_font == []
+    assert config.custom_logo == []
     assert config.card_dynamic_color is False
     assert config.lyrics_show_release_time is True
     assert config.compact_forward_non_audio is False
+    installed_logo = config.plugin_dir / "logo.png"
+    installed_logo.parent.mkdir(parents=True, exist_ok=True)
+    installed_logo.write_bytes(b"installed logo")
+    assert config.logo_path == installed_logo
+    custom_logo = config.data_dir / "files" / "custom_logo" / "uploaded.png"
+    custom_logo.parent.mkdir(parents=True, exist_ok=True)
+    custom_logo.write_bytes(b"uploaded logo")
+    config.custom_logo = ["files/custom_logo/uploaded.png"]
+    data_logo = config.data_dir / "logo.png"
+    assert config.logo_path == data_logo
+    assert data_logo.read_bytes() == b"uploaded logo"
+    config.custom_logo = []
+    assert config.logo_path == installed_logo
     assert raw["compact_forward_non_audio"] is False
     assert "card_render_enabled" not in raw
     assert "card_send_enabled" not in raw
@@ -169,15 +192,29 @@ def test_plugin_config_initialization_migrates_card_switches(
 
 
 def test_test_plugin_identity_is_isolated_from_original_plugin(config_module):
+    metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
     metadata_name = next(
         line.split(":", 1)[1].strip()
-        for line in (ROOT / "metadata.yaml").read_text(encoding="utf-8").splitlines()
+        for line in metadata.splitlines()
         if line.startswith("name:")
+    )
+    display_name = next(
+        line.split(":", 1)[1].strip()
+        for line in metadata.splitlines()
+        if line.startswith("display_name:")
+    )
+    plugin_version = next(
+        line.split(":", 1)[1].strip()
+        for line in metadata.splitlines()
+        if line.startswith("version:")
     )
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert metadata_name == "astrbot_plugin_parser_test"
     assert project["project"]["name"] == "astrbot_plugin_parser_test"
+    assert display_name == "虚质解离器"
+    assert plugin_version == "1.5.8"
+    assert project["project"]["version"] == "1.5.8"
     assert config_module.PluginConfig._plugin_name == "astrbot_plugin_parser_test"
 
 

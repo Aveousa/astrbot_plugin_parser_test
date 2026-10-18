@@ -82,6 +82,19 @@ class _Config:
         self.cache_dir.mkdir()
         self.template_dir.mkdir()
         self.plugin_dir.mkdir()
+        self.data_dir = root / "data"
+        self.custom_logo = []
+        (self.plugin_dir / "logo.png").write_bytes(b"installed logo")
+
+    @property
+    def logo_path(self):
+        for value in reversed(self.custom_logo):
+            source = self.data_dir / value
+            if source.is_file():
+                target = self.data_dir / "logo.png"
+                target.write_bytes(source.read_bytes())
+                return target
+        return self.plugin_dir / "logo.png"
 
 
 @pytest.mark.parametrize("template", ["default", "compact", "apple"])
@@ -1046,9 +1059,50 @@ def test_qqmusic_login_card_embeds_plugin_logo_in_apple_style_header(
 
     assert output is not None
     assert captured_html
-    plugin_logo_uri = (Path(__file__).resolve().parents[1] / "logo.png").as_uri()
+    plugin_logo_uri = (config.plugin_dir / "logo.png").as_uri()
     assert plugin_logo_uri in captured_html[0]
     assert 'class="brand-avatar"' in captured_html[0]
+
+
+def test_custom_logo_is_used_in_parse_and_login_cards(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    custom_logo = config.data_dir / "files" / "custom_logo" / "brand.png"
+    custom_logo.parent.mkdir(parents=True)
+    custom_logo.write_bytes(b"custom logo")
+    config.custom_logo = ["files/custom_logo/brand.png"]
+    config.card_template = "apple"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(platform=Platform("douyin", "Douyin"), title="custom logo")
+    context = asyncio.run(renderer._result_context(result))
+    html = renderer.render_html(result, context)
+    data_logo_uri = (config.data_dir / "logo.png").resolve().as_uri()
+    assert data_logo_uri in html
+
+    captured_html: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured_html.append(html)
+        target.write_bytes(b"png")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(renderer.render_qqmusic_login_card(b"qr-image"))
+    assert output is not None
+    assert data_logo_uri in captured_html[0]
+
+    lyrics_output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:01.00]Line",
+            platform_key="netease",
+            platform_display_name="Netease",
+            song_title="Song",
+        )
+    )
+    assert lyrics_output is not None
+    assert data_logo_uri in captured_html[1]
 
 
 def test_lyrics_card_renders_song_metadata_and_normalized_lrc(

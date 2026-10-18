@@ -91,6 +91,13 @@
     "file_types": ["otf", "ttf", "woff2"],
     "default": []
   },
+  "custom_logo": {
+    "description": "自定义插件 Logo",
+    "hint": "为避免意料之外的情况，可在此处上传256*256的PNG图片，可自行移除背景以获得更加体验。",
+    "type": "file",
+    "file_types": ["png"],
+    "default": []
+  },
   "card_dynamic_color": {
     "description": "Apple 卡片动态取色",
     "hint": "开启后 Apple 风格卡片会根据首张预览图生成柔和底色；预览图不可用时自动回退默认白底",

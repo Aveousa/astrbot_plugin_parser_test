@@ -208,8 +208,11 @@ class AppleMusicWeb:
                 return response(message="需要 AstrBot 后台登录", status_code=401)
             if self.closed:
                 return response(message="插件管理页已关闭", status_code=503)
+            configured_path = getattr(self.backend.cfg, "logo_path", None)
             plugin_dir = getattr(self.backend.cfg, "plugin_dir", None)
-            logo_path = (Path(plugin_dir) if plugin_dir else Path(__file__).resolve().parent.parent) / "logo.png"
+            logo_path = Path(configured_path) if configured_path else (
+                (Path(plugin_dir) if plugin_dir else Path(__file__).resolve().parent.parent) / "logo.png"
+            )
             if not logo_path.is_file():
                 return response(message="插件 Logo 文件不存在", status_code=404)
             try:

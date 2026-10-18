@@ -650,6 +650,12 @@ def test_plugin_logo_route_serves_current_plugin_root_file(tmp_path, monkeypatch
         payload, options = response
         assert payload["data"]["data_url"] == "data:image/png;base64,cG5nIGxvZ28gYnl0ZXM="
         assert options["headers"]["Cache-Control"] == "no-store"
+        uploaded_logo = tmp_path / "data" / "logo.png"
+        uploaded_logo.parent.mkdir(parents=True)
+        uploaded_logo.write_bytes(b"uploaded logo bytes")
+        cfg.logo_path = uploaded_logo
+        payload, _ = await route[1]()
+        assert payload["data"]["data_url"] == "data:image/png;base64,dXBsb2FkZWQgbG9nbyBieXRlcw=="
         await page.close()
         await backend.close()
 
