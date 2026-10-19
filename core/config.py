@@ -261,6 +261,7 @@ class PluginConfig(ConfigNode):
     card_enabled: bool
     card_template: str
     card_custom_template: str | None
+    lyrics_card_template: str
     card_custom_font: list[str]
     custom_logo: list[str]
     card_dynamic_color: bool
@@ -302,6 +303,7 @@ class PluginConfig(ConfigNode):
             "card_enabled": True,
             "card_template": "apple",
             "card_custom_template": "",
+            "lyrics_card_template": "lyrics_card",
             "card_custom_font": [],
             "custom_logo": [],
             "card_dynamic_color": False,
@@ -492,11 +494,17 @@ class PluginConfig(ConfigNode):
 
     def available_card_templates(self) -> list[str]:
         """返回内置与用户模板名称，供配置页和运行时校验使用。"""
-        names = {"default", "compact", "apple"}
+        names = {"default", "compact", "apple", "Guizang_card"}
         for directory in (self.template_dir, self.plugin_dir / "templates"):
             if directory.is_dir():
                 names.update(path.stem for path in directory.glob("*.html"))
         return sorted(names)
+
+    def available_lyrics_card_templates(self) -> list[str]:
+        """返回可供歌词卡片选择的插件模板名（不含扩展名）。"""
+        # Lyrics renderer intentionally accepts only these two templates; do
+        # not advertise information cards or arbitrary files it cannot render.
+        return ["lyrics_card", "Guizangsocial_lyrics_card"]
 
     def _migrate_parser_template(self) -> None:
         """移除旧平台配置，并仅迁移仍保留平台节点的最新默认字段。"""

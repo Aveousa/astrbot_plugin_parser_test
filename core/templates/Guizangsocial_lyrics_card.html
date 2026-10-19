@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    {% if card_font_uri %}
+    @font-face {
+      font-family: "Douyin Sans";
+      src: url("{{ card_font_uri }}") format("{{ card_font_format or 'opentype' }}");
+      font-style: normal;
+      font-weight: 400;
+      font-display: block;
+    }
+    {% endif %}
+
+    @page { size: 760px auto; margin: 0; }
+
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Helvetica Neue", "Douyin Sans", Helvetica,
+        "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      --paper: #f2f2f0;
+      --card: #fff;
+      --ink: #171717;
+      --text-secondary: #444b50;
+      --muted: #6e7478;
+      --line: rgba(19, 23, 28, .10);
+      --surface: #f4f5f6;
+      --accent: #23695b;
+      --accent-secondary: #d96c46;
+      --accent-on: #fff;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 760px;
+      min-width: 760px;
+      margin: 0;
+      padding: 22px;
+      background: var(--paper);
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 400;
+      line-height: 1.55;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    .lyrics-card {
+      position: relative;
+      width: 712px;
+      overflow: hidden;
+      isolation: isolate;
+      background: var(--card);
+      border: 1px solid rgba(10, 10, 10, .14);
+      border-color: rgba(18, 22, 27, .08);
+      border-radius: 28px;
+      box-shadow: 0 22px 54px rgba(19, 23, 28, .12),
+        0 2px 8px rgba(19, 23, 28, .05);
+    }
+
+    .lyrics-card::before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0 0 auto;
+      height: 740px;
+      background:
+        radial-gradient(circle at 95% 2%, rgba(115, 170, 153, .13), transparent 42%),
+        radial-gradient(circle at 0% 20%, rgba(238, 174, 140, .12), transparent 40%);
+      pointer-events: none;
+    }
+
+    .spectral-bar {
+      width: 100%;
+      height: 6px;
+      background: linear-gradient(
+        90deg,
+        var(--accent-secondary) 0%,
+        #d8bb97 38%,
+        var(--accent) 72%,
+        #90c7d2 100%
+      );
+    }
+
+    .card-top { padding: 0 32px 25px; }
+
+    .brand-line {
+      display: flex;
+      min-width: 0;
+      min-height: 36px;
+      align-items: center;
+      gap: 12px;
+      padding: 25px 0 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand-avatar {
+      display: block;
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      object-fit: contain;
+    }
+
+    .brand-avatar:not([src]) { display: none; }
+
+    .brand-identity {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand-name {
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      line-height: 1.2;
+    }
+
+    .brand-subtitle {
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .05em;
+      line-height: 1.45;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .brand-badges {
+      display: inline-flex;
+      min-width: 0;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+      flex: 0 0 auto;
+    }
+
+    .brand-logo {
+      display: block;
+      width: auto;
+      max-width: 116px;
+      height: 24px;
+      object-fit: contain;
+    }
+
+    .brand-label {
+      display: inline-flex;
+      min-height: 28px;
+      align-items: center;
+      padding: 0 12px;
+      color: var(--accent-on);
+      background: var(--accent);
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .08em;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .song-summary {
+      display: grid;
+      grid-template-columns: 144px minmax(0, 1fr);
+      gap: 25px;
+      align-items: center;
+      margin-top: 27px;
+    }
+
+    .song-summary--no-cover { grid-template-columns: minmax(0, 1fr); }
+
+    .cover {
+      display: block;
+      width: 144px;
+      height: 144px;
+      background: var(--surface);
+      border: 1px solid rgba(18, 22, 27, .08);
+      border-radius: 13px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, .08);
+      object-fit: cover;
+    }
+
+    .song-copy { min-width: 0; }
+
+    .song-title {
+      display: -webkit-box;
+      max-height: 2.4em;
+      margin: 0;
+      overflow: hidden;
+      color: var(--ink);
+      font-size: 34px;
+      font-weight: 750;
+      line-height: 1.2;
+      letter-spacing: -.035em;
+      overflow-wrap: anywhere;
+      text-overflow: ellipsis;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .song-artists {
+      display: -webkit-box;
+      max-height: 2.8em;
+      margin-top: 9px;
+      overflow: hidden;
+      color: var(--text-secondary);
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+      text-overflow: ellipsis;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+    }
+
+    .song-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 10px;
+      margin-top: 9px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .song-meta__item + .song-meta__item::before {
+      margin-right: 10px;
+      color: var(--line);
+      content: "/";
+    }
+
+    .source-note {
+      margin-top: 12px;
+      padding-left: 9px;
+      color: var(--accent);
+      border-left: 2px solid var(--accent-secondary);
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.35;
+    }
+
+    .lyrics-section {
+      padding: 24px 34px 25px;
+      border-top: 1px solid var(--line);
+      background: rgba(250, 251, 251, .72);
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 0 0 13px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-heading__title {
+      margin: 0;
+      color: var(--ink);
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+
+    .section-heading__hint {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+
+    .lyric-sheet {
+      padding: 0;
+      background: transparent;
+      border: 0;
+    }
+
+    .lyric-line {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 15px;
+      align-items: baseline;
+      min-height: 38px;
+      padding: 6px 0;
+      color: var(--text-secondary);
+      font-size: 19px;
+      line-height: 1.58;
+    }
+
+    .lyric-line--stanza {
+      margin-top: 13px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .lyric-time {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.55;
+      text-align: left;
+    }
+
+    .lyric-text {
+      min-width: 0;
+      color: var(--text-secondary);
+      overflow-wrap: anywhere;
+      text-align: left;
+      white-space: pre-wrap;
+    }
+
+    .lyric-time:empty { display: none; }
+
+    .lyric-time:empty + .lyric-text { grid-column: 1 / -1; }
+
+    .lyric-line--credit .lyric-text {
+      color: var(--muted);
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .card-footer {
+      display: flex;
+      min-width: 0;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 35px;
+      padding: 19px 0 24px;
+      color: var(--muted);
+      border-top: 1px solid var(--line);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .footer-source {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .footer-mark {
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      white-space: nowrap;
+    }
+
+    @media (prefers-contrast: more) {
+      .lyrics-card { border-color: rgba(0, 0, 0, .42); }
+      .brand-subtitle,
+      .song-artists,
+      .song-meta,
+      .lyric-time,
+      .footer-source,
+      .footer-mark { color: #4d4d4d; }
+    }
+  </style>
+</head>
+<body>
+<main class="lyrics-card" data-card-root data-platform-accent="{{ accent_color or '' }}" data-platform-accent-deep="{{ accent_deep or '' }}" data-platform-accent-soft="{{ accent_soft or '' }}" aria-label="{{ platform_display_name }}歌词卡片">
+  <div class="spectral-bar" aria-hidden="true"></div>
+  <section class="card-top">
+    <div class="brand-line">
+      {% if plugin_logo_uri %}<img class="brand-avatar" src="{{ plugin_logo_uri }}" alt="Parser">{% endif %}
+      <div class="brand-identity">
+        <span class="brand-name">Guizang Social</span>
+        <span class="brand-subtitle">{{ platform_display_name }}歌词</span>
+      </div>
+      <div class="brand-badges">
+        {% if platform_logo_uri %}<img class="brand-logo" src="{{ platform_logo_uri }}" alt="{{ platform_display_name }}">{% endif %}
+        <span class="brand-label">歌词</span>
+      </div>
+    </div>
+
+    <div class="song-summary{% if not cover_uri %} song-summary--no-cover{% endif %}">
+      {% if cover_uri %}<img class="cover" src="{{ cover_uri }}" alt="{{ song_title }}封面">{% endif %}
+      <div class="song-copy">
+        <h1 class="song-title">{{ song_title }}</h1>
+        {% if artists %}<div class="song-artists">{{ artists }}</div>{% endif %}
+        <div class="song-meta">
+          {% if album %}<span class="song-meta__item">{{ album }}</span>{% endif %}
+          {% if duration_text %}<span class="song-meta__item">{{ duration_text }}</span>{% endif %}
+          {% if show_release_time and release_text %}<span class="song-meta__item">{{ release_text }}</span>{% endif %}
+        </div>
+        {% if show_release_time %}<div class="source-note">歌词已解析</div>{% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="lyrics-section">
+    <div class="section-heading">
+      <h2 class="section-heading__title">歌词</h2>
+      <span class="section-heading__hint">{{ lyric_count }} 行</span>
+    </div>
+    <div class="lyric-sheet">
+      {% for line in lyrics_lines %}
+      <div class="lyric-line{% if line.stanza_break %} lyric-line--stanza{% endif %}{% if line.is_credit %} lyric-line--credit{% endif %}">
+        <span class="lyric-time">{{ line.timestamp }}</span>
+        <span class="lyric-text">{{ line.text }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <footer class="card-footer">
+    <span class="footer-source">{{ source_label }}</span>
+    <span class="footer-mark">Work By Dasvdaniya🍰</span>
+  </footer>
+</main>
+</body>
+</html>

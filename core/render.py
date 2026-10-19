@@ -142,9 +142,11 @@ class Renderer:
         "default",
         "compact",
         "apple",
+        "Guizang_card",
     )
     _QQMUSIC_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qqmusic_login.html"
     _LYRICS_TEMPLATE_NAME: ClassVar[str] = "lyrics_card.html"
+    _GUIZANG_LYRICS_TEMPLATE_NAME: ClassVar[str] = "Guizangsocial_lyrics_card.html"
     _TEMPLATES_DIR: ClassVar[Path] = Path(__file__).with_name("templates")
     _RESOURCES_DIR: ClassVar[Path] = Path(__file__).with_name("resources")
     _PLUGIN_LOGO_PATH: ClassVar[Path] = _TEMPLATES_DIR.parent.parent / "logo.png"
@@ -453,6 +455,7 @@ class Renderer:
         # result template that users should select in card configuration.
         names.discard(self._QQMUSIC_LOGIN_TEMPLATE_NAME.removesuffix(".html"))
         names.discard(self._LYRICS_TEMPLATE_NAME.removesuffix(".html"))
+        names.discard(self._GUIZANG_LYRICS_TEMPLATE_NAME.removesuffix(".html"))
         return sorted(names)
 
     @staticmethod
@@ -1456,7 +1459,7 @@ class Renderer:
         source_label: str | None = None,
         target_path: Path | None = None,
     ) -> Path | None:
-        """Render a platform-colored Apple-style lyrics card."""
+        """Render a lyrics card using the configured built-in or plugin template."""
 
         lyrics_lines = self._lyrics_lines(lyrics)
         if not lyrics_lines:
@@ -1489,11 +1492,23 @@ class Renderer:
             target = Path(target)
             target.parent.mkdir(parents=True, exist_ok=True)
 
+            selected_template = str(
+                getattr(self.cfg, "lyrics_card_template", "lyrics_card") or "lyrics_card"
+            ).strip()
+            if selected_template.lower() in {"custom", "default", ""}:
+                selected_template = "lyrics_card"
+            selected_template = Path(selected_template).name.removesuffix(".html")
+            if selected_template not in {
+                self._LYRICS_TEMPLATE_NAME.removesuffix(".html"),
+                self._GUIZANG_LYRICS_TEMPLATE_NAME.removesuffix(".html"),
+            }:
+                selected_template = self._LYRICS_TEMPLATE_NAME.removesuffix(".html")
+            template_name = f"{selected_template}.html"
             try:
-                template = self.environment.get_template(self._LYRICS_TEMPLATE_NAME)
+                template = self.environment.get_template(template_name)
             except TemplateNotFound as exc:
                 self._log_exception(
-                    f"歌词卡片模板不存在: {self._LYRICS_TEMPLATE_NAME}: {exc}"
+                    f"歌词卡片模板不存在: {template_name}: {exc}"
                 )
                 return None
 
@@ -1530,7 +1545,7 @@ class Renderer:
                 (
                     directory
                     for directory in self.template_dirs
-                    if (directory / self._LYRICS_TEMPLATE_NAME).is_file()
+                    if (directory / template_name).is_file()
                 ),
                 self._TEMPLATES_DIR,
             )

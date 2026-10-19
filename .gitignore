@@ -7,3 +7,10 @@ core/test/
 /data/
 /.venv/
 /astrbot_plugin_parser_test.zip
+
+# Local card-render QA artifacts are not required by the plugin at runtime.
+# Keep the reproducible QA scripts tracked; ignore only their generated inputs/outputs.
+/local-tests/new-card-qa/assets/
+/local-tests/new-card-qa/previews/
+/local-tests/new-card-qa/render-report.json
+/local-tests/new-card-qa/lyrics-render-report.json

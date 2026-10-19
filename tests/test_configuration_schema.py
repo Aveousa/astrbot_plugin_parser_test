@@ -72,8 +72,10 @@ def test_configuration_exposes_single_card_switch_and_template_selector():
         "default",
         "compact",
         "apple",
+        "Guizang_card",
         "custom",
     ]
+    assert schema["card_template"]["labels"][3] == "Guizang Social"
     assert schema["card_template"]["default"] == "apple"
     assert schema["card_custom_template"]["default"] == ""
     assert schema["card_custom_font"]["type"] == "file"
@@ -86,6 +88,15 @@ def test_configuration_exposes_single_card_switch_and_template_selector():
     assert schema["card_dynamic_color"]["type"] == "bool"
     assert schema["lyrics_show_release_time"]["default"] is True
     assert schema["lyrics_show_release_time"]["type"] == "bool"
+    assert schema["lyrics_card_template"]["options"] == [
+        "lyrics_card",
+        "Guizangsocial_lyrics_card",
+    ]
+    assert schema["lyrics_card_template"]["labels"] == [
+        "标准歌词卡片",
+        "Guizang Social",
+    ]
+    assert schema["lyrics_card_template"]["default"] == "lyrics_card"
     assert schema["compact_forward_non_audio"]["default"] is False
     assert schema["compact_forward_non_audio"]["type"] == "bool"
     assert "APPLE" in schema["emoji_style"]["options"]
@@ -167,6 +178,7 @@ def test_plugin_config_initialization_migrates_card_switches(
 
     assert config.card_enabled is False
     assert config.card_template == "apple"
+    assert config.lyrics_card_template == "lyrics_card"
     assert config.card_custom_font == []
     assert config.custom_logo == []
     assert config.card_dynamic_color is False
@@ -191,6 +203,49 @@ def test_plugin_config_initialization_migrates_card_switches(
     assert raw.save_calls >= 1
 
 
+def test_lyrics_card_template_is_migrated_and_selectable_from_bundled_templates(
+    config_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setattr(
+        config_module,
+        "get_astrbot_plugin_data_path",
+        lambda: str(tmp_path / "plugin-data"),
+    )
+    monkeypatch.setattr(
+        config_module,
+        "get_astrbot_plugin_path",
+        lambda: str(tmp_path / "plugins"),
+    )
+    bundled_template = (
+        Path(__file__).resolve().parents[1]
+        / "core"
+        / "templates"
+        / "Guizangsocial_lyrics_card.html"
+    )
+    assert bundled_template.is_file()
+    context = SimpleNamespace(
+        get_config=lambda: {"admins_id": [], "timezone": "Asia/Shanghai"}
+    )
+
+    default_raw = config_module.AstrBotConfig(
+        {"source_max_size": 90, "source_max_minute": 15, "parsers_template": []}
+    )
+    default_config = config_module.PluginConfig(default_raw, context)
+    assert default_config.lyrics_card_template == "lyrics_card"
+
+    selected_raw = config_module.AstrBotConfig(
+        {
+            "source_max_size": 90,
+            "source_max_minute": 15,
+            "parsers_template": [],
+            "lyrics_card_template": "Guizangsocial_lyrics_card",
+        }
+    )
+    selected_config = config_module.PluginConfig(selected_raw, context)
+    assert selected_config.lyrics_card_template == "Guizangsocial_lyrics_card"
+    assert "Guizangsocial_lyrics_card" in selected_config.available_lyrics_card_templates()
+
+
 def test_test_plugin_identity_is_isolated_from_original_plugin(config_module):
     metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
     metadata_name = next(
@@ -213,8 +268,8 @@ def test_test_plugin_identity_is_isolated_from_original_plugin(config_module):
     assert metadata_name == "astrbot_plugin_parser_test"
     assert project["project"]["name"] == "astrbot_plugin_parser_test"
     assert display_name == "虚质解离器"
-    assert plugin_version == "1.5.8"
-    assert project["project"]["version"] == "1.5.8"
+    assert plugin_version == "1.5.9_beta1"
+    assert project["project"]["version"] == "1.5.9_beta1"
     assert config_module.PluginConfig._plugin_name == "astrbot_plugin_parser_test"
 
 

@@ -28,6 +28,7 @@
 | `card_enabled` | `true` | 是否渲染并发送信息卡片 |
 | `card_template` | `apple` | 选择模板名 |
 | `card_custom_template` | `""` | 选择 `custom` 后使用的模板文件名 |
+| `lyrics_card_template` | `lyrics_card` | 独立选择歌词卡片模板；可选标准模板或 `Guizangsocial_lyrics_card`（配置显示名 `Guizang Social`） |
 | `emoji_style` | `APPLE` | 表情字体风格标识 |
 | `single_heavy_render_card` | `false` | 已废弃，仅兼容旧配置；不再影响卡片策略 |
 | `compact_forward_non_audio` | `false` | 开启后同一解析结果中的信息卡片、歌词卡片及图片/视频/文本等非音频内容统一整理；有多个非音频内容时折叠为一条转发消息，音频始终单独发送 |
@@ -52,9 +53,14 @@
 
 1. `<AstrBot 插件数据目录>/astrbot_plugin_parser_test/templates/`
 2. `<插件安装目录>/templates/`
-3. `core/templates/`（内置 `default.html`、`compact.html`、`apple.html`）
+3. `core/templates/`（内置信息模板 `default.html`、`compact.html`、`apple.html`、`Guizang_card.html`，以及标准与 Guizang Social 歌词模板 `lyrics_card.html`、`Guizangsocial_lyrics_card.html`）
 
 将 `my_card.html` 放入第一目录后，在插件页将 `card_template` 选择为 `custom`，再把 `card_custom_template` 填为 `my_card` 即可。文件名会做路径净化，不能通过配置读取目录外文件。
+内置信息卡片 `Guizang_card` 在配置页显示为 `Guizang Social`，模板文件为 `Guizang_card.html`。它是独立的 Swiss / 专业平面排版方案：直角封面、细分隔线、IKB 单一强调色和等宽统计数字；复用 `apple.html` 的全部上下文、媒体封面与条件分支，不替换或修改 `apple.html`。动态取色开启时仍复用取色后的平面背景与文字/分隔色，但不启用 Apple 模板的渐变和光晕，以保持 Swiss 配色规则。
+
+歌词模板通过独立配置 `lyrics_card_template` 选择，避免影响信息卡片模板。默认 `lyrics_card` 保持现有歌词卡片；选择 `Guizang Social` 时运行时加载 `core/templates/Guizangsocial_lyrics_card.html`。两份 Guizang Social 模板与其余内置模板统一存放在 `core/templates/`。歌词版沿用信息卡片的字体、色彩、封面和页脚体系，保留标题、歌手、专辑、时长、发布时间开关、封面、平台 Logo、来源、逐行时间码以及制作人员与段落分隔标记。信息卡片和歌词卡片的配置项各自显示为 `Guizang Social`，模板文件独立。
+
+信息卡片的真实模板上下文预览与兼容性报告位于 `local-tests/new-card-qa/`，使用 `python local-tests/new-card-qa/render_previews.py` 重现；歌词卡片完整字段、缺失字段与极长文本预览在同目录的 `previews/lyrics_*.png`，用 `python local-tests/new-card-qa/render_lyrics_previews.py` 重现，脚本同时检查模板条件/循环/字段与标准歌词模板一致，以及 Chromium 布局边界和图片解码。
 
 Jinja2 自动转义已启用。内置可用过滤器：
 
@@ -141,7 +147,7 @@ python -m compileall -q core main.py
 python -m pytest -q
 ```
 
-本次 Playwright 切换后的本地回归结果：`45 passed`。覆盖原 Cookie/JSON 链接用例，以及统计、配置、HTML 模板、Playwright Headless Shell 截图、渲染失败策略、Apple Emoji、卡片开关、缓存清理、旧配置迁移和位置参数兼容用例。
+本次 Guizang Social 信息/歌词模板及配置改动后的本地全量回归：`541 passed, 1 warning`。另执行 `python -m compileall -q core main.py local-tests/new-card-qa`、配置 JSON 解析与 `git diff --check`；原始 `apple.html` 无差异。信息卡片九个 Chromium 预览场景与歌词卡片三个预览场景均无布局溢出或图片加载失败。当前唯一警告来自第三方 `google.genai` 依赖对 Python 3.17 的弃用提示。
 
 覆盖项：
 

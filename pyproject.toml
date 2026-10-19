@@ -1,6 +1,6 @@
 [project]
 name = "astrbot_plugin_parser_test"
-version = "1.5.8"
+version = "1.5.9_beta1"
 requires-python = ">=3.12"
 dependencies = [
     "tqdm>=4.67.1,<5.0.0",

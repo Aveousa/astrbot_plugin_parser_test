@@ -1,5 +1,17 @@
 # 更新日志
 
+## v1.5.9_beta1
+
+### 新增
+
+- 新增 Swiss / IKB 平面风格的信息卡片模板 `Guizang_card.html`，配置项显示名为“Guizang Social”；保留 `apple.html` 原模板，并兼容其现有 Jinja2 字段、媒体类型与条件分支。
+- 新增歌词卡片模板 `Guizangsocial_lyrics_card.html`，与信息卡片一同存放于 `core/templates/`，可通过 `lyrics_card_template` 独立选择；默认仍使用原标准歌词模板。
+
+### 优化
+
+- 统一信息卡片与歌词卡片的 Guizang Social 视觉规范，优化歌曲元信息、时间码与歌词段落层级，并保持封面、平台标识、歌词制作人员及可选字段兼容。
+- 补充歌曲、歌单、视频、图文、动态/转发/实况、混合媒体、缺失字段和超长文本的实际 PNG 预览及 Playwright 布局检查。
+
 ## v1.5.8
 
 ### 新增

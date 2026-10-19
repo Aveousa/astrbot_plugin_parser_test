@@ -97,7 +97,7 @@ class _Config:
         return self.plugin_dir / "logo.png"
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_apple_music_track_uses_existing_song_card_templates(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -182,7 +182,7 @@ def test_topic_split_handles_adjacent_xhs_topics_and_preserves_punctuation(
     ]
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_builtin_templates_use_bundled_douyin_sans(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -330,7 +330,7 @@ def test_apple_dynamic_color_skips_error_preview_placeholder(
     assert context["card"]["theme"] is None
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_builtin_templates_clamp_title_to_two_lines(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -345,11 +345,14 @@ def test_builtin_templates_clamp_title_to_two_lines(
 
     html = renderer.render_html(result, asyncio.run(renderer._result_context(result)))
 
-    assert "-webkit-line-clamp: 2" in html
+    expected_title_clamp = (
+        "-webkit-line-clamp: 3" if template == "Guizang_card" else "-webkit-line-clamp: 2"
+    )
+    assert expected_title_clamp in html
     assert "text-overflow: ellipsis" in html
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_builtin_templates_split_topic_tags_from_title_before_preview(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -385,8 +388,12 @@ def test_builtin_templates_split_topic_tags_from_title_before_preview(
         "default": 'class="media-grid',
         "compact": 'class="grid"',
         "apple": 'class="cover ',
+        "Guizang_card": 'class="cover ',
     }[template]
-    assert html.index('class="topics"') < html.index(preview_marker)
+    if template == "Guizang_card":
+        assert html.index(preview_marker) < html.index('class="topics"')
+    else:
+        assert html.index('class="topics"') < html.index(preview_marker)
 
 
 def test_result_context_splits_topic_tags_from_description(renderer_module, tmp_path: Path):
@@ -455,7 +462,7 @@ def test_topic_split_supports_attached_tags_without_splitting_csharp(
     assert card["topic_tags"] == ["# 鸣潮", "# 清宵", "# 编程"]
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 @pytest.mark.parametrize(
     ("platform_name", "logo_name"),
     [
@@ -463,6 +470,12 @@ def test_topic_split_supports_attached_tags_without_splitting_csharp(
         ("douyin", "douyin.png"),
         ("xhs", "xhs.png"),
         ("pixiv", "pixiv.png"),
+        ("qqmusic", "qqmusic.png"),
+        ("netease", "cloudmusic.png"),
+        ("kugou", "kugou.png"),
+        ("qishui", "qishui.png"),
+        ("kuwo", "kuwo.png"),
+        ("applemusic", "applemusic.png"),
     ],
 )
 def test_builtin_templates_render_supported_platform_logo(
@@ -486,12 +499,13 @@ def test_builtin_templates_render_supported_platform_logo(
     html = renderer.render_html(result, context)
     assert logo_uri in html
     assert 'class="card-badges"' in html
-    assert 'class="card-badge__platform"' in html
+    assert 'card-badge__platform' in html
 
 
-def test_playlist_song_count_uses_shared_stat_style_and_icon(renderer_module, tmp_path: Path):
+@pytest.mark.parametrize("template", ["apple", "Guizang_card"])
+def test_playlist_song_count_uses_shared_stat_style_and_icon(renderer_module, tmp_path: Path, template: str):
     config = _Config(tmp_path)
-    config.card_template = "apple"
+    config.card_template = template
     renderer = renderer_module.Renderer(config)
     renderer._emoji_source = None
     result = ParseResult(
@@ -513,7 +527,7 @@ def test_playlist_song_count_uses_shared_stat_style_and_icon(renderer_module, tm
     assert "歌曲数" in html
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_music_playlist_can_hide_source_url(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -552,7 +566,7 @@ def test_music_playlist_shows_source_url_by_default(renderer_module, tmp_path: P
     assert source_url in html
 
 
-@pytest.mark.parametrize("template", ["default", "compact", "apple"])
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
 def test_douyin_motion_photo_renders_badge_and_save_hint(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -857,7 +871,7 @@ def test_motion_photo_with_failed_static_cover_uses_error_placeholder(
     assert content["uri"] == error_cover.resolve().as_uri()
 
 
-@pytest.mark.parametrize("template", ["default", "apple"])
+@pytest.mark.parametrize("template", ["default", "apple", "Guizang_card"])
 def test_placeholder_description_does_not_render_an_intro_box(
     renderer_module, tmp_path: Path, template: str
 ):
@@ -1016,7 +1030,7 @@ def test_custom_jinja_template_uses_playwright_png(
     assert renderer.template_dirs[0] == config.template_dir
     assert renderer._template_base_dir() == config.template_dir
     assert renderer_module.Renderer._TEMPLATES_DIR in renderer.template_dirs
-    assert {"default", "compact", "apple", "custom"} <= set(renderer.available_templates())
+    assert {"default", "compact", "apple", "Guizang_card", "custom"} <= set(renderer.available_templates())
     result = ParseResult(
         platform=Platform("xhs", "\u5c0f\u7ea2\u4e66"),
         title="Apple \U0001f44b\U0001f3fd 1\ufe0f\u20e3 \u260e\ufe0f",
@@ -1147,6 +1161,178 @@ def test_lyrics_card_renders_song_metadata_and_normalized_lrc(
         "color-mix(in srgb, var(--accent) 13%, transparent), transparent 35%)"
     ) in html
     assert "lyrics_card" not in renderer.available_templates()
+
+
+def test_guizang_lyrics_template_is_selected_and_renders_all_fields(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    config.lyrics_card_template = "Guizangsocial_lyrics_card"
+    template_path = renderer_module.Renderer._TEMPLATES_DIR / "Guizangsocial_lyrics_card.html"
+    cover_path = tmp_path / "lyrics-cover.png"
+    Image.new("RGB", (180, 180), (34, 66, 104)).save(cover_path)
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    captured: list[tuple[str, Path, str | None]] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured.append((html, target, base_url))
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:00.00]作词：沈知遥\n[00:07.12]第一句，沿着潮汐慢慢回到岸边\n"
+            "[00:10.25]第二句\n\n[Verse 2]\n[00:20.00]第三句",
+            platform_key="netease",
+            platform_display_name="网易云音乐",
+            song_title="潮汐之间",
+            artists="林朝 / City Echo",
+            album="海边的房间",
+            duration_seconds=217,
+            release_text="2024-04-24",
+            show_release_time=True,
+            cover_path=cover_path,
+            source_label="歌词来源：网易云音乐 · 歌曲 ID 1",
+        )
+    )
+
+    assert output is not None and captured
+    html, _, base_url = captured[0]
+    assert base_url == str(template_path.parent)
+    for fragment in (
+        'data-card-root',
+        "Guizang Social",
+        "网易云音乐",
+        "潮汐之间",
+        "林朝 / City Echo",
+        "海边的房间",
+        "3:37",
+        "2024-04-24",
+        "00:07",
+        "第一句，沿着潮汐慢慢回到岸边",
+        "歌词来源：网易云音乐 · 歌曲 ID 1",
+        "歌词已解析",
+        "lyric-line--credit",
+        "lyric-line--stanza",
+        "--accent: #23695b",
+        'data-platform-accent="#e93345"',
+    ):
+        assert fragment in html
+    assert cover_path.resolve().as_uri() in html
+    assert "cloudmusic.png" in html
+
+
+@pytest.mark.parametrize("configured", ["unknown", "../outside", "lyrics_card.html"])
+def test_invalid_lyrics_template_selection_falls_back_to_builtin(
+    renderer_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+):
+    config = _Config(tmp_path)
+    config.lyrics_card_template = configured
+    renderer = renderer_module.Renderer(config)
+    captured: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured.append(html)
+        target.write_bytes(b"png")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:01.00]Line",
+            platform_key="netease",
+            platform_display_name="Netease",
+            song_title="Song",
+        )
+    )
+
+    assert output is not None
+    assert captured
+    assert "color-mix(in srgb, var(--accent) 13%, transparent)" in captured[0]
+
+
+def test_guizang_lyrics_template_hides_optional_fields_and_handles_missing_cover(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    config.lyrics_card_template = "Guizangsocial_lyrics_card"
+    template_path = renderer_module.Renderer._TEMPLATES_DIR / "Guizangsocial_lyrics_card.html"
+    renderer = renderer_module.Renderer(config)
+    captured: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured.append(html)
+        target.write_bytes(b"png")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            "[00:01.00]Line",
+            platform_key="unsupported-platform",
+            platform_display_name="未知平台",
+            song_title="仅有标题",
+            release_text="2024-04-24",
+            show_release_time=False,
+            cover_path=tmp_path / "not-present.png",
+        )
+    )
+
+    assert output is not None
+    html = captured[0]
+    assert "仅有标题" in html
+    assert "未知平台" in html
+    assert "2024-04-24" not in html
+    assert "class=\"cover\"" not in html
+    assert "song-summary--no-cover" in html
+    assert '<div class="source-note">' not in html
+    assert "cloudmusic.png" not in html
+    assert "歌词来源：未知平台" in html
+    assert "--accent: #23695b" in html
+
+
+def test_guizang_lyrics_template_clamps_extreme_title_and_keeps_long_lyrics_readable(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    config.lyrics_card_template = "Guizangsocial_lyrics_card"
+    template_path = renderer_module.Renderer._TEMPLATES_DIR / "Guizangsocial_lyrics_card.html"
+    renderer = renderer_module.Renderer(config)
+    captured: list[str] = []
+
+    async def screenshot(html: str, target: Path, *, base_url: str | None = None) -> bool:
+        captured.append(html)
+        target.write_bytes(b"png")
+        return True
+
+    monkeypatch.setattr(renderer, "_render_playwright_png", screenshot)
+    long_title = "这是一段非常长的歌曲标题测试字段" * 20
+    long_line = "无数次经过海岸仍然记得那晚的风和灯火"
+    lyric_lines = [f"[{index // 60:02d}:{index % 60:02d}.00]{long_line}，继续向前" for index in range(0, 720, 4)]
+    long_lyrics = "\n".join(lyric_lines)
+    output = asyncio.run(
+        renderer.render_lyrics_card(
+            long_lyrics,
+            platform_key="netease",
+            platform_display_name="网易云音乐",
+            song_title=long_title,
+            artists="林朝",
+        )
+    )
+
+    assert output is not None and captured
+    html = captured[0]
+    assert long_title in html
+    assert "-webkit-line-clamp: 2" in html
+    assert "text-overflow: ellipsis" in html
+    assert "00:04" in html
+    assert "11:56" in html
+    assert long_line in html
 
 
 def test_lyrics_card_hides_release_time_and_status_note_when_disabled(
@@ -1396,11 +1582,12 @@ def test_apple_emoji_sequences_are_kept_together(renderer_module):
     } <= tokens
 
 
+@pytest.mark.parametrize("template", ["apple", "Guizang_card"])
 def test_apple_template_uses_first_visual_as_the_only_cover(
-    renderer_module, tmp_path: Path
+    renderer_module, tmp_path: Path, template: str
 ):
     config = _Config(tmp_path)
-    config.card_template = "apple"
+    config.card_template = template
     renderer = renderer_module.Renderer(config)
     renderer._emoji_source = None
 
@@ -1481,3 +1668,61 @@ def test_apple_template_uses_first_visual_as_the_only_cover(
     assert second_dynamic_cover.resolve().as_uri() not in dynamic_html
     assert 'data-cover-kind="dynamic"' in dynamic_html
     assert 'data-media-count="2"' in dynamic_html
+
+
+def test_guizang_card_retains_complete_template_context_and_conditional_branches(
+    renderer_module, tmp_path: Path
+):
+    from core.data import Author, GraphicsContent
+
+    config = _Config(tmp_path)
+    config.card_template = "Guizang_card"
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    preview = tmp_path / "graphics.png"
+    Image.new("RGB", (96, 128), (190, 164, 122)).save(preview)
+    repost = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        title="原始标题",
+        text="原始正文",
+    )
+    result = ParseResult(
+        platform=Platform("douyin", "抖音"),
+        author=Author("视觉作者"),
+        title="图文标题",
+        text="图文正文",
+        contents=[GraphicsContent(preview, text="图片前文字", alt="图片说明")],
+        extra={"has_motion_photo": True, "is_live_stream": True},
+        repost=repost,
+        like_count=12_000,
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    html = renderer.render_html(result, context)
+
+    assert "虚质解离器" in html
+    assert "LINK / NOTES" not in html
+    for color in ("#F6F6F6", "#8785A2", "#FFE2E2", "#FFC7C7"):
+        assert color in html
+    for fragment in (
+        'data-card-root',
+        'data-cover-kind="graphics"',
+        'data-media-count="1"',
+        "图文标题",
+        "图文正文",
+        "图片前文字",
+        "图片说明",
+        "视觉作者",
+        "抖音",
+        "原始标题",
+        "原始正文",
+        "1.2万",
+    ):
+        assert fragment in html
+    assert 'class="card-badge__live"' in html
+    assert 'class="card-badge__stream"' in html
+    assert 'class="repost"' in html
+    assert 'class="visual-note"' in html
+    assert renderer_module.Renderer._LIVE_PHOTO_HINT in html
+    logo_uri = (renderer_module.Renderer._RESOURCES_DIR / "logos" / "douyin.png").resolve().as_uri()
+    assert logo_uri in html

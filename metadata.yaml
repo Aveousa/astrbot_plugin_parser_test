@@ -2,7 +2,7 @@ name: astrbot_plugin_parser_test
 display_name: 虚质解离器
 desc: 高性能低耦合的链接解析器，支持 Bilibili、抖音、小红书和 Pixiv，并提供可配置 HTML 卡片渲染。
 help: 略
-version: 1.5.8
+version: 1.5.9_beta1
 author: Zhalslar & Aveousa
 repo: https://github.com/Aveousa/astrbot_plugin_parser_test
 support_platforms:

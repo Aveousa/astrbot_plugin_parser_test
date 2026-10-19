@@ -74,8 +74,8 @@
     "description": "卡片模板",
     "hint": "可在插件 templates 目录或数据目录 templates 中添加同名 HTML 模板",
     "type": "string",
-    "options": ["default", "compact", "apple", "custom"],
-    "labels": ["标准卡片", "紧凑卡片", "Apple 风格卡片", "自定义模板"],
+    "options": ["default", "compact", "apple", "Guizang_card", "custom"],
+    "labels": ["标准卡片", "紧凑卡片", "Apple 风格卡片", "Guizang Social", "自定义模板"],
     "default": "apple"
   },
   "card_custom_template": {
@@ -93,7 +93,7 @@
   },
   "custom_logo": {
     "description": "自定义插件 Logo",
-    "hint": "为避免意料之外的情况，可在此处上传256*256的PNG图片，可自行移除背景以获得更加体验。",
+    "hint": "为避免意料之外的情况，可在此处上传256*256的PNG图片，可自行移除背景以获得更佳体验。",
     "type": "file",
     "file_types": ["png"],
     "default": []
@@ -109,6 +109,14 @@
     "hint": "关闭后只隐藏歌词卡片中的发布时间，不影响歌词解析和其他歌曲元数据",
     "type": "bool",
     "default": true
+  },
+  "lyrics_card_template": {
+    "description": "歌词卡片模板",
+    "hint": "选择歌曲歌词图片使用的版式；Guizang Social 歌词模板位于 core/templates/Guizangsocial_lyrics_card.html",
+    "type": "string",
+    "options": ["lyrics_card", "Guizangsocial_lyrics_card"],
+    "labels": ["标准歌词卡片", "Guizang Social"],
+    "default": "lyrics_card"
   },
   "emoji_style": {
     "description": "表情样式",

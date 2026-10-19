@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    {% if card_font_uri %}
+    @font-face {
+      font-family: "Douyin Sans";
+      src: url("{{ card_font_uri }}") format("{{ card_font_format or 'opentype' }}");
+      font-style: normal;
+      font-weight: 400 900;
+      font-display: block;
+    }
+    {% endif %}
+    @page { size: 760px 2000px; margin: 0; }
+    :root {
+      color-scheme: light;
+      font-family: "Douyin Sans", "Inter", "Arial", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+      --card-page-bg: {{ card.theme.page_bg if card.theme else '#F6F6F6' }};
+      --card-bg: {{ card.theme.card_bg if card.theme else '#ffffff' }};
+      --card-glow: {{ card.theme.glow if card.theme else 'none' }};
+      --card-surface-bg: {{ card.theme.surface_bg if card.theme else '#FFE2E2' }};
+      --card-subtle-bg: {{ card.theme.subtle_bg if card.theme else '#F6F6F6' }};
+      --card-muted-text: {{ card.theme.muted_text if card.theme else '#8785A2' }};
+      --card-secondary-text: {{ card.theme.secondary_text if card.theme else '#55535E' }};
+      --card-border-color: {{ card.theme.border if card.theme else 'rgba(135,133,162,.18)' }};
+      --card-divider-color: {{ card.theme.divider if card.theme else 'rgba(135,133,162,.24)' }};
+      --card-shadow-color: {{ card.theme.shadow if card.theme else 'rgba(36,33,46,.10)' }};
+      --ink: #292731;
+      --sub-ink: #55535E;
+      --dim: #8785A2;
+      --line: rgba(135, 133, 162, .24);
+      --accent: #8785A2;
+      --accent-2: #FFC7C7;
+      --shell: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      width: 760px;
+      padding: 22px;
+      background: var(--card-page-bg);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-wrap: anywhere;
+    }
+    .card {
+      position: relative;
+      width: 716px;
+      overflow: hidden;
+      isolation: isolate;
+      background: var(--shell);
+      color: var(--ink);
+      border: 1px solid rgba(135, 133, 162, .16);
+      border-radius: 28px;
+      box-shadow: 0 22px 54px rgba(19, 23, 28, .12), 0 2px 8px rgba(19, 23, 28, .05);
+    }
+    .card:before {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0 0 auto;
+      height: 740px;
+      background: radial-gradient(circle at 95% 2%, rgba(255, 199, 199, .22), transparent 42%),
+                  radial-gradient(circle at 0% 20%, rgba(135, 133, 162, .12), transparent 40%);
+      pointer-events: none;
+    }
+    .card:after {
+      content: "";
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      background: var(--card-glow);
+      opacity: .08;
+      mix-blend-mode: multiply;
+      pointer-events: none;
+    }
+    .spectral-bar {
+      height: 6px;
+      width: 100%;
+      background: linear-gradient(90deg, var(--accent) 0%, #FFE2E2 38%, var(--accent-2) 72%, #F6F6F6 100%);
+    }
+    .masthead {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 25px 34px 22px;
+      border-bottom: 1px solid var(--line);
+    }
+    .masthead__signature {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      color: #393743;
+      font-size: 15px;
+      letter-spacing: .20em;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .masthead__glyph {
+      width: 25px;
+      height: 25px;
+      border: 2px solid rgba(135,133,162,.42);
+      transform: rotate(-45deg);
+      border-radius: 3px;
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+    .masthead__glyph > span { transform: rotate(45deg); }
+    .masthead__series {
+      color: var(--dim);
+      font-weight: 600;
+      letter-spacing: .17em;
+      font-size: 10px;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 24px 34px 0;
+      min-height: 76px;
+    }
+    .avatar {
+      flex: 0 0 48px;
+      width: 48px;
+      height: 48px;
+      object-fit: cover;
+      border-radius: 15px;
+      background: #F6F6F6;
+      border: 1px solid rgba(135,133,162,.18);
+    }
+    .avatar--placeholder {
+      display: grid;
+      place-items: center;
+      color: var(--sub-ink);
+    }
+    .avatar--placeholder svg { height: 24px; width: 24px; }
+    .identity { flex: 1; min-width: 0; }
+    .eyebrow { font-size: 10px; font-weight: 800; letter-spacing: .21em; color: var(--dim); text-transform: uppercase; }
+    .author-name {
+      margin-top: 5px;
+      font-size: 19px;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -.02em;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .byline { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 12px; color: var(--sub-ink); }
+    .byline__dot { opacity: .46; }
+    .byline__time { opacity: .9; }
+    .card-badges {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 8px;
+      max-width: 166px;
+      min-height: 28px;
+      margin-left: auto;
+    }
+    .card-badge__live, .card-badge__stream { width: 25px; height: 25px; object-fit: contain; }
+    .card-badge__platform {
+      display: block;
+      width: 48px;
+      height: 26px;
+      object-fit: contain;
+      object-position: right center;
+    }
+    .card-badge__platform--qqmusic,
+    .card-badge__platform--netease,
+    .card-badge__platform--kugou,
+    .card-badge__platform--qishui,
+    .card-badge__platform--kuwo,
+    .card-badge__platform--applemusic { width: auto; max-width: 112px; height: 26px; }
+    .editorial-rule {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 31px 34px 14px;
+    }
+    .editorial-rule__name {
+      color: var(--accent);
+      font-weight: 750;
+      font-size: 11px;
+      line-height: 1;
+      letter-spacing: .18em;
+    }
+    .editorial-rule__line { height: 1px; flex: 1; background: var(--line); }
+    .editorial-rule__item { color: var(--dim); font-size: 11px; letter-spacing: .07em; }
+    .cover {
+      position: relative;
+      margin: 0 34px;
+      overflow: hidden;
+      background: #FFE2E2;
+      border-radius: 13px;
+      border: 1px solid rgba(135,133,162,.18);
+      box-shadow: 0 10px 24px rgba(0,0,0,.08);
+    }
+    .cover__image { display: block; width: 100%; height: auto; max-height: 680px; object-fit: contain; }
+    .cover__badge, .cover__motion {
+      position: absolute;
+      right: 15px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid rgba(135,133,162,.18);
+      background: rgba(255,255,255,.90);
+      color: #292731;
+      border-radius: 100px;
+      padding: 7px 12px;
+      font-size: 12px;
+      line-height: 1.2;
+      font-weight: 700;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    .cover__badge { top: 15px; }
+    .cover__motion { bottom: 15px; }
+    .cover__badge svg, .cover__motion svg { width: 14px; height: 14px; }
+    .cover-caption { padding: 8px 38px 0; color: var(--dim); font-size: 11px; text-align: right; }
+    .story { padding: 30px 37px 0; }
+    .story__overline { display: flex; align-items: center; gap: 9px; color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    .story__overline:before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 rgba(0,0,0,0); }
+    h1 {
+      display: -webkit-box;
+      margin: 13px 0 10px;
+      overflow: hidden;
+      color: #292731;
+      font-size: 46px;
+      line-height: 1.13;
+      letter-spacing: -.043em;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      text-overflow: ellipsis;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+    .story__ornament { display: block; width: 54px; height: 3px; margin: 22px 0 21px; background: linear-gradient(90deg, var(--accent), #FFE2E2, var(--accent-2)); border-radius: 3px; }
+    .text, .visual-note, .repost__text, .extra { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .text { color: #444b50; font-size: 18px; line-height: 1.72; letter-spacing: -.008em; }
+    .visual-note { margin-top: 12px; font-size: 13px; color: var(--sub-ink); line-height: 1.6; }
+    .topics { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 22px; }
+    .topic { display: inline-flex; align-items: center; max-width: 100%; padding: 6px 11px; border: 1px solid rgba(135,133,162,.24); background: rgba(255,226,226,.54); color: #6f6d89; font-size: 12px; font-weight: 650; border-radius: 6px; }
+    .video-description { margin: 18px 34px 0; padding: 14px 17px; background: #F6F6F6; border: 1px solid var(--line); border-radius: 11px; }
+    .video-description__eyebrow { margin-bottom: 7px; color: var(--accent); font-weight: 800; font-size: 10px; letter-spacing: .17em; }
+    .video-description__text { display: -webkit-box; overflow: hidden; color: var(--sub-ink); font-size: 14px; line-height: 1.6; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+    .extra { margin: 24px 35px 0; padding: 18px 20px; border: 1px solid var(--line); border-left: 3px solid var(--accent-2); background: #FFE2E2; border-radius: 5px 11px 11px 5px; color: #45424f; font-size: 14px; line-height: 1.7; }
+    .extra__label { color: var(--dim); font-size: 10px; font-weight: 850; letter-spacing: .19em; margin-bottom: 10px; }
+    .playlist-tracks { margin: 24px 35px 0; padding: 0 0 4px; border-top: 1px solid var(--line); }
+    .playlist-tracks__label { padding: 18px 2px 10px; font-size: 11px; font-weight: 800; letter-spacing: .18em; color: var(--accent); }
+    .playlist-track { display: flex; align-items: center; gap: 15px; min-height: 75px; padding: 12px 2px; border-bottom: 1px solid var(--line); }
+    .playlist-track:last-child { border-bottom: 0; }
+    .playlist-track__index { min-width: 29px; text-align: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--dim); }
+    .playlist-track__body { min-width: 0; flex: 1; }
+    .playlist-track__title { overflow: hidden; color: #2E2C36; font-size: 16px; font-weight: 720; white-space: nowrap; text-overflow: ellipsis; }
+    .playlist-track__meta { overflow: hidden; color: var(--sub-ink); font-size: 12px; margin-top: 5px; white-space: nowrap; text-overflow: ellipsis; }
+    .playlist-track__cover { width: 52px; height: 52px; flex: 0 0 52px; border-radius: 7px; object-fit: cover; }
+    .meta { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 27px 35px 0; padding-top: 23px; border-top: 1px solid var(--line); }
+    .stat { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+    .stat__head { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--dim); font-size: 12px; font-weight: 700; }
+    .stat__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat__icon { width: 17px; height: 17px; object-fit: contain; opacity: .78; }
+    .stat__fallback { font-size: 15px; }
+    .stat strong { display: block; color: #292731; font-size: 28px; line-height: 1.1; font-weight: 780; letter-spacing: -.03em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    .url { margin: 24px 35px 0; padding: 15px 17px; border: 1px dashed rgba(135,133,162,.32); border-radius: 9px; font-size: 12px; color: #706e8b; line-height: 1.5; overflow-wrap: anywhere; }
+    .url:before { display: block; content: "SOURCE LINK  /  原始链接"; margin-bottom: 7px; font-size: 10px; letter-spacing: .16em; font-weight: 800; color: var(--dim); }
+    .repost { margin: 22px 35px 0; border: 1px solid var(--line); border-radius: 12px; padding: 17px; background: #F6F6F6; }
+    .repost__meta { font-size: 11px; color: var(--accent); font-weight: 700; }
+    .repost__title { color: var(--ink); font-size: 16px; margin-top: 6px; font-weight: 750; }
+    .repost__text { margin-top: 8px; font-size: 13px; color: var(--sub-ink); line-height: 1.65; }
+    .live-photo-hint { margin: 22px 35px 0; padding: 13px 0 0; color: var(--dim); border-top: 1px solid var(--line); font-size: 12px; }
+    .card-brand { display: flex; align-items: center; gap: 12px; margin: 35px 35px 0; padding: 19px 0 24px; border-top: 1px solid var(--line); }
+    .card-brand__symbol { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 6px; background: rgba(255,199,199,.40); color: var(--accent); font-size: 18px; }
+    .card-brand__logo { max-width: 42px; width: 42px; height: 35px; object-fit: contain; }
+    .card-brand__text { display: flex; flex-direction: column; gap: 2px; }
+    .card-brand__title { color: #393743; font-size: 11px; letter-spacing: .17em; font-weight: 800; }
+    .card-brand__sub { color: var(--dim); font-size: 10px; letter-spacing: .06em; }
+    .card-brand__counter { margin-left: auto; color: #8785A2; font-size: 11px; font-weight: 700; letter-spacing: .15em; }
+    .emoji { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+    .emoji-image { display: inline-block; height: 1.08em; width: 1.08em; vertical-align: -.16em; object-fit: contain; }
+    @media (prefers-reduced-transparency: reduce) { .cover__badge, .cover__motion { backdrop-filter: none; -webkit-backdrop-filter: none; background: #ffffff; } }
+  </style>
+</head>
+<body>
+{% set visual = contents|selectattr('uri')|list %}
+{% set cover = visual[0] if visual else none %}
+{% set is_video_cover = cover and cover.kind == 'video' %}
+{% set is_music = platform.name in ['qqmusic','netease','kugou','qishui','kuwo','applemusic'] %}
+{% set video_description_limit = 120 %}
+{% set video_description = card.text[:video_description_limit] if is_video_cover and card.text else '' %}
+{% set video_description_truncated = is_video_cover and card.text and card.text|length > video_description_limit %}
+<main class="card{% if is_music %} card--music{% endif %}" data-card-root>
+  <div class="spectral-bar" aria-hidden="true"></div>
+  <div class="masthead">
+    <div class="masthead__signature"><span class="masthead__glyph" aria-hidden="true"><span>↗</span></span><span>虚质解离器</span></div>
+    <div class="masthead__series">{% if is_music %}SOUND &amp; CULTURE{% else %}MEDIA &amp; CULTURE{% endif %}<br>VISUAL EDITION</div>
+  </div>
+  <header class="card-header">
+    {% if author and author.avatar_uri %}
+      <img class="avatar" src="{{ author.avatar_uri }}" alt="">
+    {% else %}
+      <span class="avatar avatar--placeholder" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="3.3"></circle><path d="M5.2 20c.8-3.4 3.2-5.1 6.8-5.1s6 1.7 6.8 5.1"></path></svg>
+      </span>
+    {% endif %}
+    <div class="identity">
+      <div class="eyebrow">{% if author %}CURATED BY{% else %}SOURCE PLATFORM{% endif %}</div>
+      {% if author %}<div class="author-name">{{ author.name|emoji }}</div>{% else %}<div class="author-name">{{ platform.display_name|emoji }}</div>{% endif %}
+      <div class="byline"><span>{{ platform.display_name|emoji }}</span>{% if card.datetime %}<span class="byline__dot">·</span><time class="byline__time">{{ card.datetime }}</time>{% endif %}</div>
+    </div>
+    {% if platform.logo_uri or card.live_photo_uri or card.live_stream_uri %}
+    <div class="card-badges">
+      {% if card.live_stream_uri %}<img class="card-badge__stream" src="{{ card.live_stream_uri }}" alt="直播间">{% endif %}
+      {% if card.live_photo_uri %}<img class="card-badge__live" src="{{ card.live_photo_uri }}" alt="实况图">{% endif %}
+      {% if platform.logo_uri %}<img class="card-badge__platform{% if is_music %} card-badge__platform--{{ platform.name }}{% endif %}" src="{{ platform.logo_uri }}" alt="{{ platform.display_name }}">{% endif %}
+    </div>
+    {% endif %}
+  </header>
+  {% if cover %}
+  <div class="editorial-rule"><span class="editorial-rule__name">{% if is_music %}COVER ART{% else %}VISUAL PREVIEW{% endif %}</span><span class="editorial-rule__line"></span><span class="editorial-rule__item">{% if visual|length > 1 %}01 / {{ '%02d'|format(visual|length) }}{% else %}01 / 01{% endif %}</span></div>
+  <figure class="cover cover--{{ cover.kind }}" data-cover-kind="{{ cover.kind }}" data-media-count="{{ visual|length }}">
+    <img class="cover__image" src="{{ cover.uri }}" alt="{{ cover.alt or card.title or '' }}">
+    {% if visual|length > 1 %}
+    <span class="cover__badge" aria-label="共 {{ visual|length }} 张媒体"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="5.2" y="3.3" width="10.2" height="10.2" rx="2"></rect><path d="M3.2 7.2v7.4c0 1.2.9 2.1 2.1 2.1h7.4"></path></svg><span>{{ visual|length }}</span></span>
+    {% endif %}
+    {% if cover.kind == 'dynamic' %}<span class="cover__motion" aria-label="动态图片"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10h8.5"></path><path d="m9.8 5.5 4.5 4.5-4.5 4.5"></path><path d="M5.8 5.5H4a2 2 0 0 0-2 2"></path><path d="M5.8 14.5H4a2 2 0 0 1-2-2"></path></svg><span>动态</span></span>{% endif %}
+  </figure>
+  {% if cover.alt %}<div class="cover-caption">{{ cover.alt|emoji }}</div>{% endif %}
+  {% endif %}
+  {% if video_description %}<section class="video-description" aria-label="视频简介"><div class="video-description__eyebrow">VIDEO DESCRIPTION</div><div class="video-description__text">{{ video_description|emoji }}{% if video_description_truncated %}…{% endif %}</div></section>{% endif %}
+  {% if card.title or card.topic_tags or (card.text and not is_video_cover) or (cover and cover.kind == 'graphics' and cover.text) %}
+  <section class="story">
+    <div class="story__overline">{% if is_music %}SONG / PLAYLIST{% else %}FEATURED CONTENT{% endif %}</div>
+    {% if card.title %}<h1>{{ card.title|emoji }}</h1>{% endif %}
+    {% if card.text and not is_video_cover %}<div class="text">{{ card.text|emoji }}</div>{% endif %}
+    {% if cover and cover.kind == 'graphics' and cover.text %}<div class="visual-note">{{ cover.text|emoji }}</div>{% endif %}
+    {% if card.topic_tags %}<div class="topics" aria-label="话题">{% for tag in card.topic_tags %}<span class="topic">{{ tag|emoji }}</span>{% endfor %}</div>{% endif %}
+    <span class="story__ornament" aria-hidden="true"></span>
+  </section>
+  {% endif %}
+  {% if card.playlist_tracks %}
+  <section class="playlist-tracks" aria-label="歌曲列表">
+    <div class="playlist-tracks__label">TRACKLIST / 歌曲列表</div>
+    {% for track in card.playlist_tracks %}
+    <div class="playlist-track">
+      <div class="playlist-track__index">{{ '%02d'|format(track.index) }}</div>
+      <div class="playlist-track__body"><div class="playlist-track__title">{{ track.title|emoji }}</div>{% if track.artist or track.album %}<div class="playlist-track__meta">By {{ (track.artist or '未知艺术家')|emoji }}{% if track.album %} — {{ track.album|emoji }}{% endif %}</div>{% endif %}</div>
+      {% if track.cover_uri %}<img class="playlist-track__cover" src="{{ track.cover_uri }}" alt="">{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  {% if card.extra_info %}<section class="extra"><div class="extra__label">ADDITIONAL INFORMATION</div>{{ card.extra_info|emoji }}</section>{% endif %}
+  {% if card.stat_items %}<div class="meta">{% for item in card.stat_items %}<span class="stat" aria-label="{{ item.label }} {{ item.value|format_count }}"><span class="stat__head">{% if item.icon_uri %}<img class="stat__icon" src="{{ item.icon_uri }}" alt="{{ item.label }}">{% else %}<span class="stat__fallback" aria-hidden="true">{{ item.icon }}</span>{% endif %}<span class="stat__label">{{ item.label }}</span></span><strong>{{ item.value|format_count }}</strong></span>{% endfor %}</div>{% endif %}
+  {% if card.url %}<div class="url">{{ card.url }}</div>{% endif %}
+  {% if card.repost %}<section class="repost"><div class="repost__meta">转发内容 · {{ card.repost.platform.display_name|emoji }}</div>{% if card.repost.title %}<div class="repost__title">{{ card.repost.title|emoji }}</div>{% endif %}{% if card.repost.text %}<div class="repost__text">{{ card.repost.text|emoji }}</div>{% endif %}</section>{% endif %}
+  {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
+  <footer class="card-brand" aria-label="插件标识">
+    {% if plugin_logo_uri %}<img class="card-brand__logo" src="{{ plugin_logo_uri }}" alt="插件 Logo">{% else %}<span class="card-brand__symbol" aria-hidden="true">↗</span>{% endif %}
+    <div class="card-brand__text"><span class="card-brand__title">虚质解离器</span><span class="card-brand__sub">明明只要逃避，生活就会很轻松呢...</span></div>
+    <span class="card-brand__counter">END / //</span>
+  </footer>
+</main>
+</body>
+</html>
