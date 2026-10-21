@@ -56,6 +56,7 @@
 3. `core/templates/`（内置信息模板 `default.html`、`compact.html`、`apple.html`、`Guizang_card.html`，以及标准与 Guizang Social 歌词模板 `lyrics_card.html`、`Guizangsocial_lyrics_card.html`）
 
 将 `my_card.html` 放入第一目录后，在插件页将 `card_template` 选择为 `custom`，再把 `card_custom_template` 填为 `my_card` 即可。文件名会做路径净化，不能通过配置读取目录外文件。
+扫码登录卡片由内部模板 `qr_login_card.html` 渲染，QQ 音乐、酷狗音乐和 B 站共用；它不是 `card_template` 的可选项。将同名文件放入上述模板目录即可覆盖登录卡片外观。
 内置信息卡片 `Guizang_card` 在配置页显示为 `Guizang Social`，模板文件为 `Guizang_card.html`。它是独立的 Swiss / 专业平面排版方案：直角封面、细分隔线、IKB 单一强调色和等宽统计数字；复用 `apple.html` 的全部上下文、媒体封面与条件分支，不替换或修改 `apple.html`。动态取色开启时仍复用取色后的平面背景与文字/分隔色，但不启用 Apple 模板的渐变和光晕，以保持 Swiss 配色规则。
 
 歌词模板通过独立配置 `lyrics_card_template` 选择，避免影响信息卡片模板。默认 `lyrics_card` 保持现有歌词卡片；选择 `Guizang Social` 时运行时加载 `core/templates/Guizangsocial_lyrics_card.html`。两份 Guizang Social 模板与其余内置模板统一存放在 `core/templates/`。歌词版沿用信息卡片的字体、色彩、封面和页脚体系，保留标题、歌手、专辑、时长、发布时间开关、封面、平台 Logo、来源、逐行时间码以及制作人员与段落分隔标记。信息卡片和歌词卡片的配置项各自显示为 `Guizang Social`，模板文件独立。

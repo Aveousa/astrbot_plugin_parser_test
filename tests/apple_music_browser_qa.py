@@ -127,7 +127,7 @@ def run(output: Path):
                 data, content_type = bridge.read_bytes(), "application/javascript"
             elif self.path.startswith("/page/"):
                 name = self.path.removeprefix("/page/")
-                if name not in ("index.html", "style.css", "app.js"):
+                if name not in ("index.html", "style.css", "style-refined.css", "app.js"):
                     self.send_error(404)
                     return
                 data = (ROOT / "pages" / "apple_music" / name).read_bytes()
@@ -153,13 +153,13 @@ def run(output: Path):
             page.on("pageerror", lambda error: errors.append(f"{error} | {getattr(error, 'stack', '')}"))
             page.goto(f"http://127.0.0.1:{server.server_port}/")
             frame = page.frame_locator("iframe")
-            def screenshot(name):
+            def screenshot(name, full_page=True):
                 # Screenshots extending beyond an iframe viewport get clipped.
                 # Expand the QA harness, not the shipped page, for a full capture.
                 viewport = page.viewport_size
                 height = frame.locator("body").evaluate("el => el.scrollHeight")
                 page.set_viewport_size({"width": viewport["width"], "height": max(height, viewport["height"])})
-                page.screenshot(path=str(output / name))
+                page.screenshot(path=str(output / name), full_page=full_page)
                 page.set_viewport_size(viewport)
             try:
                 frame.locator("#wrapper-state").get_by_text("已连接", exact=False).wait_for(timeout=5000)
@@ -174,8 +174,28 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"
             assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "账号 Cookie 不完整"
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "未登录"
+
+            assert frame.locator("html").get_attribute("data-page-style") == "classic"
+            classic_accent = frame.locator("html").evaluate(
+                "el => getComputedStyle(el).getPropertyValue('--accent').trim()"
+            )
+            classic_palette = frame.locator("html").evaluate(
+                "el => Object.fromEntries(['--bg','--accent','--surface-soft'].map(key => [key, getComputedStyle(el).getPropertyValue(key).trim()]))"
+            )
+            assert classic_palette["--bg"] == "#F6F6F6", classic_palette
+            screenshot("desktop-classic.png", full_page=False)
+            page.set_viewport_size({"width": 390, "height": 844})
+            screenshot("mobile-classic.png", full_page=False)
+            page.set_viewport_size({"width": 1200, "height": 980})
+            frame.locator("#page-style").select_option("soft")
+            assert frame.locator("html").get_attribute("data-page-style") == "soft"
+            screenshot("desktop-soft.png", full_page=False)
+            page.set_viewport_size({"width": 390, "height": 844})
+            screenshot("mobile-soft.png", full_page=False)
+            page.set_viewport_size({"width": 1200, "height": 980})
             light_palette = frame.locator("html").evaluate("el => Object.fromEntries(['--bg','--accent','--surface-soft'].map(key => [key, getComputedStyle(el).getPropertyValue(key).trim()]))")
             assert light_palette == {"--bg": "#F6F6F6", "--accent": "#8785A2", "--surface-soft": "#FFE2E2"}, light_palette
+            assert frame.locator("html").evaluate("localStorage.getItem('apple-music-management-style')") == "soft"
             assert frame.locator(".primary-button").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 199, 199)"
             music_list = frame.locator("#music-parser-list")
             assert music_list.locator("[data-music-parser]").count() == 3
@@ -245,11 +265,11 @@ def run(output: Path):
             dark_surface = frame.locator("html").evaluate(
                 "el => getComputedStyle(el).getPropertyValue('--surface').trim()"
             )
-            assert dark_surface == "#292832", dark_surface
+            assert dark_surface == "#302F39", dark_surface
             dark_accent = frame.locator("html").evaluate(
                 "el => getComputedStyle(el).getPropertyValue('--accent').trim()"
             )
-            assert dark_accent == "#FFC7C7", dark_accent
+            assert dark_accent == "#B4B2C7", dark_accent
             screenshot("desktop-dark.png")
             page.set_viewport_size({"width": 390, "height": 844})
             screenshot("mobile-dark.png")
@@ -262,6 +282,13 @@ def run(output: Path):
                 .map(node => [node.tagName, node.id, node.className, Math.round(node.getBoundingClientRect().right)])
             })""")
             assert overflow["fits"], overflow
+            responsive_widths = []
+            for width in (375, 390, 620, 768, 880, 1024, 1440):
+                page.set_viewport_size({"width": width, "height": 900})
+                fits = frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+                assert fits, f"horizontal overflow at {width}px"
+                responsive_widths.append(width)
+            page.set_viewport_size({"width": 390, "height": 844})
             page.evaluate("document.querySelector('iframe').contentWindow.postMessage({channel:'astrbot-plugin-page',kind:'context',context:{isDark:false}},location.origin)")
             frame.locator("html[data-theme='light']").wait_for()
             screenshot("mobile-light.png")
@@ -276,7 +303,7 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

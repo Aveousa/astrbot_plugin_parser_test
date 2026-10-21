@@ -3,6 +3,11 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const bridge = window.AstrBotPluginPage;
+  const pageStyleStorageKey = "apple-music-management-style";
+  const pageThemeStorageKey = "apple-music-management-theme";
+  let pageThemePreference = "auto";
+  let astrbotTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  let applyingPageTheme = false;
   let nonce = "";
   let snapshot = null;
   let busy = false;
@@ -23,6 +28,7 @@
   let submittedMusic = "";
   let clearCacheArmed = false;
   let clearCacheTimer = null;
+  let logoRequest = 0;
   const codecOptions = [
     ["alac", "ALAC · 无损"], ["aac-web", "AAC Web"],
     ["aac-he-web", "HE-AAC Web"], ["aac", "AAC"],
@@ -36,23 +42,105 @@
     ["standard", "标准音质 · 128 kbps"],
   ];
 
+  function applyPageStyle(style, persist = true) {
+    const selected = style === "soft" ? "soft" : "classic";
+    document.documentElement.dataset.pageStyle = selected;
+    const selector = $("page-style");
+    if (selector && selector.value !== selected) selector.value = selected;
+    if (!persist) return;
+    try {
+      window.localStorage.setItem(pageStyleStorageKey, selected);
+    } catch (_) {
+      // A blocked local storage should not prevent using either visual style.
+    }
+  }
+  function initializePageStyle() {
+    let selected = "classic";
+    try {
+      const saved = window.localStorage.getItem(pageStyleStorageKey);
+      if (saved === "classic" || saved === "soft") selected = saved;
+    } catch (_) {
+      // Private browsing policies may block storage; the default remains usable.
+    }
+    applyPageStyle(selected, false);
+    $("page-style")?.addEventListener("change", (event) => applyPageStyle(event.currentTarget.value));
+  }
+
+  function applyPageTheme(preference, persist = true) {
+    pageThemePreference = preference === "light" || preference === "dark" ? preference : "auto";
+    const theme = pageThemePreference === "auto" ? astrbotTheme : pageThemePreference;
+    if (document.documentElement.dataset.theme !== theme) {
+      applyingPageTheme = true;
+      document.documentElement.dataset.theme = theme;
+    }
+    const selector = $("page-theme");
+    if (selector && selector.value !== pageThemePreference) selector.value = pageThemePreference;
+    const themeSwitch = $("theme-switch");
+    if (themeSwitch) {
+      themeSwitch.dataset.value = pageThemePreference;
+      themeSwitch.querySelectorAll('input[name="theme-choice"]').forEach((input) => {
+        input.checked = input.value === pageThemePreference;
+      });
+    }
+    if (!persist) return;
+    try {
+      window.localStorage.setItem(pageThemeStorageKey, pageThemePreference);
+    } catch (_) {
+      // The current theme still works when browser storage is unavailable.
+    }
+  }
+  function initializePageTheme() {
+    let preference = "auto";
+    try {
+      const saved = window.localStorage.getItem(pageThemeStorageKey);
+      if (saved === "light" || saved === "dark") preference = saved;
+    } catch (_) {
+      // Continue with AstrBot's theme when browser storage is unavailable.
+    }
+    new MutationObserver(() => {
+      if (applyingPageTheme) {
+        applyingPageTheme = false;
+        return;
+      }
+      astrbotTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+      if (pageThemePreference !== "auto") applyPageTheme(pageThemePreference, false);
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    applyPageTheme(preference, false);
+    $("page-theme")?.addEventListener("change", (event) => applyPageTheme(event.currentTarget.value));
+    $("theme-switch")?.addEventListener("change", (event) => {
+      if (!(event.target instanceof HTMLInputElement)) return;
+      const selector = $("page-theme");
+      selector.value = event.target.value;
+      selector.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
   function notice(message, error = false) {
     $("notice").querySelector(".notice-text").textContent = message;
     $("notice").dataset.error = String(error);
   }
   async function loadPluginLogo() {
+    const request = ++logoRequest;
     const logo = $("plugin-logo");
-    logo.addEventListener("load", () => { logo.hidden = false; }, { once: true });
-    logo.addEventListener("error", () => { logo.hidden = true; }, { once: true });
+    if (logo.complete && !logo.naturalWidth) logo.hidden = true;
+    logo.onload = () => { logo.hidden = false; };
+    logo.onerror = () => { logo.hidden = true; };
     try {
       // Read via the authenticated Plugin Pages bridge instead of a direct
       // image request, which cannot add the dashboard Authorization header.
       const result = await bridge.apiGet("apple-music/logo");
+      if (request !== logoRequest) return;
       if (typeof result?.data_url === "string" && result.data_url.startsWith("data:image/png;base64,")) {
-        logo.src = result.data_url;
+        const replacement = new Image();
+        replacement.onload = () => {
+          if (request !== logoRequest) return;
+          logo.src = result.data_url;
+          logo.hidden = false;
+        };
+        replacement.src = result.data_url;
       }
     } catch (_) {
-      logo.hidden = true;
+      // Keep the bundled logo visible if the authenticated API is unavailable.
     }
   }
   function field(id, value, tone = "") {
@@ -183,10 +271,13 @@
     }
     fieldset.append(...toggles);
 
-    const formatLabel = document.createElement("label");
+    const formatLabel = document.createElement("div");
     formatLabel.className = "music-format-setting";
-    formatLabel.append(document.createTextNode("单曲音频发送模式"));
+    const formatTitle = document.createElement("span");
+    formatTitle.textContent = "单曲音频发送模式";
+    formatLabel.append(formatTitle);
     const format = document.createElement("select");
+    format.setAttribute("aria-label", `${musicLabels[key]}单曲音频发送模式`);
     format.dataset.musicSetting = "audio_send_format";
     format.dataset.parserKey = key;
     format.disabled = !configured;
@@ -686,6 +777,8 @@
     if (refreshing) return;
     refreshing = true;
     controls();
+    // The Logo may have changed in AstrBot's plugin configuration while this page stayed open.
+    void loadPluginLogo();
     try {
       const data = await bridge.apiGet("apple-music/status");
       render(data);
@@ -733,6 +826,7 @@
     }
   }
   $("refresh").addEventListener("click", () => refresh());
+  window.addEventListener("focus", () => { if (bridge) void loadPluginLogo(); });
   $("login-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const body = { username: $("username").value.trim(), password: $("password").value };
@@ -799,11 +893,369 @@
     $("password").value = "";
     $("code").value = "";
   });
+  initializePageStyle();
+  initializePageTheme();
   if (!bridge) {
     notice("请从 AstrBot 插件详情打开此页，不要直接打开 HTML 文件。", true);
     $("refresh").disabled = true;
     return;
   }
   const readyTimeout = setTimeout(() => notice("尚未连接后台页面桥接，请从支持 Plugin Pages 的 AstrBot 后台打开此页。", true), 8000);
-  bridge.ready().then(() => { clearTimeout(readyTimeout); loadPluginLogo(); refresh(); });
+  bridge.ready().then(() => { clearTimeout(readyTimeout); refresh(); });
+})();
+
+// Keep native selects as the single source of truth for the existing settings logic.
+// The visible control is enhanced only when JavaScript is available.
+(() => {
+  const enhanced = new WeakMap();
+  let opened = null;
+  let menuId = 0;
+
+  function closeMenu(restoreFocus = false) {
+    if (!opened) return;
+    const state = opened;
+    opened = null;
+    state.trigger.setAttribute("aria-expanded", "false");
+    state.trigger.removeAttribute("aria-controls");
+    state.menu?.remove();
+    state.menu = null;
+    if (restoreFocus && state.trigger.isConnected) state.trigger.focus({ preventScroll: true });
+  }
+
+  function syncSelect(state) {
+    const selected = state.select.selectedOptions[0];
+    const label = selected?.textContent.trim() || "请选择";
+    if (state.value.textContent !== label) state.value.textContent = label;
+    const accessibleName = `${state.name}，当前：${label}`;
+    if (state.trigger.getAttribute("aria-label") !== accessibleName) {
+      state.trigger.setAttribute("aria-label", accessibleName);
+    }
+    const disabled = state.select.matches(":disabled");
+    if (state.trigger.disabled !== disabled) state.trigger.disabled = disabled;
+    if (disabled && opened === state) closeMenu();
+    if (opened === state) {
+      state.menu.querySelectorAll("[role='option']").forEach((option, index) => {
+        const isSelected = index === state.select.selectedIndex;
+        option.setAttribute("aria-selected", String(isSelected));
+      });
+    }
+  }
+
+  function positionMenu(state) {
+    if (!state.menu) return;
+    const rect = state.trigger.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) {
+      closeMenu();
+      return;
+    }
+    const margin = 8;
+    const width = Math.min(window.innerWidth - margin * 2, Math.max(rect.width, 224));
+    const below = window.innerHeight - rect.bottom - margin - 6;
+    const above = rect.top - margin - 6;
+    const openAbove = below < 176 && above > below;
+    state.menu.style.width = `${width}px`;
+    state.menu.style.left = `${Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin))}px`;
+    state.menu.style.maxHeight = `${Math.max(48, Math.min(280, openAbove ? above : below))}px`;
+    state.menu.style.top = `${openAbove ? rect.top - state.menu.offsetHeight - 6 : rect.bottom + 6}px`;
+  }
+
+  function focusOption(state, index) {
+    if (!state.menu) return;
+    const options = [...state.menu.querySelectorAll("[role='option']")];
+    if (!options.length) return;
+    const target = Math.max(0, Math.min(index, options.length - 1));
+    const candidate = options[target].disabled
+      ? options.find((option) => !option.disabled)
+      : options[target];
+    candidate?.focus({ preventScroll: true });
+    candidate?.scrollIntoView({ block: "nearest" });
+  }
+
+  function commitOption(state, index) {
+    const option = state.select.options[index];
+    if (!option || option.disabled || state.select.matches(":disabled")) return;
+    closeMenu(true);
+    if (state.select.value !== option.value) {
+      state.select.value = option.value;
+      state.select.dispatchEvent(new Event("input", { bubbles: true }));
+      state.select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    syncSelect(state);
+  }
+
+  function openMenu(state) {
+    if (state.select.matches(":disabled")) return;
+    if (opened) closeMenu();
+    const menu = document.createElement("div");
+    menu.id = `custom-select-menu-${++menuId}`;
+    menu.className = "custom-select-menu";
+    menu.setAttribute("role", "listbox");
+    menu.setAttribute("aria-label", state.name);
+    [...state.select.options].forEach((option, index) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "custom-select-option";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(index === state.select.selectedIndex));
+      item.tabIndex = -1;
+      item.disabled = option.disabled;
+      item.textContent = option.textContent;
+      item.addEventListener("click", () => commitOption(state, index));
+      menu.append(item);
+    });
+    menu.addEventListener("keydown", (event) => {
+      const options = [...menu.querySelectorAll("[role='option']")];
+      const current = options.indexOf(document.activeElement);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeMenu(true);
+      } else if (event.key === "Tab") {
+        closeMenu();
+      } else if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        const step = event.key === "ArrowUp" ? -1 : 1;
+        let next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1 : current;
+        for (let count = 0; count < options.length; count++) {
+          next = event.key === "Home" || event.key === "End" ? next : (next + step + options.length) % options.length;
+          if (!options[next].disabled) break;
+          if (event.key === "Home") next = Math.min(next + 1, options.length - 1);
+          if (event.key === "End") next = Math.max(next - 1, 0);
+        }
+        focusOption(state, next);
+      } else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        commitOption(state, current);
+      } else if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        const match = options.findIndex((option, index) => index > current && !option.disabled && option.textContent.trim().toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase()));
+        const first = match < 0 ? options.findIndex((option) => !option.disabled && option.textContent.trim().toLocaleLowerCase().startsWith(event.key.toLocaleLowerCase())) : match;
+        if (first >= 0) {
+          event.preventDefault();
+          focusOption(state, first);
+        }
+      }
+    });
+    state.menu = menu;
+    opened = state;
+    document.body.append(menu);
+    state.trigger.setAttribute("aria-controls", menu.id);
+    state.trigger.setAttribute("aria-expanded", "true");
+    positionMenu(state);
+    focusOption(state, state.select.selectedIndex);
+  }
+
+  function enhanceSelect(select) {
+    if (enhanced.has(select) || select.hidden) return;
+    const wrapper = document.createElement("span");
+    wrapper.className = "custom-select";
+    select.before(wrapper);
+    wrapper.append(select);
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "custom-select-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    const value = document.createElement("span");
+    value.className = "custom-select-value";
+    const arrow = document.createElement("span");
+    arrow.className = "custom-select-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    trigger.append(value, arrow);
+    wrapper.append(trigger);
+    const state = { select, trigger, value, menu: null, name: select.getAttribute("aria-label") || select.name || "选择" };
+    enhanced.set(select, state);
+    select.classList.add("custom-select-native");
+    select.tabIndex = -1;
+    select.setAttribute("aria-hidden", "true");
+    select.addEventListener("change", () => syncSelect(state));
+    trigger.addEventListener("click", () => opened === state ? closeMenu() : openMenu(state));
+    trigger.addEventListener("keydown", (event) => {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        openMenu(state);
+      }
+    });
+    syncSelect(state);
+  }
+
+  document.querySelectorAll("select").forEach(enhanceSelect);
+  new MutationObserver((records) => {
+    for (const record of records) {
+      if (record.type === "childList") {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches("select")) enhanceSelect(node);
+          node.querySelectorAll("select").forEach(enhanceSelect);
+        }
+      } else if (record.target instanceof HTMLSelectElement) {
+        const state = enhanced.get(record.target);
+        if (state) syncSelect(state);
+      } else if (record.target instanceof HTMLFieldSetElement) {
+        record.target.querySelectorAll("select").forEach((select) => {
+          const state = enhanced.get(select);
+          if (state) syncSelect(state);
+        });
+      } else if (record.target instanceof HTMLOptionElement) {
+        const state = enhanced.get(record.target.closest("select"));
+        if (state) syncSelect(state);
+      }
+    }
+    if (opened && !opened.select.isConnected) closeMenu();
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["disabled", "selected"] });
+  document.addEventListener("pointerdown", (event) => {
+    if (opened && !opened.menu.contains(event.target) && !opened.trigger.contains(event.target)) closeMenu();
+  }, true);
+  window.addEventListener("resize", () => { if (opened) positionMenu(opened); });
+  window.addEventListener("scroll", () => { if (opened) positionMenu(opened); }, true);
+})();
+
+// Font files remain in this browser's IndexedDB; no plugin API receives them.
+(() => {
+  const dialog = document.getElementById("font-dialog");
+  if (!dialog) return;
+  const fileInput = document.getElementById("font-file");
+  const chooseButton = document.getElementById("choose-font");
+  const resetButton = document.getElementById("reset-font");
+  const currentName = document.getElementById("font-current-name");
+  const status = document.getElementById("font-status");
+  const maxBytes = 40 * 1024 * 1024;
+  const allowedExtensions = new Set(["woff2", "woff", "ttf", "otf"]);
+  const fontFamily = '"Apple Music User Font", -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif';
+  let activeFace = null;
+  let databasePromise = null;
+  let busy = false;
+
+  function setStatus(message, error = false) {
+    status.textContent = message;
+    status.dataset.error = String(error);
+  }
+
+  function setBusy(value) {
+    busy = value;
+    chooseButton.disabled = value;
+    resetButton.disabled = value || !activeFace;
+    dialog.setAttribute("aria-busy", String(value));
+  }
+
+  function database() {
+    if (!window.indexedDB) return Promise.reject(new Error("IndexedDB unavailable"));
+    if (!databasePromise) {
+      databasePromise = new Promise((resolve, reject) => {
+        const request = window.indexedDB.open("astrbot-apple-music-page", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("preferences");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      }).catch((error) => {
+        databasePromise = null;
+        throw error;
+      });
+    }
+    return databasePromise;
+  }
+
+  async function storedFont(mode, value) {
+    const db = await database();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction("preferences", mode);
+      const store = transaction.objectStore("preferences");
+      const request = mode === "readonly" ? store.get("font")
+        : value ? store.put(value, "font") : store.delete("font");
+      let result;
+      request.onsuccess = () => { result = request.result; };
+      transaction.oncomplete = () => resolve(result);
+      transaction.onerror = () => reject(transaction.error || request.error);
+      transaction.onabort = () => reject(transaction.error || new Error("Font storage aborted"));
+    });
+  }
+
+  async function loadFace(bytes) {
+    const face = new FontFace("Apple Music User Font", bytes);
+    await face.load();
+    return face;
+  }
+
+  function useFace(face, name) {
+    if (activeFace) document.fonts.delete(activeFace);
+    document.fonts.add(face);
+    activeFace = face;
+    document.documentElement.style.setProperty("--page-font-family", fontFamily);
+    currentName.textContent = name;
+    resetButton.disabled = false;
+  }
+
+  function useDefaultFont() {
+    document.documentElement.style.removeProperty("--page-font-family");
+    if (activeFace) document.fonts.delete(activeFace);
+    activeFace = null;
+    currentName.textContent = "系统默认字体";
+    resetButton.disabled = true;
+  }
+
+  async function restoreSavedFont() {
+    if (!("FontFace" in window) || !document.fonts) {
+      chooseButton.disabled = true;
+      setStatus("当前浏览器不支持加载自定义字体。", true);
+      return;
+    }
+    try {
+      const saved = await storedFont("readonly");
+      if (!saved?.bytes) return;
+      const face = await loadFace(saved.bytes);
+      useFace(face, saved.name || "自定义字体");
+      setStatus("已从当前浏览器恢复自定义字体。");
+    } catch (_) {
+      setStatus("无法读取本地字体；仍可选择字体文件在当前页面使用。", true);
+    }
+  }
+
+  const initialLoad = restoreSavedFont();
+  document.getElementById("font-settings").addEventListener("click", () => dialog.showModal());
+  document.getElementById("close-font-dialog").addEventListener("click", () => dialog.close());
+  chooseButton.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    if (!file) return;
+    await initialLoad;
+    if (busy) return;
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (!allowedExtensions.has(extension)) {
+      setStatus("请选择 WOFF2、WOFF、TTF 或 OTF 字体文件。", true);
+      return;
+    }
+    if (!file.size || file.size > maxBytes) {
+      setStatus("字体文件需大于 0 且不超过 40 MB。", true);
+      return;
+    }
+    setBusy(true);
+    setStatus("正在检查字体文件…");
+    try {
+      const bytes = await file.arrayBuffer();
+      const face = await loadFace(bytes);
+      let saved = true;
+      try {
+        await storedFont("readwrite", { name: file.name, bytes });
+      } catch (_) {
+        saved = false;
+      }
+      useFace(face, file.name);
+      setStatus(saved ? "字体已替换，并保存在当前浏览器。" : "字体已在当前页面生效，但浏览器未能保存；刷新后可能恢复原字体。", !saved);
+    } catch (_) {
+      setStatus("无法解析这个字体文件，请选择有效的字体文件。", true);
+    } finally {
+      setBusy(false);
+    }
+  });
+  resetButton.addEventListener("click", async () => {
+    if (busy) return;
+    setBusy(true);
+    let removed = true;
+    try {
+      await storedFont("readwrite", null);
+    } catch (_) {
+      removed = false;
+    }
+    useDefaultFont();
+    setBusy(false);
+    setStatus(removed ? "已恢复系统默认字体。" : "当前页面已恢复默认字体，但无法清除浏览器中的字体记录。", !removed);
+  });
 })();

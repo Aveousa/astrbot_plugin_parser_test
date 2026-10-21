@@ -6,18 +6,20 @@
   <meta name="referrer" content="no-referrer">
   <title>虚质解离器 · 管理</title>
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style-refined.css">
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="页面导航">
-      <div class="brand"><img id="plugin-logo" class="brand-logo" alt="插件 Logo" hidden><div><strong>虚质解离器</strong><span>插件管理</span></div></div>
+    <header class="sidebar" aria-label="页面导航">
+      <div class="brand"><img id="plugin-logo" class="brand-logo" src="./logo.png" alt="虚质解离器 Logo" width="40" height="40" decoding="async"><div><strong>虚质解离器</strong><span>插件管理</span></div></div>
       <nav class="nav-list"><a class="nav-item is-active" href="#overview"><span class="nav-icon">⌂</span>概览</a><a class="nav-item" href="#account"><span class="nav-icon">◎</span>账号与订阅</a><a class="nav-item" href="#settings"><span class="nav-icon">⌘</span>Apple Music</a><a class="nav-item" href="#other-music"><span class="nav-icon">♫</span>其他音乐</a><a class="nav-item" href="#verify"><span class="nav-icon">↗</span>音频验证</a><a class="nav-item" href="#cache"><span class="nav-icon">▱</span>缓存空间</a></nav>
+      <div class="style-picker theme-picker"><span>外观</span><div id="theme-switch" class="theme-switch" role="radiogroup" aria-label="管理页外观"><label title="浅色"><input type="radio" name="theme-choice" value="light" aria-label="浅色"><span aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg></span></label><label title="深色"><input type="radio" name="theme-choice" value="dark" aria-label="深色"><span aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 15.3A8 8 0 0 1 8.7 4 8 8 0 1 0 20 15.3Z"/></svg></span></label><label title="自动，跟随 AstrBot"><input type="radio" name="theme-choice" value="auto" aria-label="自动，跟随 AstrBot"><span aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path class="theme-auto-half" d="M12 4a8 8 0 0 1 0 16Z"/></svg></span></label></div><select id="page-theme" name="page-theme" aria-label="管理页深色模式" hidden><option value="auto">跟随 AstrBot</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
       <div class="sidebar-foot"><span class="status-dot"></span><span>Plugin Pages</span><span class="sidebar-version">v1</span></div>
-    </aside>
+    </header>
     <main class="content">
-      <div class="topbar"><div class="breadcrumb"><span>AstrBot</span><span class="crumb-separator">/</span><strong>Apple Music</strong></div><button id="refresh" type="button" class="icon-button" aria-label="刷新状态" title="刷新状态"><span aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button></div>
+      <div class="topbar"><div class="breadcrumb"><span>AstrBot</span><span class="crumb-separator">/</span><strong>Apple Music</strong></div><div class="topbar-tools"><div class="style-picker"><span>风格</span><select id="page-style" name="page-style" aria-label="管理页风格"><option value="classic">经典版</option><option value="soft">柔粉薰衣草</option></select></div><button id="font-settings" type="button" class="icon-button font-settings-button" aria-label="管理页面字体" title="管理页面字体"><span aria-hidden="true">Aa</span><span class="font-button-label">字体</span></button><button id="refresh" type="button" class="icon-button" aria-label="刷新状态" title="刷新状态"><span aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button></div></div>
       <section class="platform-status-bar" aria-label="平台账号与 Cookie 状态"><div class="platform-status-heading"><strong>平台状态</strong><span>本地凭据</span></div><ul id="platform-status-list" aria-live="polite"><li data-platform-status="douyin" data-available="false"><span class="platform-light" aria-hidden="true"></span><span><strong>抖音</strong><small>正在读取…</small></span></li><li data-platform-status="bilibili" data-available="false"><span class="platform-light" aria-hidden="true"></span><span><strong>Bilibili</strong><small>正在读取…</small></span></li><li data-platform-status="qqmusic" data-available="false"><span class="platform-light" aria-hidden="true"></span><span><strong>QQ 音乐</strong><small>正在读取…</small></span></li><li data-platform-status="kugou" data-available="false"><span class="platform-light" aria-hidden="true"></span><span><strong>酷狗音乐</strong><small>正在读取…</small></span></li><li data-platform-status="applemusic" data-available="false"><span class="platform-light" aria-hidden="true"></span><span><strong>Apple Music</strong><small>正在读取…</small></span></li></ul></section>
       <div id="notice" class="notice" role="status" aria-live="polite"><span class="notice-dot"></span><span class="notice-text">正在连接 AstrBot 后台…</span></div>
       <section id="overview" class="hero" aria-labelledby="page-title"><div class="hero-copy"><h1 id="page-title">把音乐，留在<br><em>你的设备里。</em></h1><p class="hero-description">在这里管理 wrapper 连接、Apple 账号和音频生成。<br>所有敏感信息只在提交时短暂使用。</p><div class="hero-actions"><a class="hero-link" href="#account">管理账号 <span>↘</span></a><a class="hero-link muted-link" href="#verify">验证一首歌 <span>↘</span></a></div></div><div class="hero-art" aria-hidden="true"><div class="orb orb-one"></div><div class="orb orb-two"></div><div class="music-note">♪</div><div class="art-caption">YOUR<br>MUSIC<br>YOUR WAY</div></div></section>
@@ -29,8 +31,18 @@
       <section id="verify" class="panel verify-panel" aria-labelledby="verify-title"><div class="verify-art" aria-hidden="true"><span>♫</span></div><div class="verify-content"><div class="panel-head"><div><p class="section-kicker">AUDIO CHECK</p><h3 id="verify-title">验证一首歌</h3><p>生成一份真实音频，检查格式和完整时长。</p></div></div><form id="verify-form"><fieldset id="verify-fields" disabled><label for="track-url">Apple Music 单曲链接</label><div class="input-row"><input id="track-url" type="url" required maxlength="2048" value="https://music.apple.com/cn/album/落日/1514034441?i=1514034916"><button type="submit" class="primary-button">开始验证 <span>→</span></button></div></fieldset></form><p id="verification-result" class="result-line" role="status">尚未验证音频。登录成功不保证每首歌曲都能下载。</p></div></section>
       <section id="cache" class="section-block" aria-labelledby="cache-title"><div class="section-heading"><div><p class="section-kicker">STORAGE</p><h2 id="cache-title">缓存空间</h2></div><p>生成的音频、卡片和临时文件都在这里。</p></div><div class="cache-panel panel"><div class="cache-size"><span class="cache-label">当前占用</span><strong id="cache-size">—</strong><span id="cache-files" class="cache-files">正在读取文件数…</span></div><div class="cache-meter"><span id="cache-meter-fill"></span></div><div class="cache-actions"><p>清理不会影响 wrapper 登录状态，只会移除插件缓存文件。</p><button id="clear-cache" type="button" class="danger-button" disabled><span class="clear-cache-label">一键清理缓存</span> <span aria-hidden="true">⌫</span></button></div></div></section>
       <details class="getting-started"><summary>首次使用指南 <span>⌄</span></summary><ol><li>部署兼容的 wrapper-v2（API 0.0.2），仅向本机或可信内网开放。</li><li>在插件配置的 Apple Music 解析器中启用后端，填写 wrapper 地址并重载插件。</li><li>使用独立 Python 环境安装 gamdl 3.9.1，并将 FFmpeg 与 FFprobe 放入 PATH。</li><li>在此页登录并核验订阅，验证单曲后再开启“返回单曲音频”。</li></ol><p>日常只需刷新或重新登录。清除内存会话不会删除磁盘登录缓存。</p></details>
-      <footer>Apple Music 管理页 <span>·</span> 安全地连接你的 AstrBot</footer>
+      <footer>明明只要逃避，生活就会很轻松呢......</footer>
     </main>
   </div>
+  <dialog id="font-dialog" class="font-dialog" aria-labelledby="font-dialog-title" aria-describedby="font-dialog-description">
+    <div class="font-dialog-head"><div><p class="section-kicker">APPEARANCE</p><h2 id="font-dialog-title">页面字体</h2></div><button id="close-font-dialog" type="button" class="font-dialog-close" aria-label="关闭字体设置">×</button></div>
+    <p id="font-dialog-description" class="font-dialog-description">选择本机字体文件，即可替换这个管理页的字体。字体只保存在当前浏览器，不会上传到服务器。</p>
+    <div class="font-current"><span>当前字体</span><strong id="font-current-name">系统默认字体</strong></div>
+    <div class="font-preview" aria-label="字体预览">把音乐，留在你的设备里。<small>Apple Music · ABC 123</small></div>
+    <input id="font-file" type="file" accept=".woff2,.woff,.ttf,.otf,font/woff2,font/woff,font/ttf,font/otf" hidden>
+    <p class="font-file-hint">支持 WOFF2、WOFF、TTF、OTF，文件不超过 40 MB。</p>
+    <p id="font-status" class="font-status" role="status" aria-live="polite">可随时上传新字体替换，或恢复系统默认字体。</p>
+    <div class="font-dialog-actions"><button id="reset-font" type="button" class="font-reset-button" disabled>恢复默认</button><button id="choose-font" type="button" class="primary-button">选择字体文件 <span aria-hidden="true">→</span></button></div>
+  </dialog>
 </body>
 </html>

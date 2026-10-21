@@ -149,6 +149,13 @@ def test_kugou_qr_login_persists_exchange_cookies(monkeypatch):
         ),
     )
     parser = _Parser(session)
+    validity_checks = []
+
+    async def check_cookie():
+        validity_checks.append("checked")
+        return True
+
+    parser.check_cookie = check_cookie
     login = KugouMusicLogin(parser)
 
     async def no_sleep(_seconds):
@@ -166,8 +173,9 @@ def test_kugou_qr_login_persists_exchange_cookies(monkeypatch):
     assert image.startswith(b"\x89PNG\r\n\x1a\n")
     assert messages == [
         "二维码已扫描，请在手机上确认登录",
-        "酷狗音乐登录成功，Cookie 已保存",
+        "酷狗音乐登录成功，Cookie 已保存并通过有效性检验",
     ]
+    assert validity_checks == ["checked"]
     assert "KuGoo=KugooID%3D12345" in parser.cookiejar.cookies_str
     assert "kg_mid=music-mid" in parser.cookiejar.cookies_str
     assert session.post_calls
@@ -180,3 +188,46 @@ def test_kugou_qr_login_persists_exchange_cookies(monkeypatch):
     unsigned_params = dict(exchange_params)
     signature = unsigned_params.pop("signature")
     assert signature == _Parser._signature(unsigned_params)
+
+
+def test_kugou_qr_login_reports_cookie_check_failure_as_unknown(monkeypatch):
+    session = _Session(
+        get_responses=[
+            _response("1", {"qrcode": "one-time-qr-token"}),
+            _response("1", {"status": 4, "userid": 12345, "token": "authorized-token"}),
+        ],
+        post_response=_response(
+            "1",
+            {},
+            set_cookie=[
+                "KuGoo=KugooID%3D12345; Domain=.kugou.com; Path=/; Secure",
+            ],
+        ),
+    )
+    parser = _Parser(session)
+    validity_checks = []
+
+    async def check_cookie():
+        validity_checks.append("checked")
+        raise TimeoutError("private diagnostic")
+
+    parser.check_cookie = check_cookie
+    login = KugouMusicLogin(parser)
+    monkeypatch.setattr("core.parsers.kugou_login.asyncio.sleep", _no_sleep)
+
+    messages = asyncio.run(_collect_login_messages(login.check_qr_state(), login))
+
+    assert messages == [
+        "酷狗音乐登录成功，Cookie 已保存；暂时无法确认有效性，请稍后检查"
+    ]
+    assert validity_checks == ["checked"]
+    assert "KuGoo=KugooID%3D12345" in parser.cookiejar.cookies_str
+
+
+async def _collect_login_messages(generator, login):
+    await login.login_with_qrcode()
+    return [message async for message in generator]
+
+
+async def _no_sleep(_seconds):
+    return None

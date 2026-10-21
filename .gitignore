@@ -14,3 +14,5 @@ core/test/
 /local-tests/new-card-qa/previews/
 /local-tests/new-card-qa/render-report.json
 /local-tests/new-card-qa/lyrics-render-report.json
+/.agents/
+/pages/apple_music/previews/

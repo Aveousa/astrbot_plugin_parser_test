@@ -38,6 +38,15 @@ class QQMusicLogin:
     _STATUS_RE = re.compile(r"ptuiCB\((.*?)\)")
     _ARGS_RE = re.compile(r"'((?:\\.|[^'])*)'")
     _P_SKEY_COOKIE_NAMES = ("p_skey", "p-skey", "pskey", "skey")
+    _CREDENTIAL_REFRESH_FIELDS = (
+        "refresh_key",
+        "refresh_token",
+        "openid",
+        "unionid",
+        "access_token",
+        "musickeyCreateTime",
+        "keyExpiresIn",
+    )
     _SIGN_PART_1 = (23, 14, 6, 36, 16, 7, 19)
     _SIGN_PART_2 = (16, 1, 32, 12, 19, 27, 8, 5)
     _SIGN_SCRAMBLE = (
@@ -121,6 +130,32 @@ class QQMusicLogin:
             if value:
                 return value
         return None
+
+    @classmethod
+    def _credential_field_diagnostics(
+        cls, data: Mapping[str, object]
+    ) -> dict[str, object]:
+        """Describe credential field names and refresh-field presence without values."""
+
+        field_names = sorted(
+            {
+                str(name)
+                for name in data
+                if re.fullmatch(r"[A-Za-z0-9_]{1,64}", str(name))
+            }
+        )[:64]
+        normalized = {str(name).casefold(): value for name, value in data.items()}
+        non_empty = {}
+        for name in cls._CREDENTIAL_REFRESH_FIELDS:
+            value = normalized.get(name.casefold())
+            if isinstance(value, str):
+                present = bool(value.strip())
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                present = value != 0
+            else:
+                present = False
+            non_empty[name] = present
+        return {"fields": field_names, "refresh_fields_nonempty": non_empty}
 
     @staticmethod
     def _ensure_success(response) -> None:
@@ -321,6 +356,11 @@ class QQMusicLogin:
         data = request.get("data")
         if not isinstance(data, Mapping):
             raise TypeError("QQ 音乐凭据响应格式无效")
+        diagnostics = self._credential_field_diagnostics(data)
+        logger.info(
+            "[QQ 音乐] 扫码凭据字段检查（不含字段值）: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        )
         music_id = str(data.get("musicid") or data.get("str_musicid") or "").strip()
         music_key = str(data.get("musickey") or "").strip()
         if not music_id or not music_key:
@@ -340,6 +380,21 @@ class QQMusicLogin:
         )
         return cookie_values
 
+    async def _check_saved_cookie(self) -> bool | None:
+        """Run the parser's read-only cookie check without failing a completed login."""
+
+        checker = getattr(self.parser, "check_cookie", None)
+        if not callable(checker):
+            return None
+        try:
+            result = await checker()
+        except Exception as exc:
+            logger.warning(
+                f"[QQ 音乐] 登录后 Cookie 有效性检查异常 ({type(exc).__name__})"
+            )
+            return None
+        return result if result is True or result is False else None
+
     async def check_qr_state(self) -> AsyncGenerator[str, None]:
         """Poll QQ's QR authorization and persist the resulting playback cookies."""
         scanned_tip_pending = True
@@ -358,7 +413,13 @@ class QQMusicLogin:
                     logger.warning(f"[QQ 音乐] 登录凭据获取失败: {exc}")
                     yield f"QQ 音乐登录失败：{exc}"
                     return
-                yield "QQ 音乐登录成功，Cookie 已保存"
+                cookie_valid = await self._check_saved_cookie()
+                if cookie_valid is True:
+                    yield "QQ 音乐登录成功，Cookie 已保存并通过有效性检验"
+                elif cookie_valid is False:
+                    yield "QQ 音乐登录凭据已保存，但有效性检验未通过，请重新扫码登录"
+                else:
+                    yield "QQ 音乐登录成功，Cookie 已保存；暂时无法确认有效性，请稍后检查"
                 return
             if status == "67" and scanned_tip_pending:
                 yield "二维码已扫描，请在手机上确认登录"

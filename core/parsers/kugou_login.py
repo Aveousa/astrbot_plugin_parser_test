@@ -324,6 +324,21 @@ class KugouMusicLogin:
         )
         return cookies
 
+    async def _check_saved_cookie(self) -> bool | None:
+        """Run the parser's read-only cookie check without failing a completed login."""
+
+        checker = getattr(self.parser, "check_cookie", None)
+        if not callable(checker):
+            return None
+        try:
+            result = await checker()
+        except Exception as exc:
+            logger.warning(
+                f"[酷狗音乐] 登录后 Cookie 有效性检查异常 ({type(exc).__name__})"
+            )
+            return None
+        return result if result is True or result is False else None
+
     async def check_qr_state(self) -> AsyncGenerator[str, None]:
         """Poll the QR state and persist the authorization cookies on success."""
 
@@ -350,7 +365,13 @@ class KugouMusicLogin:
                     logger.warning(f"[酷狗音乐] 登录凭据获取失败: {exc}")
                     yield f"酷狗音乐登录失败：{exc}"
                     return
-                yield "酷狗音乐登录成功，Cookie 已保存"
+                cookie_valid = await self._check_saved_cookie()
+                if cookie_valid is True:
+                    yield "酷狗音乐登录成功，Cookie 已保存并通过有效性检验"
+                elif cookie_valid is False:
+                    yield "酷狗音乐登录凭据已保存，但有效性检验未通过，请重新扫码登录"
+                else:
+                    yield "酷狗音乐登录成功，Cookie 已保存；暂时无法确认有效性，请稍后检查"
                 return
             if state == "2" and scanned_tip_pending:
                 yield "二维码已扫描，请在手机上确认登录"

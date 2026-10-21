@@ -1031,6 +1031,7 @@ def test_custom_jinja_template_uses_playwright_png(
     assert renderer._template_base_dir() == config.template_dir
     assert renderer_module.Renderer._TEMPLATES_DIR in renderer.template_dirs
     assert {"default", "compact", "apple", "Guizang_card", "custom"} <= set(renderer.available_templates())
+    assert "qr_login_card" not in renderer.available_templates()
     result = ParseResult(
         platform=Platform("xhs", "\u5c0f\u7ea2\u4e66"),
         title="Apple \U0001f44b\U0001f3fd 1\ufe0f\u20e3 \u260e\ufe0f",
@@ -1453,6 +1454,7 @@ def test_bilibili_login_card_uses_bilibili_branding_and_accent(
     output = asyncio.run(renderer.render_bilibili_login_card(b"qr-image"))
 
     assert output is not None
+    assert renderer_module.Renderer._QR_LOGIN_TEMPLATE_NAME == "qr_login_card.html"
     assert "Bilibili扫码登录" in captured_html[0]
     assert "使用 哔哩哔哩 App 扫描二维码" in captured_html[0]
     assert "bilibili.png" in captured_html[0]
@@ -1645,6 +1647,8 @@ def test_apple_template_uses_first_visual_as_the_only_cover(
     assert "视频简介" not in video_html[: video_html.index('class="cover cover--video"')]
     assert "aspect-ratio: 1.72 / 1" not in video_html
     assert "height: auto;" in video_html
+    if template == "Guizang_card":
+        assert ".cover--video .cover__image { max-height: none; }" in video_html
 
     source_video = tmp_path / "motion.mp4"
     dynamic_cover = tmp_path / "motion.gif"

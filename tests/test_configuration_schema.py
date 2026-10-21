@@ -268,8 +268,8 @@ def test_test_plugin_identity_is_isolated_from_original_plugin(config_module):
     assert metadata_name == "astrbot_plugin_parser_test"
     assert project["project"]["name"] == "astrbot_plugin_parser_test"
     assert display_name == "虚质解离器"
-    assert plugin_version == "1.5.9_beta1"
-    assert project["project"]["version"] == "1.5.9_beta1"
+    assert plugin_version == "1.5.11"
+    assert project["project"]["version"] == "1.5.11"
     assert config_module.PluginConfig._plugin_name == "astrbot_plugin_parser_test"
 
 

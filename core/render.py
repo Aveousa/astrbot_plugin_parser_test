@@ -144,7 +144,7 @@ class Renderer:
         "apple",
         "Guizang_card",
     )
-    _QQMUSIC_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qqmusic_login.html"
+    _QR_LOGIN_TEMPLATE_NAME: ClassVar[str] = "qr_login_card.html"
     _LYRICS_TEMPLATE_NAME: ClassVar[str] = "lyrics_card.html"
     _GUIZANG_LYRICS_TEMPLATE_NAME: ClassVar[str] = "Guizangsocial_lyrics_card.html"
     _TEMPLATES_DIR: ClassVar[Path] = Path(__file__).with_name("templates")
@@ -451,9 +451,9 @@ class Renderer:
         names: set[str] = set(self.BUILTIN_TEMPLATE_NAMES)
         for directory in self.template_dirs:
             names.update(path.stem for path in directory.glob("*.html"))
-        # The QR login template is an internal command surface, not a parser
-        # result template that users should select in card configuration.
-        names.discard(self._QQMUSIC_LOGIN_TEMPLATE_NAME.removesuffix(".html"))
+        # The QR login card is an internal command surface, not a parser result
+        # template that users should select in card configuration.
+        names.discard(self._QR_LOGIN_TEMPLATE_NAME.removesuffix(".html"))
         names.discard(self._LYRICS_TEMPLATE_NAME.removesuffix(".html"))
         names.discard(self._GUIZANG_LYRICS_TEMPLATE_NAME.removesuffix(".html"))
         return sorted(names)
@@ -1569,7 +1569,7 @@ class Renderer:
 
     async def render_qqmusic_login_card(self, qrcode: bytes) -> Path | None:
         """Render a styled QQ Music QR login card."""
-        return await self._render_music_login_card(
+        return await self._render_qr_login_card(
             qrcode,
             platform_key="qqmusic",
             platform_display_name="QQ 音乐",
@@ -1578,7 +1578,7 @@ class Renderer:
 
     async def render_kugou_login_card(self, qrcode: bytes) -> Path | None:
         """Render a styled Kugou Music QR login card."""
-        return await self._render_music_login_card(
+        return await self._render_qr_login_card(
             qrcode,
             platform_key="kugou",
             platform_display_name="酷狗音乐",
@@ -1587,14 +1587,14 @@ class Renderer:
 
     async def render_bilibili_login_card(self, qrcode: bytes) -> Path | None:
         """Render a styled Bilibili QR login card."""
-        return await self._render_music_login_card(
+        return await self._render_qr_login_card(
             qrcode,
             platform_key="bilibili",
             platform_display_name="Bilibili",
             scan_app_name="哔哩哔哩 App",
         )
 
-    async def _render_music_login_card(
+    async def _render_qr_login_card(
         self,
         qrcode: bytes,
         *,
@@ -1605,7 +1605,7 @@ class Renderer:
         if not qrcode:
             return None
         if not self.environment:
-            self._log_warning("Jinja2 is unavailable; skipping music login card")
+            self._log_warning("Jinja2 is unavailable; skipping QR login card")
             return None
 
         qr_path: Path | None = None
@@ -1620,12 +1620,12 @@ class Renderer:
 
             try:
                 template = self.environment.get_template(
-                    self._QQMUSIC_LOGIN_TEMPLATE_NAME
+                    self._QR_LOGIN_TEMPLATE_NAME
                 )
             except TemplateNotFound as exc:
                 self._log_exception(
-                    f"Music login card template is missing: "
-                    f"{self._QQMUSIC_LOGIN_TEMPLATE_NAME}: {exc}"
+                    f"QR login card template is missing: "
+                    f"{self._QR_LOGIN_TEMPLATE_NAME}: {exc}"
                 )
                 return None
 
@@ -1651,7 +1651,7 @@ class Renderer:
                 (
                     directory
                     for directory in self.template_dirs
-                    if (directory / self._QQMUSIC_LOGIN_TEMPLATE_NAME).is_file()
+                    if (directory / self._QR_LOGIN_TEMPLATE_NAME).is_file()
                 ),
                 self._TEMPLATES_DIR,
             )
