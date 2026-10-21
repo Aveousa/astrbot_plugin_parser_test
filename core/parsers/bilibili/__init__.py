@@ -271,7 +271,7 @@ class BilibiliParser(BaseParser):
             opus_id (int): 图文动态 id
         """
         opus = Opus(opus_id, await self.login.credential)
-        return await self._parse_opus_obj(opus)
+        return await self._parse_opus_obj(opus, images_only=True)
 
     async def parse_read_with_opus(self, read_id: int):
         """解析专栏信息, 使用 Opus 接口
@@ -283,7 +283,7 @@ class BilibiliParser(BaseParser):
         article = Article(read_id)
         return await self._parse_opus_obj(await article.turn_to_opus())
 
-    async def _parse_opus_obj(self, bili_opus: Opus):
+    async def _parse_opus_obj(self, bili_opus: Opus, *, images_only: bool = False):
         """解析图文动态信息
         Args:
             opus_id (int): 图文动态 id
@@ -305,12 +305,21 @@ class BilibiliParser(BaseParser):
         current_text = ""
         for node in opus_data.gen_text_img():
             if isinstance(node, ImageNode):
-                contents.append(
-                    self.create_graphics_content(
-                        node.url, current_text.strip(), node.alt
+                if images_only:
+                    image_task = self.downloader.download_img(
+                        node.url,
+                        headers=self.headers,
+                        proxy=self.proxy,
+                        worker_proxy_url=self.worker_proxy_url,
                     )
-                )
-                current_text = ""
+                    contents.append(ImageContent(image_task))
+                else:
+                    contents.append(
+                        self.create_graphics_content(
+                            node.url, current_text.strip(), node.alt
+                        )
+                    )
+                    current_text = ""
             elif isinstance(node, TextNode):
                 current_text += node.text
         return self.result(
@@ -323,6 +332,7 @@ class BilibiliParser(BaseParser):
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
+            extra={"bilibili_opus_images_only": True} if images_only else {},
         )
 
     async def parse_live(self, room_id: int):

@@ -232,6 +232,14 @@ class MessageSender:
             "force_merge": force_merge,
         }
 
+    @staticmethod
+    def _suppress_result_text(result: ParseResult) -> bool:
+        """Whether result text is card-only and must not be sent as message text."""
+        return (
+            result.platform.name.lower() == "bilibili"
+            and result.extra.get("bilibili_opus_images_only") is True
+        )
+
     async def _send_result_card(
         self,
         event: AstrMessageEvent,
@@ -290,9 +298,9 @@ class MessageSender:
                 case GraphicsContent() as g:
                     segs.append(self._image_from_path(path))
                     # GraphicsContent 允许携带补充文本
-                    if g.text:
+                    if g.text and not self._suppress_result_text(result):
                         segs.append(Plain(g.text))
-                    if g.alt:
+                    if g.alt and not self._suppress_result_text(result):
                         segs.append(Plain(g.alt))
 
         # 重媒体处理
@@ -376,6 +384,9 @@ class MessageSender:
 
     @staticmethod
     def _build_text_fallback(result: ParseResult) -> list[BaseMessageComponent]:
+        if MessageSender._suppress_result_text(result):
+            return []
+
         lines: list[str] = []
         if result.header:
             lines.append(result.header)
@@ -866,7 +877,13 @@ class MessageSender:
         """
         # 默认模式固定先发送信息卡片；紧凑模式则只渲染卡片，稍后与所有
         # 非音频内容一起整理，避免同一个解析结果产生多条独立消息。
-        compact_mode = self._compact_forward_non_audio_enabled()
+        # Bilibili Opus requests explicitly keep the card separate from the
+        # following image-only media message, even when global compact mode is
+        # enabled.
+        compact_mode = (
+            self._compact_forward_non_audio_enabled()
+            and not self._suppress_result_text(result)
+        )
         card_path: Path | None = None
         if compact_mode:
             # In compact mode the information card is a non-audio item too.
@@ -1087,6 +1104,11 @@ class MessageSender:
                     )
                 # 已经尝试发送音频，不再追加一条与原消息无关的文本兜底。
                 sent = True
+
+        if not sent and self._suppress_result_text(result):
+            # Opus text is card-only. A failed/disabled card with no sendable
+            # images must not turn that text into a standalone fallback.
+            return
 
         if not sent:
             if use_local_audio_url:

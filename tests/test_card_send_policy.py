@@ -924,6 +924,194 @@ def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
     assert event.sent[0][0].path == "card.png"
 
 
+@pytest.mark.parametrize("compact_forward", [False, True])
+def test_bilibili_opus_sends_card_then_only_images(
+    sender_module, compact_forward: bool
+):
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        text="完整的动态正文，应只出现在信息卡片中。",
+        contents=[
+            ImageContent(Path("opus-one.png")),
+            ImageContent(Path("opus-two.png")),
+        ],
+        extra={"bilibili_opus_images_only": True},
+    )
+    renderer = _Renderer()
+    sender = sender_module.MessageSender(
+        _card_config(
+            forward_threshold=100,
+            compact_forward_non_audio=compact_forward,
+        ),
+        renderer,
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert renderer.calls == [result]
+    assert renderer.calls[0].text == "完整的动态正文，应只出现在信息卡片中。"
+    assert event.sent[0][0].path == "card.png"
+    sent_image_paths = []
+    for message in event.sent[1:]:
+        for segment in message:
+            if segment.__class__.__name__ == "Nodes":
+                for node in segment.nodes:
+                    assert len(node.content) == 1
+                    assert node.content[0].__class__.__name__ == "Image"
+                    sent_image_paths.append(node.content[0].path)
+            else:
+                assert segment.__class__.__name__ == "Image"
+                sent_image_paths.append(segment.path)
+    assert sent_image_paths == ["opus-one.png", "opus-two.png"]
+
+
+def test_bilibili_opus_without_card_still_sends_images_without_text(
+    sender_module,
+):
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        text="卡片关闭时也不应单独发送正文。",
+        contents=[ImageContent(Path("opus-image.png"))],
+        extra={"bilibili_opus_images_only": True},
+    )
+    renderer = _Renderer()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False),
+        renderer,
+    )
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert not renderer.calls
+    assert len(event.sent) == 1
+    assert [segment.__class__.__name__ for segment in event.sent[0]] == ["Image"]
+    assert event.sent[0][0].path == "opus-image.png"
+
+
+@pytest.mark.parametrize("include_image", [False, True])
+def test_bilibili_opus_card_failure_does_not_fall_back_to_body_text(
+    sender_module, include_image: bool
+):
+    class Renderer:
+        async def render_card(self, result):
+            raise RuntimeError("template failed")
+
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        text="正文不应作为兜底纯文本发送。",
+        contents=(
+            [ImageContent(Path("opus-image.png"))] if include_image else []
+        ),
+        extra={"bilibili_opus_images_only": True},
+    )
+    sender = sender_module.MessageSender(_card_config(), Renderer())
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    if include_image:
+        assert len(event.sent) == 1
+        assert [segment.__class__.__name__ for segment in event.sent[0]] == [
+            "Image"
+        ]
+        assert event.sent[0][0].path == "opus-image.png"
+    else:
+        assert event.sent == []
+
+
+def test_bilibili_opus_parser_keeps_full_body_for_card_and_images_for_sending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import core.parsers.bilibili as bilibili_parser_module
+    from core.parsers.bilibili import BilibiliParser
+
+    parser = BilibiliParser.__new__(BilibiliParser)
+    parser.headers = {}
+    parser.cfg = SimpleNamespace(
+        parser=SimpleNamespace(bilibili=SimpleNamespace(use_proxy=False))
+    )
+    parser.downloader = SimpleNamespace(
+        download_img=lambda url, **kwargs: Path(url.rsplit("/", 1)[-1] + ".jpg")
+    )
+
+    class Opus:
+        async def get_info(self):
+            def text_paragraph(value):
+                return {
+                    "para_type": 1,
+                    "text": {
+                        "nodes": [
+                            {
+                                "type": "TEXT_NODE_TYPE_WORD",
+                                "word": {"words": value},
+                            }
+                        ]
+                    },
+                }
+
+            def image_paragraph(value):
+                return {
+                    "para_type": 2,
+                    "pic": {
+                        "pics": [{"url": f"https://img.example/{value}"}],
+                        "style": 1,
+                    },
+                }
+
+            return {
+                "item": {
+                    "id_str": "123",
+                    "type": 0,
+                    "basic": {"title": "Opus title"},
+                    "modules": [
+                        {
+                            "module_type": "MODULE_TYPE_AUTHOR",
+                            "module_author": {
+                                "name": "Author",
+                                "face": "",
+                                "mid": 1,
+                                "pub_time": "now",
+                                "pub_ts": "123",
+                            },
+                        },
+                        {
+                            "module_type": "MODULE_TYPE_CONTENT",
+                            "module_content": {
+                                "paragraphs": [
+                                    text_paragraph("first paragraph"),
+                                    image_paragraph("one"),
+                                    text_paragraph("second paragraph"),
+                                    image_paragraph("two"),
+                                    text_paragraph("last paragraph"),
+                                ]
+                            },
+                        },
+                        {
+                            "module_type": "MODULE_TYPE_STAT",
+                            "module_stat": {},
+                        },
+                    ],
+                }
+            }
+
+    async def credential():
+        return None
+
+    parser.login = SimpleNamespace(credential=credential())
+    monkeypatch.setattr(bilibili_parser_module, "Opus", lambda *_: Opus())
+
+    result = asyncio.run(parser.parse_opus(123))
+
+    assert result.text == "first paragraph\n\nsecond paragraph\n\nlast paragraph"
+    assert result.extra["bilibili_opus_images_only"] is True
+    assert [content.__class__.__name__ for content in result.contents] == [
+        "ImageContent",
+        "ImageContent",
+    ]
+
+
 def test_douyin_gallery_card_precedes_folded_media(sender_module):
     images = [ImageContent(Path("one.png")), ImageContent(Path("two.png"))]
     result = ParseResult(
