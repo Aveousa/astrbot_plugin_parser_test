@@ -1191,113 +1191,33 @@ select.custom-select-native {
   .custom-select-option { min-height: 42px; }
 }
 
-/* A browser-local font preference applies equally to classic and soft styles. */
+/* The hosted display font applies equally to classic and soft styles. */
+@font-face {
+  font-family: "Cang Er Fei Bai";
+  src: url("https://wuwa.denia.work/fonts/CangErFeiBaiW02-2.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 body,
 button,
 input,
 textarea,
 select,
-.font-dialog {
-  font-family: var(--page-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "Microsoft YaHei", sans-serif);
+.custom-select-option {
+  font-family: "Cang Er Fei Bai", -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "Microsoft YaHei", sans-serif;
 }
-
-.font-settings-button { white-space: nowrap; }
-
-.font-dialog {
-  width: min(440px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
-  margin: auto;
-  padding: 24px;
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 25px 70px rgba(22, 21, 30, .24);
-}
-
-.font-dialog::backdrop { background: rgba(19, 18, 27, .52); }
-
-.font-dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.font-dialog-head .section-kicker { margin-bottom: 4px; }
-.font-dialog-head h2 { margin: 0; font-size: 22px; line-height: 1.2; }
-.font-dialog-close {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: var(--surface-soft);
-  color: var(--muted);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-}
-.font-dialog-close:hover { color: var(--text); }
-.font-dialog-close:focus-visible,
-.font-reset-button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-.font-dialog-description { margin: 15px 0 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
-#font-file[hidden] { display: none; }
-.font-current {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  padding: 11px 13px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface-soft);
-  font-size: 11px;
-}
-.font-current span { flex: 0 0 auto; color: var(--muted); }
-.font-current strong { min-width: 0; overflow-wrap: anywhere; text-align: right; font-size: 12px; }
-.font-preview {
-  margin-top: 13px;
-  padding: 19px 17px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface);
-  font-size: 21px;
-  font-weight: 650;
-  line-height: 1.4;
-}
-.font-preview small { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; font-weight: 400; }
-.font-file-hint { margin: 12px 0 0; color: var(--muted); font-size: 11px; }
-.font-status { min-height: 35px; margin: 11px 0 15px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.font-status[data-error="true"] { color: var(--negative); }
-.font-dialog-actions { display: flex; justify-content: flex-end; gap: 9px; }
-.font-dialog-actions button { min-height: 40px; }
-.font-reset-button {
-  padding: 9px 13px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.font-reset-button:hover:not(:disabled) { background: var(--surface-soft); }
-.font-reset-button:disabled { opacity: .5; cursor: not-allowed; }
 
 @media (max-width: 620px) {
-  .topbar-tools {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 42px 42px;
-  }
+  .topbar-tools { display: grid; grid-template-columns: minmax(0, 1fr) 42px; }
   .topbar-tools .style-picker { width: 100%; }
-  .font-button-label { display: none; }
-  .topbar-tools .font-settings-button,
   .topbar-tools #refresh { width: 42px; min-width: 42px; justify-content: center; }
 }
 
 @media (max-width: 470px) {
   .topbar-tools .style-picker > span:not(.custom-select) { display: none; }
   .topbar-tools .style-picker { gap: 0; padding-right: 4px; padding-left: 4px; }
-  .font-dialog { padding: 19px; }
 }
 
 /* Three-position appearance switch; the hidden select preserves saved preferences. */
@@ -1364,13 +1284,6 @@ select,
 }
 .theme-switch input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
 .theme-switch input:disabled + span { opacity: .5; cursor: not-allowed; }
-
-@media (max-width: 470px) {
-  .topbar-tools { grid-template-columns: minmax(0, 1fr) 42px 42px; }
-  .topbar-tools > .style-picker { grid-column: 1; grid-row: 1; }
-  .topbar-tools .font-settings-button { grid-column: 2; grid-row: 1; }
-  .topbar-tools #refresh { grid-column: 3; grid-row: 1; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .theme-switch label span { transition: none; }
