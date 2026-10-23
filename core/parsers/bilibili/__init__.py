@@ -282,6 +282,7 @@ class BilibiliParser(BaseParser):
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,
             share_count=engagement.shares,
+            extra={"bilibili_text_card_only": True},
         )
 
     async def parse_opus(self, opus_id: int):

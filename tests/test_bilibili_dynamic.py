@@ -112,6 +112,7 @@ def test_parse_dynamic_builds_card_ready_repost(monkeypatch):
     assert result.like_count == 1375
     assert result.comment_count == 42
     assert result.share_count == 3
+    assert result.extra["bilibili_text_card_only"] is True
     assert result.repost is not None
     assert result.repost.url == "https://t.bilibili.com/1260004273493639190"
     assert result.repost.author is not None and result.repost.author.name == "转发作者"

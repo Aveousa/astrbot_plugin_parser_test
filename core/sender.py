@@ -234,10 +234,13 @@ class MessageSender:
 
     @staticmethod
     def _suppress_result_text(result: ParseResult) -> bool:
-        """Whether result text is card-only and must not be sent as message text."""
+        """Whether Bilibili body text is card-only, not a standalone message."""
         return (
             result.platform.name.lower() == "bilibili"
-            and result.extra.get("bilibili_opus_images_only") is True
+            and (
+                result.extra.get("bilibili_opus_images_only") is True
+                or result.extra.get("bilibili_text_card_only") is True
+            )
         )
 
     async def _send_result_card(
@@ -1106,8 +1109,8 @@ class MessageSender:
                 sent = True
 
         if not sent and self._suppress_result_text(result):
-            # Opus text is card-only. A failed/disabled card with no sendable
-            # images must not turn that text into a standalone fallback.
+            # Bilibili dynamic/Opus text is card-only. If no media was sent,
+            # do not turn it into a duplicate standalone text message.
             return
 
         if not sent:

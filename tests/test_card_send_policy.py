@@ -924,6 +924,34 @@ def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
     assert event.sent[0][0].path == "card.png"
 
 
+@pytest.mark.parametrize("include_media", [False, True])
+def test_bilibili_dynamic_shows_card_and_media_without_text_fallback(
+    sender_module, include_media: bool
+):
+    result = ParseResult(
+        platform=Platform("bilibili", "B站"),
+        text="动态正文只展示在信息卡片中。",
+        contents=(
+            [ImageContent(Path("dynamic-image.png"))] if include_media else []
+        ),
+        extra={"bilibili_text_card_only": True},
+    )
+    renderer = _Renderer()
+    sender = sender_module.MessageSender(_card_config(), renderer)
+    event = _Event()
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert renderer.calls == [result]
+    assert event.sent[0][0].path == "card.png"
+    if include_media:
+        assert len(event.sent) == 2
+        assert [segment.__class__.__name__ for segment in event.sent[1]] == ["Image"]
+        assert event.sent[1][0].path == "dynamic-image.png"
+    else:
+        assert len(event.sent) == 1
+
+
 @pytest.mark.parametrize("compact_forward", [False, True])
 def test_bilibili_opus_sends_card_then_only_images(
     sender_module, compact_forward: bool
