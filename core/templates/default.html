@@ -77,6 +77,8 @@
                         font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
     .repost { margin-top: 18px; padding: 14px 16px; border-radius: 8px; background: #f7f8fa;
               border: 1px solid #ececf0; }
+    .repost__media { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+    .repost__media .media { width: 100%; max-height: 240px; object-fit: cover; }
     .emoji { font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
     .emoji-image { display: inline-block; width: 1.1em; height: 1.1em; object-fit: contain; vertical-align: -0.18em; }
   </style>
@@ -138,6 +140,14 @@
   {% endif %}
 
   {% if card.extra_info %}<div class="extra">{{ card.extra_info|emoji }}</div>{% endif %}
+  {% if card.repost %}
+  <section class="repost" aria-label="转发内容">
+    <div class="platform">转发内容{% if card.repost.author %} · {{ card.repost.author.name|emoji }}{% endif %}</div>
+    {% if card.repost.title %}<strong>{{ card.repost.title|emoji }}</strong>{% endif %}
+    {% if card.repost.text %}<div class="text">{{ card.repost.text|emoji }}</div>{% endif %}
+    {% if card.repost.contents %}<div class="repost__media">{% for item in card.repost.contents if item.uri %}<img class="media" src="{{ item.uri }}" alt="{{ item.alt or card.repost.title or '' }}">{% endfor %}</div>{% endif %}
+  </section>
+  {% endif %}
   {% if card.stat_items %}
   <div class="stats">
     {% for item in card.stat_items %}<span class="stat" aria-label="{{ item.label }} {{ item.value|format_count }}">{% if item.icon_uri %}<img class="stat__icon" src="{{ item.icon_uri }}" alt="{{ item.label }}">{% else %}<span class="stat__fallback" aria-hidden="true">{{ item.icon }}</span>{% endif %}<strong>{{ item.value|format_count }}</strong></span>{% endfor %}
@@ -145,14 +155,6 @@
   {% endif %}
   {% if card.url %}<div class="url">{{ card.url }}</div>{% endif %}
 
-  {% if card.repost %}
-  <section class="repost">
-    <div class="platform">转发内容 · {{ card.repost.platform.display_name|emoji }}</div>
-    {% if card.repost.title %}<strong>{{ card.repost.title|emoji }}</strong>{% endif %}
-    {% if card.repost.text %}<div class="text">{{ card.repost.text|emoji }}</div>{% endif %}
-    {% for item in card.repost.contents if item.uri %}<img class="media" src="{{ item.uri }}" alt="{{ item.alt or '' }}">{% endfor %}
-  </section>
-  {% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
 </main>
 </body>

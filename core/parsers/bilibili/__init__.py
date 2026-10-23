@@ -243,8 +243,26 @@ class BilibiliParser(BaseParser):
         dynamic_info = convert(await dynamic_.get_info(), DynamicData).item
         author = self.create_author(dynamic_info.name, dynamic_info.avatar)
         engagement = self.engagement_from_mapping(dynamic_info.modules.module_stat or {})
+        repost = None
+        if dynamic_info.orig:
+            orig_info = dynamic_info.orig
+            orig_author = self.create_author(orig_info.name, orig_info.avatar)
+            orig_contents: list[MediaContent] = []
+            for image_url in orig_info.image_urls:
+                img_task = self.downloader.download_img(
+                    image_url, headers=self.headers, proxy=self.proxy
+                )
+                orig_contents.append(ImageContent(img_task))
+            repost = self.result(
+                url=orig_info.dynamic_url,
+                title=orig_info.title,
+                text=orig_info.text,
+                timestamp=orig_info.timestamp,
+                author=orig_author,
+                contents=orig_contents,
+            )
 
-        # 下载图片
+        # 下载动态自带的媒体。转发动态的主要内容（图片、视频等）位于 orig。
         contents: list[MediaContent] = []
         for image_url in dynamic_info.image_urls:
             img_task = self.downloader.download_img(
@@ -253,11 +271,13 @@ class BilibiliParser(BaseParser):
             contents.append(ImageContent(img_task))
 
         return self.result(
+            url=dynamic_info.dynamic_url,
             title=dynamic_info.title,
             text=dynamic_info.text,
             timestamp=dynamic_info.timestamp,
             author=author,
             contents=contents,
+            repost=repost,
             like_count=engagement.likes,
             comment_count=engagement.comments,
             favorite_count=engagement.favorites,

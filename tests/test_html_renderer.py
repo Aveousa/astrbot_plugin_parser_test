@@ -1674,6 +1674,51 @@ def test_apple_template_uses_first_visual_as_the_only_cover(
     assert 'data-media-count="2"' in dynamic_html
 
 
+@pytest.mark.parametrize("template", ["default", "compact", "apple", "Guizang_card"])
+def test_repost_is_rendered_after_body_before_stats_and_source_link(
+    renderer_module, tmp_path: Path, template: str
+):
+    from core.data import Author
+
+    config = _Config(tmp_path)
+    config.card_template = template
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    original_image = tmp_path / "original.png"
+    Image.new("RGB", (96, 128), (88, 132, 188)).save(original_image)
+    repost = ParseResult(
+        platform=Platform("bilibili", "B站"),
+        author=Author("原作者"),
+        url="https://t.bilibili.com/1260004273493639190",
+        text="原动态正文",
+        contents=[ImageContent(original_image)],
+    )
+    result = ParseResult(
+        platform=Platform("bilibili", "B站"),
+        author=Author("转发作者"),
+        url="https://t.bilibili.com/1262370036001013827",
+        text="转发动态正文",
+        repost=repost,
+        like_count=1375,
+    )
+
+    context = asyncio.run(renderer._result_context(result))
+    html = renderer.render_html(result, context)
+
+    body_index = html.index("转发动态正文")
+    repost_index = html.index("class=\"repost\"")
+    stats_index = html.index("class=\"stat")
+    source_index = html.index("1262370036001013827")
+    assert body_index < repost_index < stats_index < source_index
+    assert "原作者" in html
+    assert "原动态正文" in html
+    assert original_image.resolve().as_uri() in html
+    if template in {"apple", "Guizang_card"}:
+        assert "class=\"repost__media\"" in html
+    else:
+        assert "class=\"repost\"" in html
+
+
 def test_guizang_card_retains_complete_template_context_and_conditional_branches(
     renderer_module, tmp_path: Path
 ):

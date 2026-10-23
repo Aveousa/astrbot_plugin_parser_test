@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 from msgspec import Struct, convert
@@ -50,6 +52,20 @@ class OpusSummary(Struct):
     # rich_text_nodes: list[dict[str, Any]]
 
 
+class DrawImage(Struct):
+    """图片动态中的图片信息。"""
+
+    src: str
+    width: int | None = None
+    height: int | None = None
+
+
+class DrawContent(Struct):
+    """图片动态的主要内容。"""
+
+    items: list[DrawImage]
+
+
 class OpusContent(Struct):
     """图文动态内容"""
 
@@ -66,6 +82,7 @@ class DynamicMajor(Struct):
     type: str
     archive: VideoArchive | None = None
     opus: OpusContent | None = None
+    draw: DrawContent | None = None
 
     @property
     def title(self) -> str | None:
@@ -90,6 +107,8 @@ class DynamicMajor(Struct):
             return [pic.url for pic in self.opus.pics]
         elif self.type == "MAJOR_TYPE_ARCHIVE" and self.archive and self.archive.cover:
             return [self.archive.cover]
+        elif self.type == "MAJOR_TYPE_DRAW" and self.draw:
+            return [image.src for image in self.draw.items if image.src]
         return []
 
     @property
@@ -132,6 +151,20 @@ class DynamicModule(Struct):
             return self.module_dynamic.get("major")
         return None
 
+    @property
+    def description(self) -> str | None:
+        """获取动态文案；正文可能位于 module_dynamic.desc 或 module_dynamic 本身。"""
+        if self.module_dynamic:
+            desc = self.module_dynamic.get("desc")
+            if isinstance(desc, dict):
+                text = desc.get("text")
+                if text:
+                    return str(text)
+            # 兼容旧版接口中以字符串保存正文的情况。
+            if isinstance(desc, str) and desc:
+                return desc
+        return None
+
 
 class DynamicInfo(Struct):
     """动态信息"""
@@ -141,6 +174,7 @@ class DynamicInfo(Struct):
     visible: bool
     modules: DynamicModule
     basic: dict[str, Any] | None = None
+    orig: DynamicInfo | None = None
 
     @property
     def name(self) -> str:
@@ -175,8 +209,9 @@ class DynamicInfo(Struct):
         major_info = self.modules.major_info
         if major_info:
             major = convert(major_info, DynamicMajor)
-            return major.text
-        return None
+            if major.text:
+                return major.text
+        return self.modules.description
 
     @property
     def image_urls(self) -> list[str]:
@@ -195,6 +230,16 @@ class DynamicInfo(Struct):
             major = convert(major_info, DynamicMajor)
             return major.cover_url
         return None
+
+    @property
+    def description(self) -> str | None:
+        """获取动态正文；普通文字动态与转发正文也从 desc 读取。"""
+        return self.modules.description
+
+    @property
+    def dynamic_url(self) -> str:
+        """获取此动态对应的公开链接。"""
+        return f"https://t.bilibili.com/{self.id_str}"
 
 
 class DynamicData(Struct):

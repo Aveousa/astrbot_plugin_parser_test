@@ -41,6 +41,9 @@
     .stat__icon { width: 14px; height: 14px; object-fit: contain; opacity: .62; flex: 0 0 auto; }
     .stat__fallback { font-size: 14px; line-height: 1; }
     .url { color: #64748b; font-size: 11px; overflow-wrap: anywhere; margin-top: 5px; }
+    .repost { margin: 10px 0; padding: 10px 12px; color: #334155; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; }
+    .repost__media { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; margin-top: 6px; }
+    .repost__media img { display: block; width: 100%; max-height: 180px; border-radius: 5px; object-fit: cover; }
     .playlist-tracks { margin-top: 10px; padding-top: 3px; border-top: 1px solid #e5e7eb; }
     .playlist-track { display: flex; align-items: center; gap: 10px; min-height: 56px;
                       padding: 7px 0; border-bottom: 1px solid #e5e7eb; }
@@ -86,6 +89,14 @@
       {% if track.cover_uri %}<img class="playlist-track__cover" src="{{ track.cover_uri }}" alt="">{% endif %}
     </div>
     {% endfor %}
+  </section>
+  {% endif %}
+  {% if card.repost %}
+  <section class="repost" aria-label="转发内容">
+    <div class="head">转发内容{% if card.repost.author %} · {{ card.repost.author.name|emoji }}{% endif %}</div>
+    {% if card.repost.title %}<strong>{{ card.repost.title|emoji }}</strong>{% endif %}
+    {% if card.repost.text %}<div class="text">{{ card.repost.text|emoji }}</div>{% endif %}
+    {% if card.repost.contents %}<div class="repost__media">{% for item in card.repost.contents if item.uri %}<img src="{{ item.uri }}" alt="{{ item.alt or card.repost.title or '' }}">{% endfor %}</div>{% endif %}
   </section>
   {% endif %}
   {% if card.stat_items %}<div class="stats">{% for item in card.stat_items %}<span class="stat" aria-label="{{ item.label }} {{ item.value|format_count }}">{% if item.icon_uri %}<img class="stat__icon" src="{{ item.icon_uri }}" alt="{{ item.label }}">{% else %}<span class="stat__fallback" aria-hidden="true">{{ item.icon }}</span>{% endif %}<strong>{{ item.value|format_count }}</strong></span>{% if not loop.last %}<span aria-hidden="true">·</span>{% endif %}{% endfor %}</div>{% endif %}

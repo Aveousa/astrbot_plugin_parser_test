@@ -525,6 +525,21 @@
       line-height: 1.55;
     }
 
+    .repost__media {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .repost__media img {
+      display: block;
+      width: 100%;
+      max-height: 220px;
+      border-radius: 10px;
+      object-fit: cover;
+    }
+
     .emoji {
       font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
     }
@@ -653,6 +668,15 @@
 
   {% if card.extra_info %}<div class="extra">{{ card.extra_info|emoji }}</div>{% endif %}
 
+  {% if card.repost %}
+  <section class="repost" aria-label="转发内容">
+    <div class="repost__meta">转发内容{% if card.repost.author %} · {{ card.repost.author.name|emoji }}{% endif %}</div>
+    {% if card.repost.title %}<div class="repost__title">{{ card.repost.title|emoji }}</div>{% endif %}
+    {% if card.repost.text %}<div class="repost__text">{{ card.repost.text|emoji }}</div>{% endif %}
+    {% if card.repost.contents %}<div class="repost__media">{% for item in card.repost.contents if item.uri %}<img src="{{ item.uri }}" alt="{{ item.alt or card.repost.title or '' }}">{% endfor %}</div>{% endif %}
+  </section>
+  {% endif %}
+
   {% if card.stat_items %}
   <div class="meta">
     {% for item in card.stat_items %}
@@ -666,13 +690,6 @@
 
   {% if card.url %}<div class="url">{{ card.url }}</div>{% endif %}
 
-  {% if card.repost %}
-  <section class="repost">
-    <div class="repost__meta">转发内容 · {{ card.repost.platform.display_name|emoji }}</div>
-    {% if card.repost.title %}<div class="repost__title">{{ card.repost.title|emoji }}</div>{% endif %}
-    {% if card.repost.text %}<div class="repost__text">{{ card.repost.text|emoji }}</div>{% endif %}
-  </section>
-  {% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
   <footer class="card-brand" aria-label="插件标识">
     {% if plugin_logo_uri %}<img class="card-brand__logo" src="{{ plugin_logo_uri }}" alt="插件 Logo">{% endif %}

@@ -495,6 +495,8 @@ class Renderer:
             values.extend((item.platform.display_name, item.title, item.text, item.extra_info))
             if item.author:
                 values.extend((item.author.name, item.author.description))
+            if item.url:
+                values.append(item.url)
             playlist_tracks = item.extra.get("playlist_tracks")
             if isinstance(playlist_tracks, list):
                 for track in playlist_tracks:
@@ -1189,9 +1191,15 @@ class Renderer:
         }
         # 防止第三方解析器意外构造循环转发对象。
         if result.repost and depth < 1:
-            card["repost"] = (
+            repost_card = (
                 await self._result_context(result.repost, depth=depth + 1)
             )["card"]
+            # 转发卡片不需要重复渲染平台徽标、互动数据或次级卡片；保留
+            # 原作者信息、正文、链接与已下载媒体即可。
+            repost_card["datetime"] = None
+            repost_card["stat_items"] = []
+            repost_card["repost"] = None
+            card["repost"] = repost_card
         return {"card": card}
 
     def _template_name(self) -> str:

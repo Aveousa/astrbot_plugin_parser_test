@@ -265,6 +265,8 @@
     .playlist-track__title { overflow: hidden; color: #2E2C36; font-size: 16px; font-weight: 720; white-space: nowrap; text-overflow: ellipsis; }
     .playlist-track__meta { overflow: hidden; color: var(--sub-ink); font-size: 12px; margin-top: 5px; white-space: nowrap; text-overflow: ellipsis; }
     .playlist-track__cover { width: 52px; height: 52px; flex: 0 0 52px; border-radius: 7px; object-fit: cover; }
+    .repost__media { display: grid; grid-template-columns: repeat(auto-fit,minmax(100px,1fr)); gap: 6px; margin-top: 10px; }
+    .repost__media img { display: block; width: 100%; max-height: 220px; border-radius: 7px; object-fit: cover; }
     .meta { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 27px 35px 0; padding-top: 23px; border-top: 1px solid var(--line); }
     .stat { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
     .stat__head { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--dim); font-size: 12px; font-weight: 700; }
@@ -361,9 +363,9 @@
   </section>
   {% endif %}
   {% if card.extra_info %}<section class="extra"><div class="extra__label">ADDITIONAL INFORMATION</div>{{ card.extra_info|emoji }}</section>{% endif %}
+  {% if card.repost %}<section class="repost" aria-label="转发内容"><div class="repost__meta">转发内容{% if card.repost.author %} · {{ card.repost.author.name|emoji }}{% endif %}</div>{% if card.repost.title %}<div class="repost__title">{{ card.repost.title|emoji }}</div>{% endif %}{% if card.repost.text %}<div class="repost__text">{{ card.repost.text|emoji }}</div>{% endif %}{% if card.repost.contents %}<div class="repost__media">{% for item in card.repost.contents if item.uri %}<img src="{{ item.uri }}" alt="{{ item.alt or card.repost.title or '' }}">{% endfor %}</div>{% endif %}</section>{% endif %}
   {% if card.stat_items %}<div class="meta">{% for item in card.stat_items %}<span class="stat" aria-label="{{ item.label }} {{ item.value|format_count }}"><span class="stat__head">{% if item.icon_uri %}<img class="stat__icon" src="{{ item.icon_uri }}" alt="{{ item.label }}">{% else %}<span class="stat__fallback" aria-hidden="true">{{ item.icon }}</span>{% endif %}<span class="stat__label">{{ item.label }}</span></span><strong>{{ item.value|format_count }}</strong></span>{% endfor %}</div>{% endif %}
   {% if card.url %}<div class="url">{{ card.url }}</div>{% endif %}
-  {% if card.repost %}<section class="repost"><div class="repost__meta">转发内容 · {{ card.repost.platform.display_name|emoji }}</div>{% if card.repost.title %}<div class="repost__title">{{ card.repost.title|emoji }}</div>{% endif %}{% if card.repost.text %}<div class="repost__text">{{ card.repost.text|emoji }}</div>{% endif %}</section>{% endif %}
   {% if card.live_photo_hint %}<div class="live-photo-hint">{{ card.live_photo_hint }}</div>{% endif %}
   <footer class="card-brand" aria-label="插件标识">
     {% if plugin_logo_uri %}<img class="card-brand__logo" src="{{ plugin_logo_uri }}" alt="插件 Logo">{% else %}<span class="card-brand__symbol" aria-hidden="true">↗</span>{% endif %}
