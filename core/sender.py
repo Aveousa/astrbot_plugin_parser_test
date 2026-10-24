@@ -1,6 +1,7 @@
-from collections.abc import Mapping
-from itertools import chain
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 
 from astrbot.api import logger
@@ -41,6 +42,16 @@ from .exception import (
 from .render import Renderer
 
 _AUDIO_URL_TTL_SECONDS = 300
+_PIXIV_IMAGE_MESSAGE_MAX_BYTES = 20 * 1024 * 1024
+_MIB = 1024 * 1024
+
+
+@dataclass(slots=True)
+class _PixivFileUpload:
+    """A Pixiv image that must be delivered through OneBot's file action."""
+
+    path: Path
+    size: int
 
 
 def _log_info(message: str) -> None:
@@ -550,7 +561,202 @@ class MessageSender:
             return False
 
     @staticmethod
-    async def _send_audio_url_via_onebot(
+    def _pixiv_image_threshold_bytes(
+        result: ParseResult, config: PluginConfig
+    ) -> int:
+        """Return the Pixiv single-image OneBot upload threshold in bytes."""
+        configured = None
+        try:
+            parser_config = getattr(config, "parser", None)
+            pixiv_config = getattr(parser_config, "pixiv", None)
+            configured = getattr(pixiv_config, "image_file_threshold_mb", None)
+        except (AttributeError, TypeError):
+            configured = None
+        if configured is None:
+            configured = result.extra.get("pixiv_image_file_threshold_mb", 10)
+        try:
+            threshold_mb = int(configured)
+        except (TypeError, ValueError, OverflowError):
+            threshold_mb = 10
+        # Keep runtime behavior inside the range exposed by the configuration UI,
+        # including for old or hand-edited config files.
+        return min(10, max(1, threshold_mb)) * _MIB
+
+    @staticmethod
+    def _pixiv_image_batches(
+        contents: list[MediaContent],
+        sizes: list[int | None],
+        threshold_bytes: int,
+    ) -> list[list[MediaContent | _PixivFileUpload]]:
+        """Split Pixiv pages in source order under the OneBot 20 MiB limit.
+
+        An individual image above the configured threshold is emitted as a
+        standalone file-upload item; remaining images are packed greedily into
+        batches whose total image bytes never exceed 20 MiB.
+        """
+        batches: list[list[MediaContent | _PixivFileUpload]] = []
+        batch: list[MediaContent | _PixivFileUpload] = []
+        batch_size = 0
+
+        def flush() -> None:
+            nonlocal batch, batch_size
+            if batch:
+                batches.append(batch)
+                batch = []
+                batch_size = 0
+
+        for content, size in zip(contents, sizes, strict=True):
+            if size is None:
+                # A failed or unmeasurable image cannot be counted safely.
+                # Isolate it so it never makes a neighboring known-size batch
+                # exceed the hard cap; normal sending handles its failure.
+                flush()
+                batches.append([content])
+                continue
+
+            if size > threshold_bytes:
+                flush()
+                if isinstance(content, ImageContent) and size > 0:
+                    path_task = content.path_task
+                    if isinstance(path_task, Path):
+                        batches.append([_PixivFileUpload(path_task, size)])
+                        continue
+                # A missing file or unexpected media type cannot use the direct
+                # upload path; keep it in the regular image flow.
+                batch.append(content)
+                continue
+
+            # Keep the hard message cap independent from the configurable
+            # single-image threshold.
+            if size > _PIXIV_IMAGE_MESSAGE_MAX_BYTES:
+                flush()
+                if isinstance(content, ImageContent) and isinstance(
+                    content.path_task, Path
+                ):
+                    batches.append([_PixivFileUpload(content.path_task, size)])
+                else:
+                    batch.append(content)
+                continue
+
+            if batch and batch_size + size > _PIXIV_IMAGE_MESSAGE_MAX_BYTES:
+                flush()
+            batch.append(content)
+            batch_size += size
+
+        flush()
+        return batches
+
+    async def _prepare_pixiv_image_groups(
+        self,
+        result: ParseResult,
+        groups: list[SendGroup],
+    ) -> list[SendGroup | _PixivFileUpload]:
+        """Download, measure, and batch Pixiv image groups before sending."""
+        if result.platform.name.lower() != "pixiv":
+            return list(groups)
+
+        send_items: list[SendGroup | _PixivFileUpload] = []
+        threshold_bytes = self._pixiv_image_threshold_bytes(result, self.cfg)
+
+        for group in groups:
+            if not group.contents or not all(
+                isinstance(content, ImageContent) for content in group.contents
+            ):
+                send_items.append(group)
+                continue
+
+            ready_images: list[ImageContent] = []
+            image_sizes: list[int | None] = []
+            for image in group.contents:
+                try:
+                    path = await image.get_path()
+                except Exception as exc:
+                    # Preserve the normal sender error/fallback behavior for a
+                    # failed download. It will be retried through _send_group,
+                    # which already contains the established failure policy.
+                    _log_info(
+                        f"Pixiv 图片预处理失败，回退常规发送：error={_safe_log_error(exc)}"
+                    )
+                    ready_images.append(image)
+                    image_sizes.append(None)
+                    continue
+                size = _file_size(path)
+                if size is None:
+                    # Preserve standard handling for an unreadable or missing
+                    # cached path; isolate it from the known-size batches.
+                    ready_images.append(image)
+                    image_sizes.append(None)
+                    continue
+                ready_images.append(image)
+                image_sizes.append(size)
+
+            if not ready_images:
+                send_items.append(group)
+                continue
+
+            batches = self._pixiv_image_batches(
+                ready_images, image_sizes, threshold_bytes
+            )
+            if len(batches) == 1 and all(
+                isinstance(content, ImageContent) for content in batches[0]
+            ):
+                send_items.append(group)
+                continue
+
+            for batch in batches:
+                if len(batch) == 1 and isinstance(batch[0], _PixivFileUpload):
+                    send_items.append(batch[0])
+                    continue
+                images = [content for content in batch if isinstance(content, ImageContent)]
+                if images:
+                    send_items.append(
+                        SendGroup(
+                            contents=images,
+                            force_merge=(
+                                group.force_merge
+                                or (
+                                    self._compact_forward_non_audio_enabled()
+                                    and len(images) > 1
+                                )
+                            ),
+                            render_card=group.render_card,
+                        )
+                    )
+
+        return send_items
+
+    async def _send_pixiv_file_upload(
+        self, event: AstrMessageEvent, upload: _PixivFileUpload
+    ) -> bool:
+        """Register a local image and send it through OneBot's file action."""
+        if not callable(getattr(getattr(event, "bot", None), "call_action", None)):
+            _log_info("Pixiv 图片转文件发送跳过：当前事件不支持 bot.call_action")
+            return False
+
+        url = await self._register_local_file_url(
+            upload.path,
+            platform="pixiv",
+            name=upload.path.name,
+            file_size=upload.size,
+        )
+        if not url:
+            _log_info(
+                f"Pixiv 图片转文件发送跳过：name={upload.path.name} "
+                "原因=OneBot 临时文件 URL 不可用"
+            )
+            return False
+
+        return await self._send_url_via_onebot(
+            event,
+            url,
+            message_type="file",
+            name=upload.path.name,
+            platform="pixiv",
+            file_size=upload.size,
+        )
+
+    @staticmethod
+    async def _send_url_via_onebot(
         event: AstrMessageEvent,
         url: str,
         *,
@@ -560,7 +766,7 @@ class MessageSender:
         file_size: int | None = None,
         quality: str | None = None,
     ) -> bool:
-        """让 OneBot 端按 URL 拉取音频，避免 AstrBot 本地序列化大文件。
+        """让 OneBot 端按 URL 发送音频或上传文件。
 
         语音通过标准消息段发送；文件通过 OneBot 的 upload_*_file action
         上传到对应会话。日志记录状态、文件名和体积，不记录临时文件 URL。
@@ -610,9 +816,11 @@ class MessageSender:
                 }
                 target = "private"
 
+            platform_label = "Pixiv" if platform == "pixiv" else "音乐"
             _log_info(
-                f"开始 OneBot 音乐文件上传：platform={platform} target={target} "
-                f"action={action} name={name} size={_size_label(file_size)}{quality_label}"
+                f"开始 OneBot {platform_label}文件上传：platform={platform} "
+                f"target={target} action={action} name={name} "
+                f"size={_size_label(file_size)}{quality_label}"
             )
             try:
                 response = await call_action(action, **action_args)
@@ -624,13 +832,13 @@ class MessageSender:
                     )
             except Exception as exc:
                 _log_info(
-                    f"OneBot 音乐文件上传失败：platform={platform} target={target} "
+                    f"OneBot {platform_label}文件上传失败：platform={platform} target={target} "
                     f"action={action} name={name} size={_size_label(file_size)}"
                     f"{quality_label} error={_safe_log_error(exc)}"
                 )
                 raise
             _log_info(
-                f"OneBot 音乐文件上传成功：platform={platform} target={target} "
+                f"OneBot {platform_label}文件上传成功：platform={platform} target={target} "
                 f"action={action} name={name} size={_size_label(file_size)}{quality_label}"
             )
             return True
@@ -659,18 +867,17 @@ class MessageSender:
         return True
 
     @staticmethod
-    async def _register_local_audio_url(
+    async def _register_local_file_url(
         path: Path,
         *,
         platform: str = "music",
         name: str | None = None,
         file_size: int | None = None,
     ) -> str | None:
-        """Expose a cached local audio file through AstrBot's one-shot file URL.
+        """Expose a cached local file through AstrBot's one-shot file URL.
 
-        This lets OneBot/NapCat fetch the m4a itself.  In particular, it avoids
-        AstrBot's Record preprocessing step, which otherwise decodes a whole
-        song to WAV and can consume substantial CPU/RAM.
+        This lets OneBot/NapCat fetch the bytes itself instead of having
+        AstrBot serialize a potentially large local file into the message.
         """
 
         label = name or path.name
@@ -679,23 +886,26 @@ class MessageSender:
 
             callback_base = astrbot_config.get("callback_api_base", "")
             if not isinstance(callback_base, str) or not callback_base.strip():
+                platform_label = "Pixiv" if platform == "pixiv" else "音乐"
                 _log_info(
-                    f"OneBot 音乐临时文件 URL 注册跳过：platform={platform} "
+                    f"OneBot {platform_label}临时文件 URL 注册跳过：platform={platform} "
                     f"name={label} size={_size_label(file_size)} "
                     "原因=callback_api_base 未配置"
                 )
                 return None
             callback_base = callback_base.strip()
         except Exception as exc:
+            platform_label = "Pixiv" if platform == "pixiv" else "音乐"
             _log_info(
-                f"OneBot 音乐临时文件 URL 注册失败：platform={platform} "
+                f"OneBot {platform_label}临时文件 URL 注册失败：platform={platform} "
                 f"name={label} size={_size_label(file_size)} "
                 f"error={_safe_log_error(exc)}"
             )
             return None
 
+        platform_label = "Pixiv" if platform == "pixiv" else "音乐"
         _log_info(
-            f"开始注册 OneBot 音乐临时文件 URL：platform={platform} "
+            f"开始注册 OneBot {platform_label}临时文件 URL：platform={platform} "
             f"name={label} size={_size_label(file_size)} "
             f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
             f"有效期={_AUDIO_URL_TTL_SECONDS}秒"
@@ -710,7 +920,7 @@ class MessageSender:
             url = f"{callback_base.rstrip('/')}/api/file/{token}"
         except Exception as exc:
             _log_info(
-                f"OneBot 音乐临时文件 URL 注册失败：platform={platform} "
+                f"OneBot {platform_label}临时文件 URL 注册失败：platform={platform} "
                 f"name={label} size={_size_label(file_size)} "
                 f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
                 f"有效期={_AUDIO_URL_TTL_SECONDS}秒 "
@@ -719,7 +929,7 @@ class MessageSender:
             return None
 
         _log_info(
-            f"OneBot 音乐临时文件 URL 注册成功：platform={platform} "
+            f"OneBot {platform_label}临时文件 URL 注册成功：platform={platform} "
             f"name={label} size={_size_label(file_size)} "
             f"expires_in={_AUDIO_URL_TTL_SECONDS}s "
             f"有效期={_AUDIO_URL_TTL_SECONDS}秒"
@@ -888,6 +1098,7 @@ class MessageSender:
             and not self._suppress_result_text(result)
         )
         card_path: Path | None = None
+        pixiv_compact_card_sent = False
         if compact_mode:
             # In compact mode the information card is a non-audio item too.
             # Render it now, but defer sending until all result contents have
@@ -928,7 +1139,24 @@ class MessageSender:
                 # ``_prepare_compact_forward_groups`` will flatten this
                 # synthetic group together with parser-owned groups while
                 # keeping every AudioContent in its own message.
-                groups = [SendGroup(contents=generated_non_audio), *groups]
+                if result.platform.name.lower() == "pixiv":
+                    # Pixiv page batches must remain independent. Keep its
+                    # optional card standalone instead of flattening it back
+                    # together with every page.
+                    for content in generated_non_audio:
+                        if not isinstance(content, ImageContent):
+                            continue
+                        try:
+                            card_image = await content.get_path()
+                            await event.send(
+                                event.chain_result([self._image_from_path(card_image)])
+                            )
+                            card_sent = True
+                            pixiv_compact_card_sent = True
+                        except Exception as exc:
+                            logger.error(f"Pixiv 信息卡片发送失败，继续发送图片：{exc}")
+                else:
+                    groups = [SendGroup(contents=generated_non_audio), *groups]
 
         # 选择通过 OneBot URL 交付的音乐单曲先保存在本次解析目录，再注册
         # 临时 URL；Apple Music 与网易云/QQ/酷狗的文件模式共用此路径。
@@ -1007,7 +1235,7 @@ class MessageSender:
                         isinstance(direct_audio_url, str)
                         and direct_audio_url.startswith(("http://", "https://"))
                     ):
-                        direct_audio_url = await self._register_local_audio_url(
+                        direct_audio_url = await self._register_local_file_url(
                             audio_path,
                             platform=result.platform.name.lower(),
                             name=direct_audio_name,
@@ -1055,8 +1283,25 @@ class MessageSender:
 
         groups = self._prepare_compact_forward_groups(groups)
 
+        send_items = await self._prepare_pixiv_image_groups(result, groups)
+
         sent = False
-        for group in groups:
+        for item in send_items:
+            if isinstance(item, _PixivFileUpload):
+                try:
+                    item_sent = await self._send_pixiv_file_upload(event, item)
+                except Exception as exc:
+                    logger.error(
+                        f"Pixiv 图片 OneBot 文件上传失败：name={item.path.name} "
+                        f"error={_safe_log_error(exc)}"
+                    )
+                    # Upload was attempted; do not also encode the oversized
+                    # original image as a normal message component.
+                    item_sent = True
+                sent = item_sent or sent
+                continue
+
+            group = item
             group_has_lyrics_card = lyrics_path is not None and any(
                 isinstance(content, ImageContent)
                 and content.path_task == Path(lyrics_path)
@@ -1083,7 +1328,7 @@ class MessageSender:
             file_size = direct_audio_size
             try:
                 sent = (
-                    await self._send_audio_url_via_onebot(
+                    await self._send_url_via_onebot(
                         event,
                         direct_audio_url,
                         message_type=message_type,
@@ -1107,6 +1352,16 @@ class MessageSender:
                     )
                 # 已经尝试发送音频，不再追加一条与原消息无关的文本兜底。
                 sent = True
+
+        if (
+            not sent
+            and pixiv_compact_card_sent
+            and result.platform.name.lower() == "pixiv"
+        ):
+            # The compact Pixiv card used to count as its own merged media
+            # group; after keeping it standalone, retain the same no-fallback
+            # behavior when a result has no image pages to send.
+            return
 
         if not sent and self._suppress_result_text(result):
             # Bilibili dynamic/Opus text is card-only. If no media was sent,

@@ -167,6 +167,7 @@ class ParserItem(ConfigNode):
     show_ai_summary: bool | None
     nsfw: str | None
     multi_image_forward: bool | None
+    image_file_threshold_mb: int | None
     motion_photo_send_mode: str | None
     show_playlist_cover: bool | None
     show_playlist_url: bool | None
@@ -551,6 +552,13 @@ class PluginConfig(ConfigNode):
         history = self._data.get("__parser_management_history_v1")
         history = dict(history) if isinstance(history, Mapping) else {}
         history_fields = {
+            "pixiv": (
+                "enable",
+                "nsfw",
+                "multi_image_forward",
+                "image_file_threshold_mb",
+                "max_page",
+            ),
             "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
             "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
@@ -611,6 +619,8 @@ class PluginConfig(ConfigNode):
                 # switch; keep upgrades able to use it without resetting the
                 # user's other music parser settings.
                 merged.setdefault("parse_lyrics", False)
+            if key == "pixiv":
+                merged.setdefault("image_file_threshold_mb", 10)
             if key == "qishui":
                 # Keep existing installations compatible when the UGC video
                 # and audio delivery settings are introduced.  UGC videos are

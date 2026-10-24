@@ -393,6 +393,30 @@ def test_pixiv_exposes_multi_image_forward_setting():
     assert pixiv_defaults["multi_image_forward"] is False
 
 
+def test_pixiv_exposes_single_image_file_threshold():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
+
+    pixiv_items = schema["parsers_template"]["templates"]["pixiv"]["items"]
+    assert pixiv_items["image_file_threshold_mb"] == {
+        "description": "单张图片转文件阈值（MB）",
+        "hint": "解析 Pixiv 插画时，单张图片文件大于此值将使用 OneBot 文件上传发送；图片消息累计大小仍限制为 20 MiB",
+        "type": "int",
+        "slider": {"min": 1, "max": 10, "step": 1},
+        "default": 10,
+    }
+    assert all(
+        "image_file_threshold_mb" not in template["items"]
+        for name, template in schema["parsers_template"]["templates"].items()
+        if name != "pixiv"
+    )
+
+    pixiv_defaults = next(
+        item for item in defaults if item["__template_key"] == "pixiv"
+    )
+    assert pixiv_defaults["image_file_threshold_mb"] == 10
+
+
 def test_music_parsers_expose_playlist_cover_setting():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     defaults = json.loads((ROOT / "default_template.json").read_text(encoding="utf-8"))
@@ -592,6 +616,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
     assert douyin["worker_proxy_url"] == ""
     pixiv = raw["parsers_template"][3]
     assert pixiv["multi_image_forward"] is False
+    assert pixiv["image_file_threshold_mb"] == 10
     assert all(
         raw["parsers_template"][index]["enable"] is True
         for index in range(4, 10)

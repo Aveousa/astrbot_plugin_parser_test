@@ -253,6 +253,13 @@
             "type": "bool",
             "default": false
           },
+          "image_file_threshold_mb": {
+            "description": "单张图片转文件阈值（MB）",
+            "hint": "解析 Pixiv 插画时，单张图片文件大于此值将使用 OneBot 文件上传发送；图片消息累计大小仍限制为 20 MiB",
+            "type": "int",
+            "slider": {"min": 1, "max": 10, "step": 1},
+            "default": 10
+          },
           "max_page": {"description": "漫画最大页数", "type": "int", "default": 0}
         }
       },

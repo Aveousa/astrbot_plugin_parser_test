@@ -675,7 +675,7 @@ def test_private_file_uses_onebot_private_upload_action(sender_module):
     event.bot = _Bot()
 
     assert asyncio.run(
-        sender_module.MessageSender._send_audio_url_via_onebot(
+        sender_module.MessageSender._send_url_via_onebot(
             event,
             "http://astrbot:6185/api/file/one-shot-token",
             message_type="file",
@@ -705,7 +705,7 @@ def test_onebot_file_upload_logs_resolved_quality(sender_module):
 
     event = _Event()
     event.bot = _Bot()
-    asyncio.run(sender_module.MessageSender._send_audio_url_via_onebot(
+    asyncio.run(sender_module.MessageSender._send_url_via_onebot(
         event,
         "http://astrbot:6185/api/file/one-shot-token",
         message_type="file",
@@ -734,7 +734,7 @@ def test_local_audio_url_logs_its_ttl(sender_module):
 
     fake_core.file_token_service = _TokenService()
     url = asyncio.run(
-        sender_module.MessageSender._register_local_audio_url(
+        sender_module.MessageSender._register_local_file_url(
             Path("song.m4a"), platform="qqmusic", name="song.m4a"
         )
     )
@@ -921,6 +921,169 @@ def test_playlist_cover_used_by_card_is_not_sent_again(sender_module):
 
     assert renderer.calls == [result]
     assert len(event.sent) == 1
+    assert event.sent[0][0].path == "card.png"
+
+
+def test_pixiv_image_batches_obey_threshold_and_20_mib_cap(sender_module):
+    image_1 = ImageContent(Path("one.jpg"))
+    image_2 = ImageContent(Path("two.jpg"))
+    image_3 = ImageContent(Path("three.jpg"))
+    image_4 = ImageContent(Path("four.jpg"))
+    image_5 = ImageContent(Path("five.jpg"))
+
+    batches = sender_module.MessageSender._pixiv_image_batches(
+        [image_1, image_2, image_3, image_4, image_5],
+        [10 * 1024 * 1024, 10 * 1024 * 1024, 1, 11 * 1024 * 1024, 1],
+        10 * 1024 * 1024,
+    )
+
+    assert batches[0] == [image_1, image_2]
+    image_sizes = {
+        "one.jpg": 10 * 1024 * 1024,
+        "two.jpg": 10 * 1024 * 1024,
+        "three.jpg": 1,
+        "five.jpg": 1,
+    }
+    assert sum(
+        image_sizes[item.path_task.name] for item in batches[0]
+    ) == 20 * 1024 * 1024
+    assert batches[1] == [image_3]
+    assert batches[2][0].__class__.__name__ == "_PixivFileUpload"
+    assert batches[2][0].path == Path("four.jpg")
+    assert batches[2][0].size == 11 * 1024 * 1024
+    assert batches[3] == [image_5]
+
+
+def test_pixiv_batches_send_in_order_and_use_onebot_for_oversized_image(
+    sender_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    first_path = tmp_path / "first.jpg"
+    large_path = tmp_path / "large.jpg"
+    last_path = tmp_path / "last.jpg"
+    first_path.write_bytes(b"one")
+    large_path.write_bytes(b"oversized")
+    last_path.write_bytes(b"two")
+
+    order = []
+
+    class _Bot:
+        async def call_action(self, action, **kwargs):
+            order.append(("upload", action, kwargs))
+            return {"status": "ok"}
+
+    class _OrderedEvent(_Event):
+        async def send(self, message):
+            self.sent.append(message)
+            segment = message[0]
+            if segment.__class__.__name__ == "Nodes":
+                paths = [node.content[0].path for node in segment.nodes]
+            else:
+                paths = [getattr(segment, "path", None)]
+            order.append(("send", paths))
+
+    class _TokenService:
+        async def register_file(self, path, timeout=None):
+            assert path == str(large_path)
+            assert timeout == 300
+            return "pixiv-image-token"
+
+    import sys
+
+    fake_core = sys.modules["astrbot.core"]
+    fake_core.astrbot_config = {"callback_api_base": "http://astrbot:6185"}
+    fake_core.file_token_service = _TokenService()
+    monkeypatch.setattr(
+        sender_module.MessageSender,
+        "_pixiv_image_threshold_bytes",
+        staticmethod(lambda _result, _config: 5),
+    )
+
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        send_groups=[
+            SendGroup(
+                contents=[
+                    ImageContent(first_path),
+                    ImageContent(large_path),
+                    ImageContent(last_path),
+                ],
+                force_merge=True,
+            )
+        ],
+    )
+    event = _OrderedEvent()
+    event.bot = _Bot()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert [item[0] for item in order] == ["send", "upload", "send"]
+    assert order[0][1] == [str(first_path)]
+    assert order[1][1] == "upload_group_file"
+    assert order[1][2]["name"] == "large.jpg"
+    assert order[1][2]["file"] == (
+        "http://astrbot:6185/api/file/pixiv-image-token"
+    )
+    assert order[2][1] == [str(last_path)]
+    assert all(len(message[0].nodes) == 1 for message in event.sent)
+
+
+def test_pixiv_compact_mode_keeps_image_batches_independent(sender_module):
+    images = [
+        ImageContent(Path("one.jpg")),
+        ImageContent(Path("two.jpg")),
+        ImageContent(Path("three.jpg")),
+        ImageContent(Path("four.jpg")),
+    ]
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        send_groups=[SendGroup(contents=images, force_merge=True)],
+    )
+    event = _Event()
+    sender = sender_module.MessageSender(
+        _card_config(
+            card_enabled=False,
+            compact_forward_non_audio=True,
+        ),
+        _Renderer(),
+    )
+
+    async def prepare_as_one_per_batch(_result, groups):
+        return [
+            SendGroup(contents=images[:2], force_merge=True),
+            SendGroup(contents=images[2:], force_merge=True),
+        ]
+
+    sender._prepare_pixiv_image_groups = prepare_as_one_per_batch
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 2
+    assert all(message[0].__class__.__name__ == "Nodes" for message in event.sent)
+    assert [
+        [node.content[0].path for node in message[0].nodes]
+        for message in event.sent
+    ] == [
+        ["one.jpg", "two.jpg"],
+        ["three.jpg", "four.jpg"],
+    ]
+
+
+def test_pixiv_compact_card_is_not_folded_into_page_batches(sender_module):
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        send_groups=[SendGroup(contents=[])],
+    )
+    event = _Event()
+    sender = sender_module.MessageSender(
+        _card_config(compact_forward_non_audio=True), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert [segment.__class__.__name__ for segment in event.sent[0]] == ["Image"]
     assert event.sent[0][0].path == "card.png"
 
 

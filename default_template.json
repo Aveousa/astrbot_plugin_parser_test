@@ -31,6 +31,7 @@
     "cookies": "",
     "nsfw": "send",
     "multi_image_forward": false,
+    "image_file_threshold_mb": 10,
     "max_page": 0
   },
   {
