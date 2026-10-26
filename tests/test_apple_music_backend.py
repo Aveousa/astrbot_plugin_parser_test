@@ -598,10 +598,18 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
             context.registered_web_apis.append((route, handler, methods, desc))
         context.register_web_api = register
         assert page.register(context)
+        assert page.group_parser_config is not None
         routes = {route.rsplit("/", 1)[-1]: handler for route, handler, _, _ in context.registered_web_apis}
         assert "save-settings" in routes
         assert "clear-cache" in routes
         assert "check-music-cookie" in routes
+        assert "group-settings" in routes
+        assert "save-group-settings" in routes
+        assert all(
+            description == "虚质解离器管理"
+            for route, _, _, description in context.registered_web_apis
+            if not route.endswith("/logo")
+        )
         assert (await routes["status"]())[1]["status_code"] == 401
         assert (await routes["login"]())[1]["status_code"] == 401
         request.username = "admin"

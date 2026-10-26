@@ -280,6 +280,10 @@ class PluginConfig(ConfigNode):
 
     parsers_template: list[dict[str, Any]]
 
+    # Group parser policy is stored in the plugin-global config. Keys are the
+    # stable adapter instance id + group id, never the per-member UMO.
+    group_parser_settings: list[dict[str, Any]]
+
     # 必须与 metadata.yaml 中的 name 保持一致。这样测试版会使用独立的
     # 安装目录、配置、Cookie 和卡片模板目录，可与原版同时运行。
     _plugin_name = "astrbot_plugin_parser_test"
@@ -311,11 +315,41 @@ class PluginConfig(ConfigNode):
             "lyrics_show_release_time": True,
             "emoji_style": "APPLE",
             "compact_forward_non_audio": False,
+            "group_parser_settings": [],
         }
         for key, value in defaults.items():
             if config.get(key) is None:
                 config[key] = value
                 defaults_changed = True
+        stored_group_settings = config.get("group_parser_settings")
+        if not isinstance(stored_group_settings, list):
+            # A previous development build stored a dynamic map here. Convert
+            # it to a schema-stable list because AstrBot's config integrity
+            # check recursively prunes keys from dict fields with empty schemas.
+            migrated_group_settings = []
+            if isinstance(stored_group_settings, dict):
+                for group_key, entry in stored_group_settings.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    platform_id = entry.get("platform_id")
+                    group_id = entry.get("group_id")
+                    if not (isinstance(platform_id, str) and isinstance(group_id, str)):
+                        parts = str(group_key).split(":", 2)
+                        if len(parts) == 3 and parts[0] == "v1":
+                            platform_id, group_id = parts[1], parts[2]
+                    disabled = entry.get("disabled_parsers")
+                    if (
+                        isinstance(platform_id, str)
+                        and isinstance(group_id, str)
+                        and isinstance(disabled, list)
+                    ):
+                        migrated_group_settings.append({
+                            "platform_id": platform_id,
+                            "group_id": group_id,
+                            "disabled_parsers": disabled,
+                        })
+            config["group_parser_settings"] = migrated_group_settings
+            defaults_changed = True
         super().__init__(config)
         self.context = context
         self.admins_id = self.context.get_config().get("admins_id", [])

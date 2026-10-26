@@ -1417,5 +1417,7 @@ html[data-page-style="soft"] .sidebar-foot { display: none; }
   }
   .nav-list,
   html[data-page-style="soft"] .nav-list { scrollbar-width: none; }
-  .nav-list::-webkit-scrollbar { display: none; }
+.nav-list::-webkit-scrollbar { display: none; }
 }
+
+.platform-status-bar[hidden] { display: none !important; }

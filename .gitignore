@@ -17,4 +17,4 @@ core/test/
 # Generated manual card QA assets and screenshots; reproducible scripts live in local-tests/new-card-qa.
 /tests/manual/new-card-qa/
 /.agents/
-/pages/apple_music/previews/
+/pages/parser_management/previews/

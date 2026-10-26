@@ -1450,10 +1450,10 @@ class AppleMusicBackend:
         async with self.lock:
             self._require_enabled()
             if self.pending_owner and time.monotonic() < self.pending_until:
-                raise AppleMusicBackendError("请先在 Apple Music 管理页完成双重认证")
+                raise AppleMusicBackendError("请先在虚质解离器管理页的音乐管理中完成双重认证")
             me = await self._me()
             if me["auth"].get("state") != "authenticated":
-                raise AppleMusicBackendError("请先在 Apple Music 管理页登录")
+                raise AppleMusicBackendError("请先在虚质解离器管理页的音乐管理中登录")
             active, _, _ = await self._subscription(me)
             if active is not True:
                 raise AppleMusicBackendError("未能确认有效 Apple Music 订阅，请先在管理页检查")

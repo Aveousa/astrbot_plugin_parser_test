@@ -161,6 +161,13 @@
     "type": "string",
     "default": "30 2 * * *"
   },
+  "group_parser_settings": {
+    "description": "群聊解析器策略（内部配置）",
+    "hint": "由虚质解离器管理页的群聊配置维护，请勿手动修改。",
+    "type": "list",
+    "default": [],
+    "invisible": true
+  },
   "parsers_template": {
     "description": "解析器",
     "type": "template_list",
@@ -472,7 +479,7 @@
           "use_proxy": {"description": "使用代理", "type": "bool", "default": false},
           "backend_enabled": {
             "description": "启用可选 Apple Music 账号后端",
-            "hint": "需自行部署 wrapper-v2 API 0.0.2；从插件详情的 Apple Music 管理页登录。默认关闭，不影响信息卡片。修改后重载插件。",
+            "hint": "需自行部署 wrapper-v2 API 0.0.2；从插件详情的“虚质解离器 → 音乐管理”登录。默认关闭，不影响信息卡片。修改后重载插件。",
             "type": "bool", "default": false
           },
           "return_audio": {

@@ -11,12 +11,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .apple_music_backend import AppleMusicBackend, AppleMusicBackendError, normalize_track_url
+from .group_parser_config import GroupParserConfigService
 
 
 class AppleMusicWeb:
     def __init__(self, backend: AppleMusicBackend, plugin_name: str):
         self.backend = backend
         self.plugin_name = plugin_name
+        self.group_parser_config = None
         self._secret = secrets.token_bytes(32)
         self._task: asyncio.Task | None = None
         self._job: dict = {"state": "idle"}
@@ -139,6 +141,14 @@ class AppleMusicWeb:
         if not callable(getattr(context, "register_web_api", None)):
             return False
         self._context = context
+        if self.group_parser_config is None:
+            self.group_parser_config = GroupParserConfigService(
+                self.backend.cfg, context, lock=self.backend.lock
+            )
+        else:
+            # ParserPlugin shares this service with the chat command handler.
+            # Keep its lock and point it at the current platform manager.
+            self.group_parser_config.context = context
 
         def response(data=None, *, message=None, status_code=200):
             payload = {"status": "error", "message": message} if message else {"status": "ok", "data": data}
@@ -167,6 +177,21 @@ class AppleMusicWeb:
                 return response(message="需要 AstrBot 后台登录", status_code=401)
             return response(self.operation(owner))
 
+        async def get_group_settings():
+            owner = authenticated_owner()
+            if not owner:
+                return response(message="需要 AstrBot 后台登录", status_code=401)
+            if self.closed:
+                return response(message="插件管理页已关闭", status_code=503)
+            if self.group_parser_config is None:
+                return response(message="群聊配置服务未就绪", status_code=503)
+            try:
+                return response(await self.group_parser_config.get_groups())
+            except AppleMusicBackendError as exc:
+                return response(message=exc.message, status_code=400)
+            except Exception:
+                return response(message="当前无法读取 OneBot 群聊列表，请检查适配器连接", status_code=503)
+
         def post_handler(action: str) -> Callable:
             async def handler():
                 owner = authenticated_owner()
@@ -178,9 +203,14 @@ class AppleMusicWeb:
                 # form cannot supply this per-user nonce or pass the JSON gate.
                 if not request.headers.get("content-type", "").lower().startswith("application/json"):
                     return response(message="需要 JSON 请求", status_code=415)
-                if len(await request.body()) > 8192:
+                raw_body = await request.body()
+                max_body_size = 2 * 1024 * 1024 if action == "save-group-settings" else 8192
+                if len(raw_body) > max_body_size:
                     return response(message="请求过大", status_code=413)
-                body = await request.json(default=None)
+                try:
+                    body = await request.json(default=None)
+                except Exception:
+                    return response(message="无效请求", status_code=400)
                 if not isinstance(body, dict):
                     return response(message="无效请求", status_code=400)
                 nonce = body.get("nonce")
@@ -190,16 +220,38 @@ class AppleMusicWeb:
                 ):
                     return response(message="管理会话已更新，请刷新页面后重试", status_code=403)
                 try:
+                    if action == "save-group-settings":
+                        if self.group_parser_config is None:
+                            return response(message="群聊配置服务未就绪", status_code=503)
+                        result = await self.group_parser_config.save_group_settings(
+                            body.get("groups")
+                        )
+                        return response(result)
                     return response(self.start(owner, action, body))
                 except AppleMusicBackendError as exc:
                     return response(message=exc.message, status_code=400)
+                except Exception:
+                    # Never expose internal errors, configuration contents,
+                    # or traceback details to the browser.
+                    return response(message="群聊解析器设置保存失败，请刷新后重试", status_code=500)
             return handler
 
-        routes = [("status", get_status, ["GET"]), ("operation", get_operation, ["GET"])]
-        routes += [(action, post_handler(action), ["POST"]) for action in ("login", "two-factor", "clear-session", "clear-cache", "save-settings", "save-music-settings", "save-music-cookie", "check-music-cookie", "verify")]
+        routes = [
+            ("status", get_status, ["GET"]),
+            ("operation", get_operation, ["GET"]),
+            ("group-settings", get_group_settings, ["GET"]),
+        ]
+        routes += [
+            (action, post_handler(action), ["POST"])
+            for action in (
+                "login", "two-factor", "clear-session", "clear-cache",
+                "save-settings", "save-music-settings", "save-music-cookie",
+                "check-music-cookie", "save-group-settings", "verify",
+            )
+        ]
         for endpoint, handler, methods in routes:
             route = f"/{self.plugin_name}/apple-music/{endpoint}"
-            context.register_web_api(route, handler, methods, "Apple Music 账号管理")
+            context.register_web_api(route, handler, methods, "虚质解离器管理")
             self._registrations.append((route, handler, methods))
 
         async def get_plugin_logo():
@@ -224,7 +276,7 @@ class AppleMusicWeb:
             return response({"data_url": f"data:image/png;base64,{base64.b64encode(image).decode('ascii')}"})
 
         logo_route = f"/{self.plugin_name}/apple-music/logo"
-        context.register_web_api(logo_route, get_plugin_logo, ["GET"], "Apple Music 插件 Logo")
+        context.register_web_api(logo_route, get_plugin_logo, ["GET"], "虚质解离器 Logo")
         self._registrations.append((logo_route, get_plugin_logo, ["GET"]))
         return True
 

@@ -293,6 +293,67 @@ def test_supported_parser_templates_are_exposed():
     assert {item["__template_key"] for item in defaults} == supported
 
 
+def test_group_parser_settings_have_a_persistent_hidden_list_schema():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    setting = schema["group_parser_settings"]
+
+    assert setting["type"] == "list"
+    assert setting["default"] == []
+    assert setting["invisible"] is True
+
+
+def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
+    saves = []
+    config_module.PluginConfig.save_config = lambda self: saves.append(True)
+    raw = {
+        "whitelist": [],
+        "blacklist": [],
+        "arbiter": True,
+        "require_at_in_group": True,
+        "debounce_interval": 300,
+        "source_max_size": 90,
+        "source_max_minute": 15,
+        "audio_to_file": True,
+        "single_heavy_render_card": False,
+        "forward_threshold": 2,
+        "compact_forward_non_audio": False,
+        "card_enabled": True,
+        "card_template": "apple",
+        "card_custom_template": "",
+        "lyrics_card_template": "lyrics_card",
+        "card_custom_font": [],
+        "custom_logo": [],
+        "card_dynamic_color": False,
+        "lyrics_show_release_time": True,
+        "emoji_style": "APPLE",
+        "show_download_fail_tip": True,
+        "download_timeout": 280,
+        "download_retry_times": 2,
+        "common_timeout": 15,
+        "proxy": "",
+        "clean_cron": "30 2 * * *",
+        "parsers_template": [
+            {"__template_key": "bilibili", "enable": True},
+        ],
+        "group_parser_settings": {
+            "v1:Napcat_V5:90001": {"disabled_parsers": ["bilibili"]},
+        },
+    }
+    context = SimpleNamespace(
+        get_config=lambda: {"timezone": "Asia/Shanghai", "admins_id": []}
+    )
+    config = config_module.PluginConfig(raw, context)
+
+    assert config.group_parser_settings == [
+        {
+            "platform_id": "Napcat_V5",
+            "group_id": "90001",
+            "disabled_parsers": ["bilibili"],
+        }
+    ]
+    assert saves
+
+
 def test_music_parser_titles_and_lyrics_switches_are_clear():
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     templates = schema["parsers_template"]["templates"]
@@ -325,7 +386,18 @@ def test_apple_music_backend_is_optional_and_not_a_core_dependency():
     assert "password" not in apple
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert not any("gamdl" in dependency.lower() for dependency in project["project"]["dependencies"])
-    assert (ROOT / "pages" / "apple_music" / "index.html").is_file()
+    assert (ROOT / "pages" / "parser_management" / "index.html").is_file()
+
+
+def test_management_page_is_the_plugin_home_and_keeps_music_and_group_views_separate():
+    page = (ROOT / "pages" / "parser_management" / "index.html").read_text(encoding="utf-8")
+    translations = json.loads((ROOT / ".astrbot-plugin" / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    assert translations["pages"]["parser_management"]["title"] == "虚质解离器"
+    assert 'data-view-link="overview"' in page
+    assert 'data-view="music"' in page
+    assert 'data-view="groups"' in page
+    assert "音乐管理" in page and "群聊配置" in page
+    assert 'id="save-group-settings"' in page
 
 
 def test_qq_music_exposes_file_quality_priority_with_verified_tiers():

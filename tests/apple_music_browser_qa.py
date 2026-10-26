@@ -37,25 +37,46 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
  parsers:[
   {key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,cookie_configured:true,cookie_status:'Cookie 已配置'},
   {key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,cookie_configured:false,cookie_status:'账号 Cookie 不完整'},
-  {key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,cookie_configured:false,cookie_status:'解析器未启用'}],
+ {key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,cookie_configured:false,cookie_status:'解析器未启用'}],
 };
+const groupState = {parsers:[
+ {key:'bilibili',label:'Bilibili',globally_enabled:true},
+ {key:'douyin',label:'抖音',globally_enabled:true},
+ {key:'xhs',label:'小红书',globally_enabled:true},
+ {key:'pixiv',label:'Pixiv',globally_enabled:true},
+ {key:'netease',label:'网易云音乐',globally_enabled:true}],
+ groups:[
+  {platform_id:'Napcat_V5',platform_label:'NapCat',group_id:'90001',name:'解析测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],globally_enabled:['bilibili','douyin','xhs','pixiv','netease']},
+  {platform_id:'Lagrange',platform_label:'Lagrange.OneBot',group_id:'90002',name:'另一个测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],globally_enabled:['bilibili','douyin','xhs','pixiv','netease']}]};
 let job = {state:'idle'};
 window.qaState = state;
+window.qaGroupState = groupState;
 window.qaRequests = [];
 window.addEventListener('message', event => {
  const message = event.data;
  if (message?.channel !== 'astrbot-plugin-page') return;
  const send = data => event.source.postMessage({channel:'astrbot-plugin-page',...data}, location.origin);
- if (message.kind === 'ready') {send({kind:'context',context:{pluginName:'test-plugin',pageName:'apple_music',isDark:false}}); return;}
+ if (message.kind === 'ready') {send({kind:'context',context:{pluginName:'test-plugin',pageName:'parser_management',isDark:false}}); return;}
  if (message.kind !== 'request') return;
  const endpoint = message.endpoint?.replace('apple-music/','');
  window.qaRequests.push(endpoint);
  let data;
  if (endpoint === 'status') data = {...state,operation:job};
  else if (endpoint === 'operation') data = job;
+ else if (endpoint === 'group-settings') data = groupState;
  else if (endpoint === 'logo') data = {data_url:'__LOGO_DATA_URL__'};
  else if (message.action === 'api:post') {
   if (message.body?.nonce !== 'qa-nonce') {send({kind:'response',requestId:message.requestId,ok:false,error:'invalid nonce'});return;}
+  if (endpoint === 'save-group-settings') {
+   const submitted = message.body.groups || [];
+   submitted.forEach(group => {
+    const target = groupState.groups.find(item => item.platform_id === group.platform_id && item.group_id === group.group_id);
+    if (target) target.enabled = group.enabled;
+   });
+   data = {message:'群聊解析器设置已确认并保存'};
+   send({kind:'response',requestId:message.requestId,ok:true,data});
+   return;
+  }
   job = {state:'running',action:endpoint,message:'任务已提交，请等待'};
   data = {...job};
   setTimeout(() => {
@@ -130,7 +151,7 @@ def run(output: Path):
                 if name not in ("index.html", "style.css", "style-refined.css", "app.js"):
                     self.send_error(404)
                     return
-                data = (ROOT / "pages" / "apple_music" / name).read_bytes()
+                data = (ROOT / "pages" / "parser_management" / name).read_bytes()
                 content_type = {"html": "text/html; charset=utf-8", "css": "text/css", "js": "application/javascript"}[name.rsplit(".", 1)[-1]]
             else:
                 self.send_error(404)
@@ -174,6 +195,11 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='qqmusic']").get_attribute("data-available") == "false"
             assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "账号 Cookie 不完整"
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "未登录"
+            assert frame.locator("[data-view-link='overview']").is_visible()
+            assert frame.locator("[data-view='overview']").is_visible()
+            assert frame.locator("[data-view='music']").is_hidden()
+            assert frame.locator("[data-view='groups']").is_hidden()
+            assert frame.locator(".platform-status-bar").is_hidden()
 
             assert frame.locator("html").get_attribute("data-page-style") == "classic"
             classic_accent = frame.locator("html").evaluate(
@@ -186,6 +212,12 @@ def run(output: Path):
             screenshot("desktop-classic.png", full_page=False)
             page.set_viewport_size({"width": 390, "height": 844})
             screenshot("mobile-classic.png", full_page=False)
+            frame.locator("[data-view-link='groups']").click()
+            page.wait_for_timeout(100)
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            screenshot("mobile-groups.png", full_page=False)
+            page.set_viewport_size({"width": 1200, "height": 980})
+            frame.locator("[data-view-link='overview']").click()
             page.set_viewport_size({"width": 1200, "height": 980})
             frame.locator("#page-style").select_option("soft")
             assert frame.locator("html").get_attribute("data-page-style") == "soft"
@@ -197,6 +229,34 @@ def run(output: Path):
             assert light_palette == {"--bg": "#F6F6F6", "--accent": "#8785A2", "--surface-soft": "#FFE2E2"}, light_palette
             assert frame.locator("html").evaluate("localStorage.getItem('apple-music-management-style')") == "soft"
             assert frame.locator(".primary-button").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 199, 199)"
+            frame.locator("[data-view-link='groups']").click()
+            frame.locator("#group-list .group-card").first.wait_for()
+            assert frame.locator("#group-list .group-card").count() == 2
+            assert frame.locator("[data-view='groups']").is_visible()
+            assert frame.locator("[data-view='music']").is_hidden()
+            assert frame.locator(".platform-status-bar").is_hidden()
+            first_group = frame.locator(".group-card").filter(has_text="解析测试群")
+            bilibili_toggle = first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input")
+            initial_saves = page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length")
+            bilibili_toggle.uncheck()
+            frame.locator("#group-settings-state").get_by_text("尚未保存", exact=False).wait_for()
+            assert page.evaluate("qaGroupState.groups[0].enabled.includes('bilibili')")
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves
+            frame.locator("#discard-group-settings").click()
+            assert first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").is_checked()
+            first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").uncheck()
+            frame.locator("#save-group-settings").click()
+            page.wait_for_function("!window.qaGroupState.groups[0].enabled.includes('bilibili')")
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves + 1
+            assert frame.locator("#group-settings-state").get_attribute("data-error") != "true"
+            frame.locator("#group-search").fill("no-such-group")
+            frame.locator("#group-list .group-empty").get_by_text("没有匹配的群聊").wait_for()
+            frame.locator("#group-search").fill("")
+            screenshot("desktop-groups.png")
+            frame.locator("[data-view-link='music']").click()
+            frame.locator("[data-view='music']").wait_for(state="visible")
+            assert frame.locator("[data-view='overview']").is_hidden()
+            assert frame.locator(".platform-status-bar").is_visible()
             music_list = frame.locator("#music-parser-list")
             assert music_list.locator("[data-music-parser]").count() == 3
             qq_music = music_list.locator("[data-music-parser='qqmusic']")
@@ -299,11 +359,11 @@ def run(output: Path):
             assert frame.locator("#track-url").is_disabled()
             page.evaluate("qaState.enabled=false;qaState.connected=false;qaState.message='请在插件配置中启用可选后端';qaState.platform_accounts[4]={key:'applemusic',label:'Apple Music',available:false,text:'账号后端未启用'}")
             frame.locator("#refresh").click()
-            frame.locator("#wrapper-state").get_by_text("未启用").wait_for()
+            page.wait_for_function("document.querySelector('iframe').contentDocument.querySelector('#wrapper-state').textContent === '未启用'")
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["overview-music-group-navigation", "group-settings-draft-discard-save", "group-search-empty-state", "classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

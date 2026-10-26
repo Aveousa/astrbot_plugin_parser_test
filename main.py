@@ -22,6 +22,11 @@ from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.group_parser_config import (
+    PARSER_LABELS,
+    GroupParserConfigService,
+    group_enabled_parsers,
+)
 from .core.parsers import BaseParser, BilibiliParser, KugouMusicParser, QQMusicParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -60,6 +65,10 @@ class ParserPlugin(Star):
             runtime_parser_provider=lambda: set(self.parser_map.values()),
         )
         self.apple_music_web = AppleMusicWeb(self.apple_music_backend, self.cfg._plugin_name)
+        self.group_parser_config = GroupParserConfigService(
+            self.cfg, self.context, lock=self.apple_music_backend.lock
+        )
+        self.apple_music_web.group_parser_config = self.group_parser_config
 
     def _platform_account_statuses(self) -> list[dict]:
         """Describe local account cookies without exposing or validating secrets."""
@@ -378,10 +387,36 @@ class ParserPlugin(Star):
         if not text:
             return
 
+        get_platform_name = getattr(event, "get_platform_name", None)
+        platform_name = get_platform_name() if callable(get_platform_name) else None
+        get_group_id = getattr(event, "get_group_id", None)
+        group_id = (
+            get_group_id()
+            if is_group_session(umo) and callable(get_group_id)
+            else ""
+        )
+        get_platform_id = getattr(event, "get_platform_id", None)
+        platform_id = get_platform_id() if callable(get_platform_id) else ""
+        group_parser_keys = (
+            group_enabled_parsers(self.cfg, platform_id, group_id)
+            if group_id and platform_name == "aiocqhttp"
+            else None
+        )
+        group_parser_map = None
+        if group_parser_keys is not None:
+            group_parser_map = {
+                keyword: parser
+                for keyword, parser in self.parser_map.items()
+                if getattr(getattr(parser, "platform", None), "name", None)
+                in group_parser_keys
+            }
+
         # 核心匹配逻辑 ：关键词 + 正则双重判定，汇集了所有解析器的正则对。
         keyword: str = ""
         searched: re.Match[str] | None = None
         for kw, pat in self.key_pattern_list:
+            if group_parser_map is not None and kw not in group_parser_map:
+                continue
             if kw not in text:
                 continue
             if m := pat.search(text):
@@ -431,8 +466,15 @@ class ParserPlugin(Star):
             # 不让一次缓存故障阻断平台解析本身。
             logger.warning(f"[缓存] 无法创建解析目录，回退到默认缓存目录: {exc}")
             parse_cache_dir = None
+        parser = (
+            group_parser_map.get(keyword)
+            if group_parser_map is not None
+            else self.parser_map.get(keyword)
+        )
+        if parser is None:
+            return
         with cache_dir_scope(parse_cache_dir):
-            parse_res = await self.parser_map[keyword].parse(keyword, searched)
+            parse_res = await parser.parse(keyword, searched)
         if parse_cache_dir is not None:
             parse_res.cache_dir = parse_cache_dir
 
@@ -444,6 +486,83 @@ class ParserPlugin(Star):
 
         # 发送
         await self.sender.send_parse_result(event, parse_res)
+
+    @filter.regex(r"^\s*/(关闭|开启)([^\s/]{1,40})解析\s*$")
+    async def toggle_group_parser(self, event: AstrMessageEvent):
+        """让 OneBot 群主或管理员快速切换本群的单个解析器。"""
+        if not is_group_session(event.unified_msg_origin):
+            return
+        command_match = re.fullmatch(
+            r"\s*/(关闭|开启)([^\s/]{1,40})解析\s*",
+            event.message_str or "",
+        )
+        if command_match is None:
+            return
+        if event.get_platform_name() != "aiocqhttp":
+            event.stop_event()
+            yield event.plain_result("解析器快捷开关目前仅支持 OneBot V11 群聊")
+            return
+        raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        sender = raw_message.get("sender") if isinstance(raw_message, dict) else None
+        sender_role = (
+            str(sender.get("role", "")).lower()
+            if isinstance(sender, dict)
+            else ""
+        )
+        if sender_role not in {"owner", "admin"}:
+            event.stop_event()
+            yield event.plain_result("此指令仅限群主或群管理员使用")
+            return
+
+        platform_id, group_id = event.get_platform_id(), event.get_group_id()
+        parser_key = self._resolve_group_parser_key(command_match.group(2))
+        if not platform_id or not group_id:
+            event.stop_event()
+            yield event.plain_result("无法识别当前 OneBot 实例或群聊")
+            return
+        if parser_key is None:
+            event.stop_event()
+            supported = "、".join(
+                label for key, label in PARSER_LABELS.items() if key != "music_base"
+            )
+            yield event.plain_result(f"未知解析器。支持：{supported}")
+            return
+        if getattr(self, "group_parser_config", None) is None:
+            event.stop_event()
+            yield event.plain_result("群聊解析器设置服务未就绪，请重载插件后重试")
+            return
+
+        enabled = command_match.group(1) == "开启"
+        try:
+            current = await self.group_parser_config.set_group_parser(
+                platform_id, group_id, parser_key, enabled
+            )
+            event.stop_event()
+            state = "已启用" if parser_key in current else "已关闭"
+            yield event.plain_result(
+                f"当前群聊的{PARSER_LABELS[parser_key]}解析{state}"
+            )
+        except Exception:
+            logger.warning("保存群聊解析器快捷设置失败")
+            event.stop_event()
+            yield event.plain_result("群聊解析器设置失败，请检查全局开关和 OneBot 群聊状态后重试")
+
+    @staticmethod
+    def _resolve_group_parser_key(value: str) -> str | None:
+        normalized = re.sub(r"[\s_-]+", "", value).casefold()
+        aliases = {
+            "bilibili": "bilibili", "b站": "bilibili", "哔哩哔哩": "bilibili",
+            "douyin": "douyin", "抖音": "douyin",
+            "xhs": "xhs", "小红书": "xhs",
+            "pixiv": "pixiv", "p站": "pixiv",
+            "qqmusic": "qqmusic", "qq音乐": "qqmusic",
+            "netease": "netease", "网易云": "netease", "网易云音乐": "netease",
+            "kugou": "kugou", "酷狗": "kugou", "酷狗音乐": "kugou",
+            "qishui": "qishui", "汽水": "qishui", "汽水音乐": "qishui",
+            "kuwo": "kuwo", "酷我": "kuwo", "酷我音乐": "kuwo",
+            "applemusic": "applemusic", "苹果音乐": "applemusic",
+        }
+        return aliases.get(normalized)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

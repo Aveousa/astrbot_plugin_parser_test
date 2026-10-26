@@ -19,12 +19,14 @@ AstrBot 链接解析插件。当前支持 Bilibili、抖音、小红书和 Pixiv
 Apple Music 单曲复用现有歌曲信息卡片，展示歌名、歌手、专辑、时长和封面，
 无需 Cookie。发送信息卡片需要开启“渲染并发送信息卡片”和 Apple Music 解析器。
 
-支持 Plugin Pages 的 AstrBot 可从插件详情打开 **Apple Music 账号管理**，通过
-独立 wrapper-v2 完成账号登录和双重认证，不必手动提取 Cookie。音频使用独立的
+支持 Plugin Pages 的 AstrBot 可从插件详情打开 **虚质解离器**总管理页；音乐账号和解析器配置位于“音乐管理”，逐群开关位于“群聊配置”。音乐账号可通过
+独立 wrapper-v2 完成登录和双重认证，不必手动提取 Cookie。音频使用独立的
 gamdl 环境，默认关闭，不增加核心必装依赖；开启后可在 Apple Music 配置中选择以
 “文件”或“语音”发送；文件模式支持配置 gamdl 音质优先级。音频发送使用 OneBot v11，
 该功能目前仅支持 aiocqhttp（OneBot v11）。部署、配置和安全限制见
-[Apple Music 管理页说明](docs/APPLE_MUSIC.md)。
+[音乐管理页说明](docs/APPLE_MUSIC.md)。
+
+群聊配置页会列出各 OneBot 实例当前已加入的群聊及各解析器参与状态。页面开关先作为草稿，点击“确认并保存”后生效；群主或管理员也可在群内发送“/关闭bilibili解析”“/开启bilibili解析”等指令快速切换。群级关闭项会在链接匹配和多 Bot 仲裁之前过滤。总开关仍以插件配置为准，关闭全局解析器后群聊不能单独启用。
 
 QQ 音乐文件模式支持按 FLAC 无损、高音质（320 kbps）、标准音质（128 kbps）
 配置首选与回退顺序；语音模式保留固定的高音质优先策略并回退标准音质。QQ 音乐接口
