@@ -935,6 +935,7 @@ def test_pixiv_image_batches_obey_threshold_and_20_mib_cap(sender_module):
         [image_1, image_2, image_3, image_4, image_5],
         [10 * 1024 * 1024, 10 * 1024 * 1024, 1, 11 * 1024 * 1024, 1],
         10 * 1024 * 1024,
+        ["12345678_p0.jpg", "12345678_p1.jpg", "12345678_p2.jpg", "12345678_p3.jpg", "12345678_p4.jpg"],
     )
 
     assert batches[0] == [image_1, image_2]
@@ -951,7 +952,42 @@ def test_pixiv_image_batches_obey_threshold_and_20_mib_cap(sender_module):
     assert batches[2][0].__class__.__name__ == "_PixivFileUpload"
     assert batches[2][0].path == Path("four.jpg")
     assert batches[2][0].size == 11 * 1024 * 1024
+    assert batches[2][0].name == "12345678_p3.jpg"
     assert batches[3] == [image_5]
+
+
+@pytest.mark.parametrize(
+    ("artwork_url", "page_index", "path", "expected"),
+    [
+        (
+            "https://www.pixiv.net/artworks/145313510",
+            0,
+            Path("cache-hash.png"),
+            "145313510_p0.png",
+        ),
+        (
+            "https://www.pixiv.net/en/artworks/123456789?from=foo",
+            3,
+            Path("cache-hash.jpg"),
+            "123456789_p3.jpg",
+        ),
+        ("https://example.invalid/other", 1, Path("cache-hash.webp"), "pixiv_p1.webp"),
+    ],
+)
+def test_pixiv_upload_filename_uses_artwork_and_page_id(
+    sender_module, artwork_url: str, page_index: int, path: Path, expected: str
+):
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        url=artwork_url,
+    )
+
+    assert (
+        sender_module.MessageSender._pixiv_image_filename(
+            result, page_index, path
+        )
+        == expected
+    )
 
 
 def test_pixiv_batches_send_in_order_and_use_onebot_for_oversized_image(
@@ -1000,6 +1036,7 @@ def test_pixiv_batches_send_in_order_and_use_onebot_for_oversized_image(
 
     result = ParseResult(
         platform=Platform("pixiv", "Pixiv"),
+        url="https://www.pixiv.net/artworks/145313510",
         send_groups=[
             SendGroup(
                 contents=[
@@ -1022,7 +1059,7 @@ def test_pixiv_batches_send_in_order_and_use_onebot_for_oversized_image(
     assert [item[0] for item in order] == ["send", "upload", "send"]
     assert order[0][1] == [str(first_path)]
     assert order[1][1] == "upload_group_file"
-    assert order[1][2]["name"] == "large.jpg"
+    assert order[1][2]["name"] == "145313510_p1.jpg"
     assert order[1][2]["file"] == (
         "http://astrbot:6185/api/file/pixiv-image-token"
     )

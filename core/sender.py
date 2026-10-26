@@ -52,6 +52,7 @@ class _PixivFileUpload:
 
     path: Path
     size: int
+    name: str
 
 
 def _log_info(message: str) -> None:
@@ -587,6 +588,7 @@ class MessageSender:
         contents: list[MediaContent],
         sizes: list[int | None],
         threshold_bytes: int,
+        file_names: list[str] | None = None,
     ) -> list[list[MediaContent | _PixivFileUpload]]:
         """Split Pixiv pages in source order under the OneBot 20 MiB limit.
 
@@ -605,7 +607,14 @@ class MessageSender:
                 batch = []
                 batch_size = 0
 
-        for content, size in zip(contents, sizes, strict=True):
+        names = file_names or [
+            content.path_task.name
+            if isinstance(content, ImageContent)
+            and isinstance(content.path_task, Path)
+            else f"pixiv_p{index}.jpg"
+            for index, content in enumerate(contents)
+        ]
+        for content, size, name in zip(contents, sizes, names, strict=True):
             if size is None:
                 # A failed or unmeasurable image cannot be counted safely.
                 # Isolate it so it never makes a neighboring known-size batch
@@ -619,7 +628,7 @@ class MessageSender:
                 if isinstance(content, ImageContent) and size > 0:
                     path_task = content.path_task
                     if isinstance(path_task, Path):
-                        batches.append([_PixivFileUpload(path_task, size)])
+                        batches.append([_PixivFileUpload(path_task, size, name)])
                         continue
                 # A missing file or unexpected media type cannot use the direct
                 # upload path; keep it in the regular image flow.
@@ -633,7 +642,7 @@ class MessageSender:
                 if isinstance(content, ImageContent) and isinstance(
                     content.path_task, Path
                 ):
-                    batches.append([_PixivFileUpload(content.path_task, size)])
+                    batches.append([_PixivFileUpload(content.path_task, size, name)])
                 else:
                     batch.append(content)
                 continue
@@ -646,6 +655,35 @@ class MessageSender:
         flush()
         return batches
 
+    @staticmethod
+    def _pixiv_image_filename(
+        result: ParseResult, page_index: int, path: Path
+    ) -> str:
+        """Build a stable Pixiv-style attachment name from artwork/page IDs."""
+        match = re.search(r"/artworks/([0-9]+)(?:[/?#]|$)", result.url or "")
+        artwork_id = match.group(1) if match else "pixiv"
+        suffix = path.suffix.lower()
+        if (
+            not suffix.startswith(".")
+            or not suffix[1:].isascii()
+            or not suffix[1:].isalnum()
+            or len(suffix) > 11
+        ):
+            suffix = ".jpg"
+        return f"{artwork_id}_p{page_index}{suffix}"
+
+    @staticmethod
+    def _pixiv_page_indexes(groups: list[SendGroup]) -> dict[int, int]:
+        """Map each original image object to its zero-based artwork page index."""
+        indexes: dict[int, int] = {}
+        page_index = 0
+        for group in groups:
+            for content in group.contents:
+                if isinstance(content, ImageContent) and id(content) not in indexes:
+                    indexes[id(content)] = page_index
+                    page_index += 1
+        return indexes
+
     async def _prepare_pixiv_image_groups(
         self,
         result: ParseResult,
@@ -657,6 +695,7 @@ class MessageSender:
 
         send_items: list[SendGroup | _PixivFileUpload] = []
         threshold_bytes = self._pixiv_image_threshold_bytes(result, self.cfg)
+        page_indexes = self._pixiv_page_indexes(groups)
 
         for group in groups:
             if not group.contents or not all(
@@ -667,7 +706,9 @@ class MessageSender:
 
             ready_images: list[ImageContent] = []
             image_sizes: list[int | None] = []
+            file_names: list[str] = []
             for image in group.contents:
+                page_index = page_indexes.get(id(image), 0)
                 try:
                     path = await image.get_path()
                 except Exception as exc:
@@ -679,6 +720,9 @@ class MessageSender:
                     )
                     ready_images.append(image)
                     image_sizes.append(None)
+                    file_names.append(
+                        self._pixiv_image_filename(result, page_index, Path("image.jpg"))
+                    )
                     continue
                 size = _file_size(path)
                 if size is None:
@@ -686,16 +730,18 @@ class MessageSender:
                     # cached path; isolate it from the known-size batches.
                     ready_images.append(image)
                     image_sizes.append(None)
+                    file_names.append(self._pixiv_image_filename(result, page_index, path))
                     continue
                 ready_images.append(image)
                 image_sizes.append(size)
+                file_names.append(self._pixiv_image_filename(result, page_index, path))
 
             if not ready_images:
                 send_items.append(group)
                 continue
 
             batches = self._pixiv_image_batches(
-                ready_images, image_sizes, threshold_bytes
+                ready_images, image_sizes, threshold_bytes, file_names
             )
             if len(batches) == 1 and all(
                 isinstance(content, ImageContent) for content in batches[0]
@@ -707,7 +753,11 @@ class MessageSender:
                 if len(batch) == 1 and isinstance(batch[0], _PixivFileUpload):
                     send_items.append(batch[0])
                     continue
-                images = [content for content in batch if isinstance(content, ImageContent)]
+                images = [
+                    content
+                    for content in batch
+                    if isinstance(content, ImageContent)
+                ]
                 if images:
                     send_items.append(
                         SendGroup(
@@ -736,12 +786,12 @@ class MessageSender:
         url = await self._register_local_file_url(
             upload.path,
             platform="pixiv",
-            name=upload.path.name,
+            name=upload.name,
             file_size=upload.size,
         )
         if not url:
             _log_info(
-                f"Pixiv 图片转文件发送跳过：name={upload.path.name} "
+                f"Pixiv 图片转文件发送跳过：name={upload.name} "
                 "原因=OneBot 临时文件 URL 不可用"
             )
             return False
@@ -750,7 +800,7 @@ class MessageSender:
             event,
             url,
             message_type="file",
-            name=upload.path.name,
+            name=upload.name,
             platform="pixiv",
             file_size=upload.size,
         )
@@ -1292,7 +1342,7 @@ class MessageSender:
                     item_sent = await self._send_pixiv_file_upload(event, item)
                 except Exception as exc:
                     logger.error(
-                        f"Pixiv 图片 OneBot 文件上传失败：name={item.path.name} "
+                        f"Pixiv 图片 OneBot 文件上传失败：name={item.name} "
                         f"error={_safe_log_error(exc)}"
                     )
                     # Upload was attempted; do not also encode the oversized
