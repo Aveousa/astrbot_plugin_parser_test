@@ -492,6 +492,11 @@
             "hint": "开启后优先使用已配置并认证的 gamdl 按 Apple Music 单曲链接获取原生逐行同步歌词；不可用、无歌词或输出无效时按歌曲名、歌手、专辑和时长回退匹配 LRCLIB。歌词来源异常不影响歌曲卡片；不依赖返回单曲音频开关。",
             "type": "bool", "default": false
           },
+          "force_chinese_language": {
+            "description": "将 Apple Music 链接语言改为简体中文",
+            "hint": "开启后，仅将链接中已有的 l 参数改为 zh-cn，再进行歌曲或歌单解析；没有 l 参数时不主动添加。",
+            "type": "bool", "default": false
+          },
           "audio_send_format": {
             "description": "Apple Music 音频发送格式",
             "hint": "选择“语音”时使用 AAC Web 并让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频；选择“文件”时优先下载 ALAC，不可用时自动回退 AAC Web。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",

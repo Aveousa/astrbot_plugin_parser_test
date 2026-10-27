@@ -380,6 +380,9 @@ def test_apple_music_backend_is_optional_and_not_a_core_dependency():
     assert apple["audio_send_format"]["options"] == ["file", "voice"]
     assert apple["audio_send_format"]["default"] == "file"
     assert template["audio_send_format"] == "file"
+    assert apple["force_chinese_language"]["type"] == "bool"
+    assert apple["force_chinese_language"]["default"] is False
+    assert template["force_chinese_language"] is False
     assert apple["file_codec_priority"]["default"] == ["alac", "aac-web"]
     assert template["file_codec_priority"] == ["alac", "aac-web"]
     assert apple["gamdl_python"]["default"] == ""
@@ -701,6 +704,7 @@ def test_parser_config_migration_keeps_legacy_bilibili_preference(config_module)
         raw["parsers_template"][index]["show_playlist_url"] is True
         for index in range(4, 10)
     )
+    assert raw["parsers_template"][9]["force_chinese_language"] is False
     netease = raw["parsers_template"][5]
     assert netease["cookies"] == "netease-vip-cookie"
     assert netease["audio_api_base"] == "https://api.qijieya.cn/meting/"

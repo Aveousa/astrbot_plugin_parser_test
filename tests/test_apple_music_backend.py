@@ -752,6 +752,7 @@ def test_management_settings_are_validated_persisted_and_applied(tmp_path):
         item.file_codec_priority = ["alac", "aac-web"]
         item.show_playlist_cover = True
         item.show_playlist_url = True
+        item.force_chinese_language = False
         saves = []
         cfg.save_config = lambda: saves.append(True)
         backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
@@ -762,6 +763,7 @@ def test_management_settings_are_validated_persisted_and_applied(tmp_path):
             "file_codec_priority": ["aac-web", "alac"],
             "show_playlist_cover": False,
             "show_playlist_url": False,
+            "force_chinese_language": True,
         }
         try:
             result = await backend.update_management_settings("admin", values)
@@ -776,6 +778,10 @@ def test_management_settings_are_validated_persisted_and_applied(tmp_path):
                 )
             with pytest.raises(AppleMusicBackendError, match="不支持的字段"):
                 await backend.update_management_settings("admin", {"wrapper_url": "x"})
+            with pytest.raises(AppleMusicBackendError, match="开关设置无效"):
+                await backend.update_management_settings(
+                    "admin", {"force_chinese_language": "true"}
+                )
         finally:
             await backend.close()
 

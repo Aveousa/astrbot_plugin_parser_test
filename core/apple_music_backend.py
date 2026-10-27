@@ -52,6 +52,7 @@ MANAGED_BOOLEAN_SETTINGS = (
     "return_audio",
     "show_playlist_cover",
     "show_playlist_url",
+    "force_chinese_language",
 )
 MANAGED_SETTINGS = frozenset({
     *MANAGED_BOOLEAN_SETTINGS,
@@ -242,6 +243,7 @@ class AppleMusicBackend:
                 "audio_send_format": "file",
                 "file_codec_priority": list(FILE_CODEC_PRIORITY),
                 "show_playlist_cover": True, "show_playlist_url": True,
+                "force_chinese_language": False,
             }
         return {
             "backend_enabled": getattr(item, "backend_enabled", False) is True,
@@ -258,6 +260,9 @@ class AppleMusicBackend:
             ),
             "show_playlist_cover": getattr(item, "show_playlist_cover", True) is not False,
             "show_playlist_url": getattr(item, "show_playlist_url", True) is not False,
+            "force_chinese_language": (
+                getattr(item, "force_chinese_language", False) is True
+            ),
         }
 
     def _parser_item(self, key: str):

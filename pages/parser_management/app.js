@@ -848,6 +848,7 @@
       file_codec_priority: [...$("codec-priority-list").querySelectorAll("select")].map((select) => select.value),
       show_playlist_cover: $("setting-cover").checked,
       show_playlist_url: $("setting-url").checked,
+      force_chinese_language: $("setting-chinese-language").checked,
     };
   }
   function renderSettings(settings) {
@@ -857,6 +858,7 @@
     $("setting-return-audio").checked = Boolean(settings.return_audio);
     $("setting-cover").checked = settings.show_playlist_cover !== false;
     $("setting-url").checked = settings.show_playlist_url !== false;
+    $("setting-chinese-language").checked = settings.force_chinese_language === true;
     const format = settings.audio_send_format === "voice" ? "voice" : "file";
     document.querySelector(`input[name='audio-format'][value='${format}']`).checked = true;
     renderCodecs(Array.isArray(settings.file_codec_priority) ? settings.file_codec_priority : ["alac", "aac-web"]);

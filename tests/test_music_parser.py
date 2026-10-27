@@ -1734,9 +1734,18 @@ def _apple_music_html(sections, structured_data=None):
     return html
 
 
-def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=True,
-                           backend=None, return_audio=False, audio_send_format="file",
-                           metadata_only=False):
+def _parse_apple_music_html(
+    html,
+    url=_APPLE_TRACK_URL,
+    *,
+    status=200,
+    show_url=True,
+    force_chinese_language=False,
+    backend=None,
+    return_audio=False,
+    audio_send_format="file",
+    metadata_only=False,
+):
     async def build():
         requests = []
 
@@ -1764,6 +1773,7 @@ def _parse_apple_music_html(html, url=_APPLE_TRACK_URL, *, status=200, show_url=
             card_enabled=True,
             parser=SimpleNamespace(
                 applemusic=SimpleNamespace(use_proxy=False, show_playlist_url=show_url,
+                                           force_chinese_language=force_chinese_language,
                                            return_audio=return_audio,
                                            audio_send_format=audio_send_format)
             ),
@@ -1849,6 +1859,77 @@ def test_apple_music_track_routes_match_links_embedded_in_text(url):
 def test_apple_music_track_routes_do_not_parse_albums_or_invalid_ids(url):
     with pytest.raises(ParseException):
         AppleMusicParser.search_url(url)
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        (
+            "https://music.apple.com/cn/song/1514034916?l=en-GB&uo=4#lyrics",
+            "https://music.apple.com/cn/song/1514034916?l=zh-cn&uo=4#lyrics",
+        ),
+        (
+            "https://music.apple.com/cn/song/1514034916?uo=4&l=ja-JP&l=fr",
+            "https://music.apple.com/cn/song/1514034916?uo=4&l=zh-cn&l=zh-cn",
+        ),
+        (
+            "https://music.apple.com/cn/song/1514034916?lang=en&uo=4#lyrics",
+            "https://music.apple.com/cn/song/1514034916?lang=en&uo=4#lyrics",
+        ),
+    ],
+)
+def test_apple_music_language_setting_rewrites_only_existing_l_parameters(url, expected):
+    parser = AppleMusicParser.__new__(AppleMusicParser)
+    parser.cfg = SimpleNamespace(
+        parser=SimpleNamespace(
+            applemusic=SimpleNamespace(force_chinese_language=True)
+        )
+    )
+
+    assert parser._normalize_language_url(url) == expected
+
+
+def test_apple_music_language_setting_keeps_default_behavior_when_disabled():
+    parser = AppleMusicParser.__new__(AppleMusicParser)
+    parser.cfg = SimpleNamespace(
+        parser=SimpleNamespace(
+            applemusic=SimpleNamespace(force_chinese_language=False)
+        )
+    )
+    url = "https://music.apple.com/cn/song/1514034916?l=en-GB&uo=4#lyrics"
+
+    assert parser._normalize_language_url(url) == url
+
+
+def test_apple_music_track_uses_chinese_language_url_for_followup_parsing():
+    url = (
+        "https://music.apple.com/cn/album/name/1514034441?i=1514034916"
+        "&l=en-GB&uo=4#lyrics"
+    )
+    expected_url = (
+        "https://music.apple.com/cn/album/name/1514034441?i=1514034916"
+        "&l=zh-cn&uo=4#lyrics"
+    )
+    _, result, requests = _parse_apple_music_html(
+        _apple_music_html([], _apple_music_json_ld()),
+        url,
+        force_chinese_language=True,
+    )
+
+    assert requests[0][0] == expected_url
+    assert result.url == expected_url
+
+
+def test_apple_music_track_without_language_parameter_does_not_gain_one():
+    url = "https://music.apple.com/cn/song/1514034916?uo=4#lyrics"
+    _, result, requests = _parse_apple_music_html(
+        _apple_music_html([], _apple_music_json_ld()),
+        url,
+        force_chinese_language=True,
+    )
+
+    assert requests[0][0] == url
+    assert result.url == url
 
 
 @pytest.mark.parametrize("artist_name", ["大都会乐团", None])
@@ -2040,14 +2121,17 @@ def test_apple_music_playlist_still_dispatches_to_playlist_handler():
             "title": "Song", "artistName": "Artist", "contentDescriptor": {"kind": "song"},
         }]},
     ])
-    _, result, _ = _parse_apple_music_html(
-        html, "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=en"
+    _, result, requests = _parse_apple_music_html(
+        html, "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=en",
+        force_chinese_language=True,
     )
 
     assert result.title == "Mix"
     assert result.extra["playlist_id"] == "pl.u-leyl0YAsMJgb1ro"
     assert result.extra["playlist_track_count"] == 1
     assert result.extra["playlist_tracks"][0]["title"] == "Song"
+    assert result.url == "https://music.apple.com/cn/playlist/eng/pl.u-leyl0YAsMJgb1ro?l=zh-cn"
+    assert requests[0][0] == result.url
     assert "music_type" not in result.extra
 
 

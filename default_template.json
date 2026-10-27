@@ -92,6 +92,7 @@
     "backend_enabled": false,
     "return_audio": false,
     "parse_lyrics": false,
+    "force_chinese_language": false,
     "audio_send_format": "file",
     "file_codec_priority": ["alac", "aac-web"],
     "wrapper_url": "http://127.0.0.1:80",

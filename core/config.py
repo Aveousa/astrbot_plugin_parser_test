@@ -177,6 +177,7 @@ class ParserItem(ConfigNode):
     backend_enabled: bool | None
     audio_send_format: str | None
     file_codec_priority: list | None
+    force_chinese_language: bool | None
     file_quality_priority: list | None
     wrapper_url: str | None
     wrapper_decrypt_host: str | None
@@ -597,7 +598,7 @@ class PluginConfig(ConfigNode):
             "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "kugou": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
             "qishui": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
+            "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "force_chinese_language", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
         }
         for key, old in existing.items():
             saved = history.get(key)
@@ -653,6 +654,10 @@ class PluginConfig(ConfigNode):
                 # switch; keep upgrades able to use it without resetting the
                 # user's other music parser settings.
                 merged.setdefault("parse_lyrics", False)
+            if key == "applemusic":
+                # Preserve older installations while adding this optional
+                # locale rewrite, which is disabled unless explicitly enabled.
+                merged.setdefault("force_chinese_language", False)
             if key == "pixiv":
                 merged.setdefault("image_file_threshold_mb", 10)
             if key == "qishui":

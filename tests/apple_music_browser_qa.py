@@ -29,7 +29,7 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
   {key:'kugou',label:'酷狗音乐',available:false,text:'账号 Cookie 未配置'},
   {key:'applemusic',label:'Apple Music',available:false,text:'未登录'}],
  settings:{backend_enabled:true,return_audio:false,audio_send_format:'file',
-  file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true},
+  file_codec_priority:['alac','aac-web'],show_playlist_cover:true,show_playlist_url:true,force_chinese_language:false},
  music_parsers:{
   netease:{key:'netease',label:'网易云音乐',known:true,configured:true,enabled:true,available:true,cookie_configured:true,cookie_status:'Cookie 已配置',settings:{enable:true,return_audio:true,parse_lyrics:false,audio_send_format:'voice',show_playlist_cover:true,show_playlist_url:true}},
   qqmusic:{key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,available:false,cookie_configured:false,cookie_validity:'unconfigured',cookie_status:'Cookie 未配置',settings:{enable:true,return_audio:true,parse_lyrics:false,audio_send_format:'voice',file_quality_priority:['lossless','high','standard'],show_playlist_cover:true,show_playlist_url:true}},
@@ -308,12 +308,14 @@ def run(output: Path):
             frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             frame.locator("#setting-cover").uncheck()
             frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
+            frame.locator("#setting-chinese-language").check()
+            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
             frame.locator(".codec-row").first.locator("button[aria-label='下移']").click()
             assert frame.locator(".codec-row select").first.input_value() == "aac-web"
             # Settings are debounced and persisted automatically after the
             # last control change; the old explicit save button is hidden.
             frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            assert page.evaluate("qaState.settings.return_audio && qaState.settings.audio_send_format === 'voice' && !qaState.settings.show_playlist_cover && qaState.settings.file_codec_priority.join(',') === 'aac-web,alac'")
+            assert page.evaluate("qaState.settings.return_audio && qaState.settings.audio_send_format === 'voice' && !qaState.settings.show_playlist_cover && qaState.settings.force_chinese_language && qaState.settings.file_codec_priority.join(',') === 'aac-web,alac'")
             assert not frame.locator("#save-settings").is_visible()
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-settings').length >= 4")
             frame.locator("#clear-cache").click()

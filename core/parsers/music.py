@@ -22,7 +22,16 @@ from datetime import datetime
 from html import unescape
 from pathlib import Path
 from typing import Any, ClassVar
-from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+from urllib.parse import (
+    parse_qs,
+    quote,
+    unquote_plus,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 from aiohttp import ClientError
 from astrbot.api import logger
@@ -2151,9 +2160,42 @@ class AppleMusicParser(PlaylistParserBase):
     async def _handle_music(self, searched):
         # A keyword has only one registered handler; dispatch here so adding
         # single songs cannot override the existing playlist route.
+        source_url = "https://" + searched.group(0)
+        url = self._normalize_language_url(source_url)
+        if url != source_url:
+            # Re-match so both the track/playlist handler and all downstream
+            # requests/cards receive the same normalized URL.
+            _, searched = self.search_url(url)
         if searched.group("playlist_id"):
             return await self._handle_playlist(searched)
         return await self._handle_track(searched)
+
+    def _normalize_language_url(self, url: str) -> str:
+        """Set an existing Apple Music l query parameter to zh-cn."""
+
+        if (
+            getattr(self._music_parser_config(), "force_chinese_language", False)
+            is not True
+        ):
+            return url
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return url
+
+        query_items = parts.query.split("&")
+        changed = False
+        for index, item in enumerate(query_items):
+            key, _, _value = item.partition("=")
+            if unquote_plus(key) != "l":
+                continue
+            query_items[index] = f"{key}=zh-cn"
+            changed = True
+        if not changed:
+            # The option only replaces an explicit locale; it does not add
+            # parameters to links that Apple Music shared without one.
+            return url
+        return urlunsplit(parts._replace(query="&".join(query_items)))
 
     @classmethod
     def _json_ld_track(cls, html: str, track_id: str) -> Mapping[str, Any]:
