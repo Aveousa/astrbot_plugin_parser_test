@@ -46,8 +46,8 @@ const groupState = {parsers:[
  {key:'pixiv',label:'Pixiv',globally_enabled:true},
  {key:'netease',label:'网易云音乐',globally_enabled:true}],
  groups:[
-  {platform_id:'Napcat_V5',platform_label:'NapCat',group_id:'90001',name:'解析测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],globally_enabled:['bilibili','douyin','xhs','pixiv','netease']},
-  {platform_id:'Lagrange',platform_label:'Lagrange.OneBot',group_id:'90002',name:'另一个测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],globally_enabled:['bilibili','douyin','xhs','pixiv','netease']}]};
+  {platform_id:'Napcat_V5',platform_label:'NapCat',group_id:'90001',name:'解析测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:true,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']},
+  {platform_id:'Lagrange',platform_label:'Lagrange.OneBot',group_id:'90002',name:'另一个测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:false,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']}]};
 let job = {state:'idle'};
 window.qaState = state;
 window.qaGroupState = groupState;
@@ -71,9 +71,9 @@ window.addEventListener('message', event => {
    const submitted = message.body.groups || [];
    submitted.forEach(group => {
     const target = groupState.groups.find(item => item.platform_id === group.platform_id && item.group_id === group.group_id);
-    if (target) target.enabled = group.enabled;
+    if (target) {target.enabled = group.enabled;target.parsing_enabled = group.parsing_enabled;}
    });
-   data = {message:'群聊解析器设置已确认并保存'};
+   data = {message:'群聊总开关及解析器设置已确认并保存'};
    send({kind:'response',requestId:message.requestId,ok:true,data});
    return;
   }
@@ -236,19 +236,34 @@ def run(output: Path):
             assert frame.locator("[data-view='music']").is_hidden()
             assert frame.locator(".platform-status-bar").is_hidden()
             first_group = frame.locator(".group-card").filter(has_text="解析测试群")
+            other_group = frame.locator(".group-card").filter(has_text="另一个测试群")
+            total_toggle = first_group.locator(".group-total-toggle input")
+            assert total_toggle.is_checked()
+            assert not other_group.locator(".group-total-toggle input").is_checked()
             bilibili_toggle = first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input")
             initial_saves = page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length")
+            total_toggle.uncheck()
+            frame.locator("#group-settings-state").get_by_text("尚未保存", exact=False).wait_for()
+            assert page.evaluate("qaGroupState.groups[0].parsing_enabled === true")
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves
+            frame.locator("#discard-group-settings").click()
+            assert first_group.locator(".group-total-toggle input").is_checked()
+            total_toggle = first_group.locator(".group-total-toggle input")
+            total_toggle.uncheck()
             bilibili_toggle.uncheck()
             frame.locator("#group-settings-state").get_by_text("尚未保存", exact=False).wait_for()
             assert page.evaluate("qaGroupState.groups[0].enabled.includes('bilibili')")
+            assert page.evaluate("qaGroupState.groups[0].parsing_enabled === true")
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves
             frame.locator("#discard-group-settings").click()
             assert first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").is_checked()
+            first_group.locator(".group-total-toggle input").uncheck()
             first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").uncheck()
             frame.locator("#save-group-settings").click()
             page.wait_for_function("!window.qaGroupState.groups[0].enabled.includes('bilibili')")
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves + 1
             assert frame.locator("#group-settings-state").get_attribute("data-error") != "true"
+            assert page.evaluate("qaGroupState.groups[0].parsing_enabled === false")
             frame.locator("#group-search").fill("no-such-group")
             frame.locator("#group-list .group-empty").get_by_text("没有匹配的群聊").wait_for()
             frame.locator("#group-search").fill("")

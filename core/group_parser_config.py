@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 
 from .apple_music_backend import AppleMusicBackendError
+from .session_scope import normalize_session_scope, session_scope_in
 
 
 class GroupParserConfigError(AppleMusicBackendError):
@@ -140,6 +141,47 @@ def group_enabled_parsers(config, platform_id: object, group_id: object) -> set[
     return globally_enabled - disabled_set
 
 
+def group_parsing_enabled(config, platform_id: object, group_id: object) -> bool:
+    """Return whether a live group's canonical UMO is outside the parser blacklist."""
+
+    try:
+        platform, group = str(platform_id or ""), str(group_id or "")
+        group_settings_key(platform, group)
+    except AppleMusicBackendError:
+        return True
+    scope = f"{platform}:GroupMessage:{group}"
+    raw = getattr(config, "_data", None)
+    blacklist = raw.get("blacklist") if isinstance(raw, Mapping) else None
+    if not isinstance(blacklist, list):
+        blacklist = getattr(config, "blacklist", [])
+    if not isinstance(blacklist, list):
+        return True
+    return not session_scope_in(scope, blacklist)
+
+
+def _with_group_blacklist_state(blacklist: list, scope: str, enabled: bool) -> list:
+    """Mirror PluginConfig's add/remove semantics without saving mid-transaction."""
+
+    if enabled:
+        return [
+            value for value in blacklist
+            if not (isinstance(value, str) and normalize_session_scope(value) == scope)
+        ]
+
+    updated = []
+    inserted = False
+    for value in blacklist:
+        if isinstance(value, str) and normalize_session_scope(value) == scope:
+            if not inserted:
+                updated.append(scope)
+                inserted = True
+            continue
+        updated.append(value)
+    if not inserted:
+        updated.append(scope)
+    return updated
+
+
 def _stored_group_settings(config) -> dict:
     raw = getattr(config, "_data", None)
     if not isinstance(raw, Mapping):
@@ -257,6 +299,9 @@ class GroupParserConfigService:
                     "enabled": sorted(
                         enabled, key=lambda key: list(PARSER_LABELS).index(key)
                     ),
+                    "parsing_enabled": group_parsing_enabled(
+                        self.cfg, platform_id, group_id
+                    ),
                     "globally_enabled": globally_enabled,
                 })
         result.sort(
@@ -280,7 +325,14 @@ class GroupParserConfigService:
         }
 
     async def _persist_locked(
-        self, updated: dict, original_storage: object, key_was_present: bool
+        self,
+        updated: dict,
+        original_storage: object,
+        key_was_present: bool,
+        *,
+        updated_blacklist: list | None = None,
+        original_blacklist: object = None,
+        blacklist_was_present: bool = False,
     ) -> None:
         raw_data = getattr(self.cfg, "_data", None)
         if not isinstance(raw_data, dict):
@@ -307,6 +359,8 @@ class GroupParserConfigService:
                 }),
             })
         raw_data[GROUP_PARSER_SETTINGS_KEY] = encoded
+        if updated_blacklist is not None:
+            raw_data["blacklist"] = updated_blacklist
         try:
             save = getattr(self.cfg, "save_config", None)
             if not callable(save):
@@ -317,6 +371,11 @@ class GroupParserConfigService:
                 raw_data[GROUP_PARSER_SETTINGS_KEY] = original_storage
             else:
                 raw_data.pop(GROUP_PARSER_SETTINGS_KEY, None)
+            if updated_blacklist is not None:
+                if blacklist_was_present:
+                    raw_data["blacklist"] = original_blacklist
+                else:
+                    raw_data.pop("blacklist", None)
             raise AppleMusicBackendError("群聊解析器设置保存失败，请稍后重试") from None
 
     async def save_group_settings(self, values: object) -> dict:
@@ -330,9 +389,11 @@ class GroupParserConfigService:
         for group in groups:
             live_keys.add(group_settings_key(group["platform_id"], group["group_id"]))
         globally_enabled = set(supported_parser_keys(self.cfg))
-        submitted: dict[str, tuple[str, str, list[str]]] = {}
+        submitted: dict[str, tuple[str, str, list[str], bool]] = {}
         for item in values:
-            if not isinstance(item, dict) or set(item) != {"platform_id", "group_id", "enabled"}:
+            if not isinstance(item, dict) or set(item) != {
+                "platform_id", "group_id", "enabled", "parsing_enabled"
+            }:
                 raise GroupParserConfigError("群聊配置字段无效")
             try:
                 key = group_settings_key(item["platform_id"], item["group_id"])
@@ -341,6 +402,7 @@ class GroupParserConfigService:
             if key not in live_keys:
                 raise GroupParserConfigError("群聊已不在当前 OneBot 实例中，请刷新后重试")
             enabled = item["enabled"]
+            parsing_enabled = item["parsing_enabled"]
             if (
                 not isinstance(enabled, list)
                 or len(enabled) > GROUP_SETTINGS_MAX_PARSERS
@@ -349,7 +411,14 @@ class GroupParserConfigService:
                 or not set(enabled) <= globally_enabled
             ):
                 raise GroupParserConfigError("群聊启用的解析器无效或已被全局关闭")
-            submitted[key] = (str(item["platform_id"]), str(item["group_id"]), enabled)
+            if not isinstance(parsing_enabled, bool):
+                raise GroupParserConfigError("群聊总解析开关状态无效")
+            submitted[key] = (
+                str(item["platform_id"]),
+                str(item["group_id"]),
+                enabled,
+                parsing_enabled,
+            )
         if len(submitted) != len(values):
             raise GroupParserConfigError("同一群聊不能重复提交")
 
@@ -357,7 +426,7 @@ class GroupParserConfigService:
             globally_enabled = set(supported_parser_keys(self.cfg))
             if any(
                 not set(enabled) <= globally_enabled
-                for _, _, enabled in submitted.values()
+                for _, _, enabled, _ in submitted.values()
             ):
                 raise GroupParserConfigError("部分解析器已在全局配置中关闭，请刷新群聊配置后重试")
             live_groups = await self._groups()
@@ -376,13 +445,20 @@ class GroupParserConfigService:
                     raw_data.get(GROUP_PARSER_SETTINGS_KEY)
                 )
                 original = copy.deepcopy(stored) if isinstance(stored, dict) else {}
+                blacklist_was_present = "blacklist" in raw_data
+                original_blacklist = copy.deepcopy(
+                    raw_data.get("blacklist", getattr(self.cfg, "blacklist", []))
+                )
             except Exception:
                 raise GroupParserConfigError("群聊配置数据无效，请检查插件配置后重试") from None
+            if not isinstance(original_blacklist, list):
+                raise GroupParserConfigError("群聊解析黑名单配置无效，请检查插件配置后重试")
             updated = dict(original)
+            updated_blacklist = list(original_blacklist)
             # Preserve stored switches for live groups that were not part of
             # this submission. The browser normally posts every group, but a
             # partial API client must not silently re-enable other groups.
-            for key, (platform_id, group_id, enabled) in submitted.items():
+            for key, (platform_id, group_id, enabled, parsing_enabled) in submitted.items():
                 previous = updated.get(key)
                 previous = previous if isinstance(previous, dict) else {}
                 previous_disabled = previous.get("disabled_parsers", [])
@@ -404,6 +480,10 @@ class GroupParserConfigService:
                     }
                 else:
                     updated.pop(key, None)
+                scope = f"{platform_id}:GroupMessage:{group_id}"
+                updated_blacklist = _with_group_blacklist_state(
+                    updated_blacklist, scope, parsing_enabled
+                )
             # Prune departed groups only once an explicit configuration save
             # is requested; reads and unsaved page edits remain side-effect free.
             for key in list(updated):
@@ -413,9 +493,12 @@ class GroupParserConfigService:
                 updated,
                 original_storage,
                 GROUP_PARSER_SETTINGS_KEY in raw_data,
+                updated_blacklist=updated_blacklist,
+                original_blacklist=original_blacklist,
+                blacklist_was_present=blacklist_was_present,
             )
 
-        return {"message": "群聊解析器设置已确认并保存"}
+        return {"message": "群聊总开关及解析器设置已确认并保存"}
 
     async def set_group_parser(
         self, platform_id: object, group_id: object, parser_key: object, enabled: bool

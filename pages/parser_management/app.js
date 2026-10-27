@@ -259,15 +259,20 @@
   }
   function cloneGroupSettings(source) {
     return new Map((Array.isArray(source) ? source : []).map((group) => [
-      groupKey(group), new Set(Array.isArray(group.enabled) ? group.enabled : []),
+      groupKey(group), {
+        enabled: new Set(Array.isArray(group.enabled) ? group.enabled : []),
+        parsing_enabled: group.parsing_enabled !== false,
+      },
     ]));
   }
   function groupSettingsDifferFromSnapshot() {
     const groups = Array.isArray(groupSnapshot?.groups) ? groupSnapshot.groups : [];
     return groups.some((group) => {
       const saved = new Set(Array.isArray(group.enabled) ? group.enabled : []);
-      const draft = groupDraft.get(groupKey(group)) || new Set();
-      return saved.size !== draft.size || [...saved].some((key) => !draft.has(key));
+      const draft = groupDraft.get(groupKey(group)) || { enabled: new Set(), parsing_enabled: true };
+      return (group.parsing_enabled !== false) !== draft.parsing_enabled
+        || saved.size !== draft.enabled.size
+        || [...saved].some((key) => !draft.enabled.has(key));
     });
   }
   function renderGroups() {
@@ -306,7 +311,8 @@
     const fragment = document.createDocumentFragment();
     visible.forEach((group) => {
       const key = groupKey(group);
-      const enabled = groupDraft.get(key) || new Set();
+      const draft = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
+      const enabled = draft.enabled;
       const globallyEnabled = new Set(Array.isArray(group.globally_enabled) ? group.globally_enabled : []);
       const card = document.createElement("article");
       card.className = "group-card";
@@ -323,6 +329,34 @@
       count.className = "group-enabled-count";
       count.textContent = enabled.size + "/" + globallyEnabled.size + " 个解析器启用";
       heading.append(identity, count);
+      const total = document.createElement("label");
+      total.className = "group-total-toggle";
+      const totalText = document.createElement("span");
+      totalText.className = "group-total-label";
+      const totalTitle = document.createElement("strong");
+      totalTitle.textContent = "本群总解析开关";
+      const totalStatus = document.createElement("small");
+      totalStatus.textContent = draft.parsing_enabled
+        ? "整体解析已开启 · 可用解析器会参与匹配和仲裁"
+        : "整体解析已关闭 · 等同于 /关闭解析；单项设置会保留";
+      totalText.append(totalTitle, totalStatus);
+      const totalSwitch = document.createElement("span");
+      totalSwitch.className = "switch";
+      const totalInput = document.createElement("input");
+      totalInput.type = "checkbox";
+      totalInput.checked = draft.parsing_enabled;
+      totalInput.disabled = groupSaving;
+      totalInput.setAttribute("aria-label", (group.name || group.group_id) + "：本群总解析开关");
+      totalInput.addEventListener("change", () => {
+        groupDraft.set(key, { ...draft, parsing_enabled: totalInput.checked });
+        groupDirty = groupSettingsDifferFromSnapshot();
+        renderGroups();
+      });
+      const totalTrack = document.createElement("span");
+      totalTrack.className = "switch-track";
+      totalTrack.setAttribute("aria-hidden", "true");
+      totalSwitch.append(totalInput, totalTrack);
+      total.append(totalText, totalSwitch);
       const controls = document.createElement("fieldset");
       controls.className = "group-parser-grid";
       const legend = document.createElement("legend");
@@ -348,10 +382,10 @@
         input.disabled = !globalEnabled || groupSaving;
         input.setAttribute("aria-label", (group.name || group.group_id) + "：" + parser.label + (globalEnabled ? "" : "（需先全局启用）"));
         input.addEventListener("change", () => {
-          const next = new Set(groupDraft.get(key) || []);
+          const next = new Set((groupDraft.get(key) || { enabled: new Set() }).enabled);
           if (input.checked) next.add(parser.key);
           else next.delete(parser.key);
-          groupDraft.set(key, next);
+          groupDraft.set(key, { ...draft, enabled: next });
           groupDirty = groupSettingsDifferFromSnapshot();
           renderGroups();
         });
@@ -362,7 +396,7 @@
         label.append(text, switchWrap);
         controls.append(label);
       });
-      card.append(heading, controls);
+      card.append(heading, total, controls);
       fragment.append(card);
     });
     list.append(fragment);
@@ -386,6 +420,9 @@
     if ($("group-search")) $("group-search").disabled = groupSnapshot === null || groupLoading;
     document.querySelectorAll(".group-parser-grid input").forEach((input) => {
       input.disabled = input.closest(".group-parser-toggle")?.dataset.globalEnabled !== "true" || groupSaving;
+    });
+    document.querySelectorAll(".group-total-toggle input").forEach((input) => {
+      input.disabled = groupSaving;
     });
   }
   async function loadGroupSettings({ discardDraft = false } = {}) {
@@ -426,7 +463,8 @@
     if (!nonce || !groupDirty || groupSaving || groupSnapshot === null) return;
     const groups = (Array.isArray(groupSnapshot.groups) ? groupSnapshot.groups : []).map((group) => ({
       platform_id: group.platform_id, group_id: group.group_id,
-      enabled: [...(groupDraft.get(groupKey(group)) || [])],
+      enabled: [...(groupDraft.get(groupKey(group))?.enabled || [])],
+      parsing_enabled: groupDraft.get(groupKey(group))?.parsing_enabled !== false,
     }));
     groupSaving = true;
     groupLoadError = "";
@@ -438,7 +476,8 @@
         ...groupSnapshot,
         groups: groupSnapshot.groups.map((group) => ({
           ...group,
-          enabled: [...(groupDraft.get(groupKey(group)) || [])],
+          enabled: [...(groupDraft.get(groupKey(group))?.enabled || [])],
+          parsing_enabled: groupDraft.get(groupKey(group))?.parsing_enabled !== false,
         })),
       };
       groupDraft = cloneGroupSettings(groupSnapshot.groups);

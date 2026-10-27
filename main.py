@@ -487,13 +487,15 @@ class ParserPlugin(Star):
         # 发送
         await self.sender.send_parse_result(event, parse_res)
 
-    @filter.regex(r"^\s*/(关闭|开启)([^\s/]{1,40})解析\s*$")
+    # AstrBot 的唤醒阶段会先移除已配置的 wake_prefix（通常包括 `/`），
+    # RegexFilter 收到的 message_str 可能已经不含开头斜杠，因此两种形式都接受。
+    @filter.regex(r"^\s*/?(关闭|开启)([^\s/]{1,40})解析\s*$")
     async def toggle_group_parser(self, event: AstrMessageEvent):
         """让 OneBot 群主或管理员快速切换本群的单个解析器。"""
         if not is_group_session(event.unified_msg_origin):
             return
         command_match = re.fullmatch(
-            r"\s*/(关闭|开启)([^\s/]{1,40})解析\s*",
+            r"\s*/?(关闭|开启)([^\s/]{1,40})解析\s*",
             event.message_str or "",
         )
         if command_match is None:

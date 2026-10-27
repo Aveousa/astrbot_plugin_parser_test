@@ -46,6 +46,9 @@ class _Event:
     def get_messages(self):
         return self._chain
 
+    def get_message_str(self):
+        return self.message_str
+
     def get_self_id(self):
         return "bot"
 
@@ -334,6 +337,45 @@ def test_shortcut_command_requires_group_admin_and_persists_toggle():
     assert mutations == [("Napcat_V5", "90001", "bilibili", False)]
 
 
+def test_shortcut_filter_accepts_astrbot_wake_prefix_stripping_and_all_parser_labels():
+    main_module = _load_main_module()
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    mutations = []
+
+    async def set_group_parser(platform_id, group_id, parser_key, enabled):
+        mutations.append((parser_key, enabled))
+        return [parser_key] if enabled else []
+
+    plugin.group_parser_config = SimpleNamespace(set_group_parser=set_group_parser)
+    handler_registry = importlib.import_module("astrbot.core.star.star_handler").star_handlers_registry
+    handler = next(
+        item for item in handler_registry.get_handlers_by_module_name(main_module.__name__)
+        if item.handler_name == "toggle_group_parser"
+    )
+    regex_filters = [item for item in handler.event_filters if hasattr(item, "regex")]
+    assert regex_filters
+
+    async def collect(result):
+        return [item async for item in result]
+
+    for parser_key, label in main_module.PARSER_LABELS.items():
+        if parser_key == "music_base":
+            continue
+        command = f"关闭{parser_key}解析"
+        event = _Event(
+            main_module, command, [], message_str=command,
+            umo="Napcat_V5:GroupMessage:10002_90001", sender_role="owner",
+        )
+        # AstrBot removes its wake prefix before applying RegexFilter.
+        assert any(regex.filter(event, None) for regex in regex_filters), label
+        assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, event))) == [
+            f"当前群聊的{label}解析已关闭"
+        ]
+
+    assert len(mutations) == len(main_module.PARSER_LABELS)
+    assert {key for key, enabled in mutations if enabled is False} == set(main_module.PARSER_LABELS)
+
+
 def test_parser_toggle_commands_write_group_scope_and_report_group_effect():
     main_module = _load_main_module()
     mutations: list[tuple[str, str]] = []
@@ -363,6 +405,43 @@ def test_parser_toggle_commands_write_group_scope_and_report_group_effect():
     ]
     assert closed == ["当前群聊的解析已关闭"]
     assert opened == ["当前群聊的解析已开启"]
+
+
+def test_group_total_open_command_runs_before_blacklist_and_close_keeps_parser_settings():
+    main_module = _load_main_module()
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    plugin._ensure_parser_registration = lambda: None
+    blacklist = ["Napcat_V5:GroupMessage:90001"]
+    plugin.cfg = SimpleNamespace(
+        whitelist=[], blacklist=blacklist,
+        require_at_in_group=False,
+        parser=SimpleNamespace(_nodes={"netease": SimpleNamespace(enable=True)}),
+        remove_blacklist=lambda scope: blacklist.remove(scope) if scope in blacklist else None,
+        add_blacklist=lambda scope: blacklist.append(scope) if scope not in blacklist else None,
+    )
+    plugin.key_pattern_list = []
+    plugin.parser_map = {}
+
+    async def collect(result):
+        return [item async for item in result]
+
+    open_event = _Event(
+        main_module, "/开启解析", [], message_str="/开启解析",
+        umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
+    )
+    assert asyncio.run(collect(main_module.ParserPlugin.open_parser(plugin, open_event))) == [
+        "当前群聊的解析已开启"
+    ]
+    assert blacklist == []
+
+    close_event = _Event(
+        main_module, "/关闭解析", [], message_str="/关闭解析",
+        umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
+    )
+    assert asyncio.run(collect(main_module.ParserPlugin.close_parser(plugin, close_event))) == [
+        "当前群聊的解析已关闭"
+    ]
+    assert blacklist == ["Napcat_V5:GroupMessage:90001"]
 
 
 def test_matching_does_not_call_reaction():

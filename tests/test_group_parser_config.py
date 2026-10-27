@@ -105,9 +105,21 @@ def test_group_list_reports_live_groups_and_effective_parser_status():
     assert len(result["groups"]) == 1
     group = result["groups"][0]
     assert group["name"] == "解析测试群"
+    assert group["parsing_enabled"] is True
     assert "bilibili" not in group["enabled"]
     assert "netease" not in group["enabled"]
     assert {item["key"] for item in result["parsers"]} >= {"bilibili", "netease"}
+
+
+def test_group_list_reports_total_switch_from_canonicalized_blacklist_scope():
+    cfg, _ = _config()
+    cfg.blacklist = ["Napcat_V5:GroupMessage:10001_90001"]
+    service = _service(cfg)
+
+    result = asyncio.run(service.get_groups())
+
+    assert result["groups"][0]["parsing_enabled"] is False
+    assert result["groups"][1]["parsing_enabled"] is True
 
 
 def test_explicit_save_persists_group_draft_and_only_changes_target_group():
@@ -116,13 +128,17 @@ def test_explicit_save_persists_group_draft_and_only_changes_target_group():
     assert saves == []
 
     result = asyncio.run(service.save_group_settings([
-        {"platform_id": "Napcat_V5", "group_id": "90001", "enabled": ["bilibili"]}
+        {
+            "platform_id": "Napcat_V5", "group_id": "90001",
+            "enabled": ["bilibili"], "parsing_enabled": True,
+        }
     ]))
 
-    assert result["message"] == "群聊解析器设置已确认并保存"
+    assert result["message"] == "群聊总开关及解析器设置已确认并保存"
     assert saves == [True]
     assert group_enabled_parsers(cfg, "Napcat_V5", "90001") == {"bilibili"}
     assert len(group_enabled_parsers(cfg, "Napcat_V5", "90002")) == 10
+    assert cfg._data["blacklist"] == []
 
 
 def test_partial_submission_does_not_reset_another_live_group():
@@ -133,7 +149,10 @@ def test_partial_submission_does_not_reset_another_live_group():
     service = _service(cfg)
 
     asyncio.run(service.save_group_settings([
-        {"platform_id": "Napcat_V5", "group_id": "90001", "enabled": ["bilibili"]}
+        {
+            "platform_id": "Napcat_V5", "group_id": "90001",
+            "enabled": ["bilibili"], "parsing_enabled": True,
+        }
     ]))
 
     assert group_enabled_parsers(cfg, "Napcat_V5", "90001") == {"bilibili"}
@@ -148,10 +167,66 @@ def test_failed_save_rolls_back_group_configuration():
 
     with pytest.raises(AppleMusicBackendError, match="保存失败"):
         asyncio.run(service.save_group_settings([
-            {"platform_id": "Napcat_V5", "group_id": "90001", "enabled": ["bilibili"]}
+            {
+                "platform_id": "Napcat_V5", "group_id": "90001",
+                "enabled": ["bilibili"], "parsing_enabled": True,
+            }
         ]))
 
     assert cfg._data[GROUP_PARSER_SETTINGS_KEY] == original
+
+
+def test_confirmed_group_total_switch_updates_blacklist_and_preserves_unrelated_scopes():
+    cfg, saves = _config()
+    cfg.blacklist = ["Napcat_V5:GroupMessage:70001", "Other:GroupMessage:90001"]
+    service = _service(cfg)
+
+    asyncio.run(service.save_group_settings([
+        {
+            "platform_id": "Napcat_V5", "group_id": "90001",
+            "enabled": ["bilibili"], "parsing_enabled": False,
+        },
+        {
+            "platform_id": "Napcat_V5", "group_id": "90002",
+            "enabled": ["bilibili"], "parsing_enabled": True,
+        },
+    ]))
+
+    assert saves == [True]
+    assert cfg._data["blacklist"] == [
+        "Napcat_V5:GroupMessage:70001",
+        "Other:GroupMessage:90001",
+        "Napcat_V5:GroupMessage:90001",
+    ]
+    assert group_enabled_parsers(cfg, "Napcat_V5", "90001") == {"bilibili"}
+    assert asyncio.run(service.get_groups())["groups"][0]["parsing_enabled"] is False
+
+
+def test_group_total_switch_save_requires_boolean_and_persistence_rolls_back_blacklist():
+    cfg, _ = _config(save_error=OSError("disk full"))
+    cfg.blacklist = ["Napcat_V5:GroupMessage:10001_90001", "Other:GroupMessage:1"]
+    original_blacklist = list(cfg.blacklist)
+    service = _service(cfg)
+
+    with pytest.raises(AppleMusicBackendError, match="总解析开关"):
+        asyncio.run(service.save_group_settings([
+            {
+                "platform_id": "Napcat_V5", "group_id": "90001",
+                "enabled": ["bilibili"], "parsing_enabled": 1,
+            }
+        ]))
+
+    with pytest.raises(AppleMusicBackendError, match="保存失败"):
+        asyncio.run(service.save_group_settings([
+            {
+                "platform_id": "Napcat_V5", "group_id": "90001",
+                "enabled": ["bilibili"], "parsing_enabled": False,
+            }
+        ]))
+
+    assert "blacklist" not in cfg._data
+    assert cfg.blacklist == original_blacklist
+    assert GROUP_PARSER_SETTINGS_KEY not in cfg._data
 
 
 def test_failed_save_restores_schema_stable_storage_and_key_presence():
@@ -193,7 +268,10 @@ def test_global_disable_cannot_be_overridden_by_group_save_or_command():
 
     with pytest.raises(AppleMusicBackendError, match="全局关闭"):
         asyncio.run(service.save_group_settings([
-            {"platform_id": "Napcat_V5", "group_id": "90001", "enabled": ["pixiv"]}
+            {
+                "platform_id": "Napcat_V5", "group_id": "90001",
+                "enabled": ["pixiv"], "parsing_enabled": True,
+            }
         ]))
     with pytest.raises(AppleMusicBackendError, match="全局配置中关闭"):
         asyncio.run(service.set_group_parser("Napcat_V5", "90001", "pixiv", True))
