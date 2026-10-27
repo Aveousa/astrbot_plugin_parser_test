@@ -151,7 +151,7 @@
         panel.focus({ preventScroll: true });
       }
     }
-    if (selected === "groups" && groupSnapshot === null && !groupLoading) void loadGroupSettings();
+    if (selected === "groups" && !groupDirty && !groupLoading) void loadGroupSettings();
   }
   function initializeNavigation() {
     document.querySelectorAll("[data-view-link], [data-open-view]").forEach((link) => {
@@ -274,6 +274,27 @@
         || saved.size !== draft.enabled.size
         || [...saved].some((key) => !draft.enabled.has(key));
     });
+  }
+  function renderGroupsPreservingView() {
+    const active = document.activeElement;
+    const activeCard = active?.closest?.(".group-card");
+    const focusedInput = active instanceof HTMLInputElement && activeCard ? {
+      groupKey: activeCard.dataset.groupKey,
+      label: active.getAttribute("aria-label"),
+    } : null;
+    const focusedElementId = active instanceof HTMLElement && active.id ? active.id : "";
+    const scrollY = window.scrollY;
+    renderGroups();
+    window.scrollTo({ top: scrollY, behavior: "instant" });
+    if (focusedInput) {
+      const card = [...document.querySelectorAll(".group-card")]
+        .find((item) => item.dataset.groupKey === focusedInput.groupKey);
+      const input = [...(card?.querySelectorAll("input") || [])]
+        .find((item) => item.getAttribute("aria-label") === focusedInput.label);
+      input?.focus({ preventScroll: true });
+    } else if (focusedElementId) {
+      $(focusedElementId)?.focus({ preventScroll: true });
+    }
   }
   function renderGroups() {
     const list = $("group-list");
@@ -436,15 +457,19 @@
   }
   async function loadGroupSettings({ discardDraft = false } = {}) {
     if (!bridge || groupLoading || (groupDirty && !discardDraft)) return;
+    let shouldRenderGroups = groupSnapshot === null;
     if (discardDraft && groupDirty && groupSnapshot !== null) {
       groupDraft = cloneGroupSettings(groupSnapshot.groups);
       groupDirty = false;
+      shouldRenderGroups = true;
     }
     groupLoading = true;
     groupLoadError = "";
-    renderGroups();
+    if (groupSnapshot === null) renderGroups();
+    else updateGroupActions();
     try {
       const data = await bridge.apiGet("apple-music/group-settings");
+      shouldRenderGroups = shouldRenderGroups || JSON.stringify(data) !== JSON.stringify(groupSnapshot);
       groupSnapshot = data;
       groupDraft = cloneGroupSettings(data.groups);
       groupDirty = false;
@@ -454,8 +479,8 @@
       if (discardDraft) groupDirty = false;
     } finally {
       groupLoading = false;
-      renderGroups();
-      updateGroupActions();
+      if (shouldRenderGroups) renderGroupsPreservingView();
+      else updateGroupActions();
     }
   }
   function refreshGroupSettings() {
@@ -466,7 +491,7 @@
     if (groupSaving || groupSnapshot === null) return;
     groupDraft = cloneGroupSettings(groupSnapshot.groups);
     groupDirty = false;
-    renderGroups();
+    renderGroupsPreservingView();
   }
   async function saveGroupSettings() {
     if (!nonce || !groupDirty || groupSaving || groupSnapshot === null) return;
@@ -498,7 +523,7 @@
       notice(groupLoadError, true);
     } finally {
       groupSaving = false;
-      renderGroups();
+      renderGroupsPreservingView();
     }
   }
 
@@ -1134,7 +1159,31 @@
   $("group-search")?.addEventListener("input", () => renderGroups());
   $("save-group-settings")?.addEventListener("click", () => saveGroupSettings());
   $("discard-group-settings")?.addEventListener("click", () => discardGroupChanges());
-  window.addEventListener("focus", () => { if (bridge) void loadPluginLogo(); });
+  window.addEventListener("focus", () => {
+    if (!bridge) return;
+    void loadPluginLogo();
+    if (!groupDirty && !groupLoading && $("groups")?.hidden === false) {
+      void loadGroupSettings();
+    }
+  });
+  window.addEventListener("pageshow", () => {
+    if (!bridge) return;
+    if (!groupDirty && !groupLoading && $("groups")?.hidden === false) {
+      void loadGroupSettings();
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && bridge && !groupDirty && !groupLoading
+      && $("groups")?.hidden === false) {
+      void loadGroupSettings();
+    }
+  });
+  const groupRefreshTimer = window.setInterval(() => {
+    if (bridge && !groupDirty && !groupLoading && !groupSaving
+      && document.visibilityState === "visible" && $("groups")?.hidden === false) {
+      void loadGroupSettings();
+    }
+  }, 5000);
   $("login-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const body = { username: $("username").value.trim(), password: $("password").value };
@@ -1198,6 +1247,7 @@
     clearTimeout(clearCacheTimer);
     clearTimeout(settingsTimer);
     clearTimeout(musicTimer);
+    clearInterval(groupRefreshTimer);
     $("password").value = "";
     $("code").value = "";
   });

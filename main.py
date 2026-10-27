@@ -514,10 +514,18 @@ class ParserPlugin(Star):
         # 发送
         await self.sender.send_parse_result(event, parse_res)
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭bilibili解析", alias=GROUP_PARSER_COMMAND_ALIASES_FOR_FILTER)
     async def toggle_group_parser(self, event: AstrMessageEvent):
-        """让 OneBot 群主或管理员快速切换本群的单个解析器。"""
+        """让 AstrBot Bot 管理员快速切换当前 OneBot 群的单个解析器。"""
+        is_bot_admin = getattr(event, "is_admin", None)
+        if not callable(is_bot_admin) or not is_bot_admin():
+            event.stop_event()
+            yield event.plain_result("此指令仅限 AstrBot Bot 管理员使用")
+            return
         if not is_group_session(event.unified_msg_origin):
+            event.stop_event()
+            yield event.plain_result("解析器快捷开关目前仅支持 OneBot 群聊")
             return
         command = re.sub(r"\s+", " ", (event.message_str or "").strip())
         command_parts = GROUP_PARSER_COMMANDS.get(command)
@@ -527,18 +535,6 @@ class ParserPlugin(Star):
             event.stop_event()
             yield event.plain_result("解析器快捷开关目前仅支持 OneBot V11 群聊")
             return
-        raw_message = getattr(getattr(event, "message_obj", None), "raw_message", None)
-        sender = raw_message.get("sender") if isinstance(raw_message, dict) else None
-        sender_role = (
-            str(sender.get("role", "")).lower()
-            if isinstance(sender, dict)
-            else ""
-        )
-        if sender_role not in {"owner", "admin"}:
-            event.stop_event()
-            yield event.plain_result("此指令仅限群主或群管理员使用")
-            return
-
         platform_id, group_id = event.get_platform_id(), event.get_group_id()
         parser_key = self._resolve_group_parser_key(command_parts[1].strip())
         if not platform_id or not group_id:

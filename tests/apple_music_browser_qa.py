@@ -281,6 +281,16 @@ def run(output: Path):
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves + 1
             assert frame.locator("#group-settings-state").get_attribute("data-error") != "true"
             assert page.evaluate("qaGroupState.groups[0].parsing_enabled === false")
+            page.evaluate("qaGroupState.groups[0].enabled = ['bilibili','douyin','xhs','pixiv']")
+            frame.locator(".group-card").filter(has_text="解析测试群").locator(".group-total-toggle input").focus()
+            scroll_before_sync = frame.locator("body").evaluate("() => window.scrollY")
+            initial_group_reads = page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings').length")
+            frame.locator("body").evaluate("() => window.dispatchEvent(new Event('focus'))")
+            page.wait_for_function("count => qaRequests.filter(endpoint => endpoint === 'group-settings').length > count", arg=initial_group_reads)
+            page.wait_for_function("document.querySelector('iframe').contentDocument.querySelectorAll('.group-card')[0].querySelector('.group-enabled-count').textContent.startsWith('4/')")
+            assert not frame.locator(".group-card").filter(has_text="解析测试群").locator(".group-parser-toggle").filter(has_text="网易云音乐").locator("input").is_checked()
+            assert frame.locator(".group-card").filter(has_text="解析测试群").locator(".group-parser-toggle").filter(has_text="网易云音乐").locator("small").inner_text() == "本群已关闭"
+            assert abs(frame.locator("body").evaluate("() => window.scrollY") - scroll_before_sync) <= 2
             frame.locator("#group-search").fill("no-such-group")
             frame.locator("#group-list .group-empty").get_by_text("没有匹配的群聊").wait_for()
             frame.locator("#group-search").fill("")
