@@ -348,9 +348,13 @@
       totalInput.disabled = groupSaving;
       totalInput.setAttribute("aria-label", (group.name || group.group_id) + "：本群总解析开关");
       totalInput.addEventListener("change", () => {
-        groupDraft.set(key, { ...draft, parsing_enabled: totalInput.checked });
+        const current = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
+        groupDraft.set(key, { ...current, parsing_enabled: totalInput.checked });
+        totalStatus.textContent = totalInput.checked
+          ? "整体解析已开启 · 可用解析器会参与匹配和仲裁"
+          : "整体解析已关闭 · 等同于 /关闭解析；单项设置会保留";
         groupDirty = groupSettingsDifferFromSnapshot();
-        renderGroups();
+        updateGroupActions();
       });
       const totalTrack = document.createElement("span");
       totalTrack.className = "switch-track";
@@ -382,12 +386,15 @@
         input.disabled = !globalEnabled || groupSaving;
         input.setAttribute("aria-label", (group.name || group.group_id) + "：" + parser.label + (globalEnabled ? "" : "（需先全局启用）"));
         input.addEventListener("change", () => {
-          const next = new Set((groupDraft.get(key) || { enabled: new Set() }).enabled);
+          const current = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
+          const next = new Set(current.enabled);
           if (input.checked) next.add(parser.key);
           else next.delete(parser.key);
-          groupDraft.set(key, { ...draft, enabled: next });
+          groupDraft.set(key, { ...current, enabled: next });
+          status.textContent = globalEnabled ? (input.checked ? "参与本群解析" : "本群已关闭") : "全局未启用";
+          count.textContent = next.size + "/" + globallyEnabled.size + " 个解析器启用";
           groupDirty = groupSettingsDifferFromSnapshot();
-          renderGroups();
+          updateGroupActions();
         });
         const track = document.createElement("span");
         track.className = "switch-track";
@@ -408,9 +415,11 @@
     state.textContent = groupLoading ? "正在读取 OneBot 群聊…"
       : groupLoadError ? groupLoadError
       : groupSaving ? "正在保存群聊解析器配置…"
-      : groupDirty ? "有尚未保存的更改；只有点击“确认并保存”才会生效。"
+      : groupDirty ? "群聊设置有未保存更改；点击“确认并保存”后生效。"
       : groupSnapshot !== null ? "群聊设置已与磁盘配置同步。" : "尚未读取群聊列表。";
     state.dataset.error = String(Boolean(groupLoadError));
+    const dirtyIndicator = $("group-dirty-indicator");
+    if (dirtyIndicator) dirtyIndicator.hidden = !groupDirty || groupSaving;
     const unavailable = !nonce || groupSnapshot === null;
     const save = $("save-group-settings");
     const discard = $("discard-group-settings");

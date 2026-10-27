@@ -243,7 +243,8 @@ def run(output: Path):
             bilibili_toggle = first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input")
             initial_saves = page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length")
             total_toggle.uncheck()
-            frame.locator("#group-settings-state").get_by_text("尚未保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").get_by_text("有未保存更改", exact=True).wait_for()
+            assert frame.locator("#group-dirty-indicator").is_visible()
             assert page.evaluate("qaGroupState.groups[0].parsing_enabled === true")
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves
             frame.locator("#discard-group-settings").click()
@@ -251,12 +252,28 @@ def run(output: Path):
             total_toggle = first_group.locator(".group-total-toggle input")
             total_toggle.uncheck()
             bilibili_toggle.uncheck()
-            frame.locator("#group-settings-state").get_by_text("尚未保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").get_by_text("有未保存更改", exact=True).wait_for()
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            assert frame.locator("#group-save-actions").bounding_box()["x"] > frame.locator("#group-settings-state").bounding_box()["x"]
             assert page.evaluate("qaGroupState.groups[0].enabled.includes('bilibili')")
             assert page.evaluate("qaGroupState.groups[0].parsing_enabled === true")
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves
             frame.locator("#discard-group-settings").click()
             assert first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").is_checked()
+            parser_toggle = first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input")
+            group_list = frame.locator("#group-list")
+            group_list.evaluate("el => el.scrollIntoView({block: 'end'})")
+            frame.locator("body").evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(50)
+            scroll_before = frame.locator("body").evaluate("() => window.scrollY")
+            parser_toggle.focus()
+            focus_before = parser_toggle.evaluate("el => document.activeElement === el")
+            parser_toggle.uncheck()
+            assert parser_toggle.evaluate("el => document.activeElement === el") == focus_before
+            assert abs(frame.locator("body").evaluate("() => window.scrollY") - scroll_before) <= 2
+            frame.locator("#discard-group-settings").click()
+            assert frame.locator("body").evaluate("() => window.scrollY") > 0
+            first_group = frame.locator(".group-card").filter(has_text="解析测试群")
             first_group.locator(".group-total-toggle input").uncheck()
             first_group.locator(".group-parser-toggle").filter(has_text="Bilibili").locator("input").uncheck()
             frame.locator("#save-group-settings").click()
@@ -380,7 +397,7 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["overview-music-group-navigation", "group-settings-draft-discard-save", "group-search-empty-state", "classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["overview-music-group-navigation", "group-settings-draft-discard-save", "group-unsaved-indicator-and-focus-scroll-stability", "group-search-empty-state", "classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

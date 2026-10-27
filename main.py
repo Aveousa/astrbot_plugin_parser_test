@@ -37,6 +37,33 @@ from .core.session_scope import (
 )
 from .core.utils import extract_json_url
 
+GROUP_PARSER_COMMAND_ALIASES = {
+    "bilibili": {"bilibili", "Bilibili", "b站", "B站", "哔哩哔哩"},
+    "douyin": {"douyin", "Douyin", "抖音"},
+    "xhs": {"xhs", "XHS", "小红书"},
+    "pixiv": {"pixiv", "Pixiv", "p站", "P站"},
+    "qqmusic": {"qqmusic", "QQmusic", "QQ音乐", "qq音乐"},
+    "netease": {"netease", "NetEase", "网易云", "网易云音乐"},
+    "kugou": {"kugou", "Kugou", "酷狗", "酷狗音乐"},
+    "qishui": {"qishui", "Qishui", "汽水", "汽水音乐"},
+    "kuwo": {"kuwo", "Kuwo", "酷我", "酷我音乐"},
+    "applemusic": {"applemusic", "AppleMusic", "Apple Music", "苹果音乐"},
+}
+GROUP_PARSER_COMMAND_NAMES = {
+    f"{action}{alias}解析"
+    for parser_key, aliases in GROUP_PARSER_COMMAND_ALIASES.items()
+    if parser_key in PARSER_LABELS and parser_key != "music_base"
+    for action in ("关闭", "开启")
+    for alias in aliases | {parser_key}
+}
+GROUP_PARSER_COMMAND_ALIASES_FOR_FILTER = (
+    GROUP_PARSER_COMMAND_NAMES - {"关闭bilibili解析"}
+)
+GROUP_PARSER_COMMANDS = {
+    command: re.fullmatch(r"(关闭|开启)(.+?)解析", command).groups()
+    for command in GROUP_PARSER_COMMAND_NAMES
+}
+
 
 class ParserPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -487,18 +514,14 @@ class ParserPlugin(Star):
         # 发送
         await self.sender.send_parse_result(event, parse_res)
 
-    # AstrBot 的唤醒阶段会先移除已配置的 wake_prefix（通常包括 `/`），
-    # RegexFilter 收到的 message_str 可能已经不含开头斜杠，因此两种形式都接受。
-    @filter.regex(r"^\s*/?(关闭|开启)([^\s/]{1,40})解析\s*$")
+    @filter.command("关闭bilibili解析", alias=GROUP_PARSER_COMMAND_ALIASES_FOR_FILTER)
     async def toggle_group_parser(self, event: AstrMessageEvent):
         """让 OneBot 群主或管理员快速切换本群的单个解析器。"""
         if not is_group_session(event.unified_msg_origin):
             return
-        command_match = re.fullmatch(
-            r"\s*/?(关闭|开启)([^\s/]{1,40})解析\s*",
-            event.message_str or "",
-        )
-        if command_match is None:
+        command = re.sub(r"\s+", " ", (event.message_str or "").strip())
+        command_parts = GROUP_PARSER_COMMANDS.get(command)
+        if command_parts is None:
             return
         if event.get_platform_name() != "aiocqhttp":
             event.stop_event()
@@ -517,7 +540,7 @@ class ParserPlugin(Star):
             return
 
         platform_id, group_id = event.get_platform_id(), event.get_group_id()
-        parser_key = self._resolve_group_parser_key(command_match.group(2))
+        parser_key = self._resolve_group_parser_key(command_parts[1].strip())
         if not platform_id or not group_id:
             event.stop_event()
             yield event.plain_result("无法识别当前 OneBot 实例或群聊")
@@ -534,7 +557,7 @@ class ParserPlugin(Star):
             yield event.plain_result("群聊解析器设置服务未就绪，请重载插件后重试")
             return
 
-        enabled = command_match.group(1) == "开启"
+        enabled = command_parts[0] == "开启"
         try:
             current = await self.group_parser_config.set_group_parser(
                 platform_id, group_id, parser_key, enabled

@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from core.data import ParseResult, Platform
+from core.group_parser_config import GroupParserConfigService, group_enabled_parsers
 
 
 def _load_main_module():
@@ -37,6 +38,8 @@ class _Event:
         self._umo = umo
         self.sender_role = sender_role
         self.stopped = False
+        self.is_at_or_wake_command = True
+        self.extras = {}
         self.message_obj = SimpleNamespace(raw_message={"sender": {"role": sender_role}})
 
     @property
@@ -48,6 +51,9 @@ class _Event:
 
     def get_message_str(self):
         return self.message_str
+
+    def set_extra(self, key, value):
+        self.extras[key] = value
 
     def get_self_id(self):
         return "bot"
@@ -302,7 +308,7 @@ def test_group_policy_filters_all_bilibili_keywords_by_parser_platform():
     assert calls == []
 
 
-def test_shortcut_command_requires_group_admin_and_persists_toggle():
+def test_registered_shortcut_command_requires_group_admin_and_persists_toggle():
     main_module = _load_main_module()
     plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
     mutations = []
@@ -316,10 +322,19 @@ def test_shortcut_command_requires_group_admin_and_persists_toggle():
     async def collect(result):
         return [item async for item in result]
 
+    handler_registry = importlib.import_module("astrbot.core.star.star_handler").star_handlers_registry
+    handler = next(
+        item for item in handler_registry.get_handlers_by_module_name(main_module.__name__)
+        if item.handler_name == "toggle_group_parser"
+    )
+    command_filter_cls = importlib.import_module("astrbot.core.star.filter.command").CommandFilter
+    command_filter = next(item for item in handler.event_filters if isinstance(item, command_filter_cls))
+
     member = _Event(
-        main_module, "/关闭bilibili解析", [], message_str="/关闭bilibili解析",
+        main_module, "关闭bilibili解析", [], message_str="关闭bilibili解析",
         umo="Napcat_V5:GroupMessage:10002_90001", sender_role="member",
     )
+    assert command_filter.filter(member, None)
     assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, member))) == [
         "此指令仅限群主或群管理员使用"
     ]
@@ -327,9 +342,10 @@ def test_shortcut_command_requires_group_admin_and_persists_toggle():
     assert mutations == []
 
     admin = _Event(
-        main_module, "/关闭bilibili解析", [], message_str="/关闭bilibili解析",
+        main_module, "关闭bilibili解析", [], message_str="关闭bilibili解析",
         umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
     )
+    assert command_filter.filter(admin, None)
     assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, admin))) == [
         "当前群聊的Bilibili解析已关闭"
     ]
@@ -337,7 +353,7 @@ def test_shortcut_command_requires_group_admin_and_persists_toggle():
     assert mutations == [("Napcat_V5", "90001", "bilibili", False)]
 
 
-def test_shortcut_filter_accepts_astrbot_wake_prefix_stripping_and_all_parser_labels():
+def test_standard_shortcut_commands_accept_astrbot_wake_prefix_stripping_and_all_parser_labels():
     main_module = _load_main_module()
     plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
     mutations = []
@@ -352,8 +368,11 @@ def test_shortcut_filter_accepts_astrbot_wake_prefix_stripping_and_all_parser_la
         item for item in handler_registry.get_handlers_by_module_name(main_module.__name__)
         if item.handler_name == "toggle_group_parser"
     )
-    regex_filters = [item for item in handler.event_filters if hasattr(item, "regex")]
-    assert regex_filters
+    command_filter_cls = importlib.import_module("astrbot.core.star.filter.command").CommandFilter
+    command_filters = [item for item in handler.event_filters if isinstance(item, command_filter_cls)]
+    assert len(command_filters) == 1
+    assert not any(hasattr(item, "regex") for item in handler.event_filters)
+    command_filter = command_filters[0]
 
     async def collect(result):
         return [item async for item in result]
@@ -366,14 +385,104 @@ def test_shortcut_filter_accepts_astrbot_wake_prefix_stripping_and_all_parser_la
             main_module, command, [], message_str=command,
             umo="Napcat_V5:GroupMessage:10002_90001", sender_role="owner",
         )
-        # AstrBot removes its wake prefix before applying RegexFilter.
-        assert any(regex.filter(event, None) for regex in regex_filters), label
+        # AstrBot removes the configured wake prefix before CommandFilter.
+        assert command_filter.filter(event, None), label
         assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, event))) == [
             f"当前群聊的{label}解析已关闭"
         ]
+        open_command = f"开启{parser_key}解析"
+        open_event = _Event(
+            main_module, open_command, [], message_str=open_command,
+            umo="Napcat_V5:GroupMessage:10002_90001", sender_role="owner",
+        )
+        assert command_filter.filter(open_event, None), open_command
+        assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, open_event))) == [
+            f"当前群聊的{label}解析已启用"
+        ]
 
-    assert len(mutations) == len(main_module.PARSER_LABELS)
+    assert len(mutations) == len(main_module.PARSER_LABELS) * 2
     assert {key for key, enabled in mutations if enabled is False} == set(main_module.PARSER_LABELS)
+    assert {key for key, enabled in mutations if enabled is True} == set(main_module.PARSER_LABELS)
+
+    unstripped = _Event(
+        main_module, "/关闭bilibili解析", [], message_str="/关闭bilibili解析",
+        umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
+    )
+    assert not command_filter.filter(unstripped, None)
+    not_woken = _Event(
+        main_module, "关闭bilibili解析", [], message_str="关闭bilibili解析",
+        umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
+    )
+    not_woken.is_at_or_wake_command = False
+    assert not command_filter.filter(not_woken, None)
+
+
+def test_registered_shortcut_immediately_updates_management_and_matching_state():
+    main_module = _load_main_module()
+    saves = []
+    cfg = SimpleNamespace(
+        whitelist=[], blacklist=[], require_at_in_group=False,
+        parser=SimpleNamespace(
+            _nodes={key: SimpleNamespace(enable=True) for key in main_module.PARSER_LABELS}
+        ),
+        _data={}, save_config=lambda: saves.append(True),
+    )
+
+    async def get_group_list():
+        return [{"group_id": "90001", "group_name": "解析测试群"}]
+
+    adapter = SimpleNamespace(
+        meta=SimpleNamespace(id="Napcat_V5", name="aiocqhttp", adapter_display_name="NapCat"),
+        get_client=lambda: SimpleNamespace(call_action=lambda action: get_group_list()),
+    )
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+    plugin = main_module.ParserPlugin.__new__(main_module.ParserPlugin)
+    plugin.cfg = cfg
+    plugin.group_parser_config = service
+
+    async def collect(result):
+        return [item async for item in result]
+
+    command = "关闭bilibili解析"
+    command_event = _Event(
+        main_module, command, [], message_str=command,
+        umo="Napcat_V5:GroupMessage:10002_90001", sender_role="admin",
+    )
+    handler_registry = importlib.import_module("astrbot.core.star.star_handler").star_handlers_registry
+    handler = next(
+        item for item in handler_registry.get_handlers_by_module_name(main_module.__name__)
+        if item.handler_name == "toggle_group_parser"
+    )
+    command_filter_cls = importlib.import_module("astrbot.core.star.filter.command").CommandFilter
+    command_filter = next(item for item in handler.event_filters if isinstance(item, command_filter_cls))
+    assert command_filter.filter(command_event, None)
+    assert asyncio.run(collect(main_module.ParserPlugin.toggle_group_parser(plugin, command_event))) == [
+        "当前群聊的Bilibili解析已关闭"
+    ]
+
+    assert saves == [True]
+    assert "bilibili" not in group_enabled_parsers(cfg, "Napcat_V5", "90001")
+    management_state = asyncio.run(service.get_groups())
+    assert "bilibili" not in management_state["groups"][0]["enabled"]
+
+    calls: list[str] = []
+    parser = _Parser(calls)
+    parser.platform = SimpleNamespace(name="bilibili")
+    plugin.parser_map = {"bilibili": parser}
+    plugin.key_pattern_list = [(
+        "bilibili", main_module.re.compile(r"bilibili\.com/video/BV[0-9A-Za-z]+")
+    )]
+    plugin.debouncer = _Debouncer()
+    plugin.sender = _Sender(calls)
+    plugin.arbiter = object()
+    link_event = _Event(
+        main_module, "https://www.bilibili.com/video/BV1xx411c7mD", calls,
+        umo="Napcat_V5:GroupMessage:10002_90001",
+    )
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, link_event))
+    assert calls == []
 
 
 def test_parser_toggle_commands_write_group_scope_and_report_group_effect():
