@@ -11,6 +11,12 @@
     "type": "list",
     "default": []
   },
+  "cleanup_blacklist_on_group_leave": {
+    "description": "退群时清理群聊黑名单",
+    "hint": "启用后，点击群聊配置页的“确认并保存”时，会从解析黑名单中移除已确认退群的群聊；关闭后保留这些黑名单条目。",
+    "type": "bool",
+    "default": true
+  },
   "arbiter": {
     "description": "群聊解析仲裁",
     "hint": "多个 Bot 同时收到链接时只允许一个解析",

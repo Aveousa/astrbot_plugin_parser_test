@@ -35,6 +35,7 @@
   let groupSaving = false;
   let groupLoading = false;
   let groupLoadError = "";
+  let groupSaveResult = "";
   const viewTitles = { overview: "总览", music: "音乐管理", groups: "群聊配置" };
   const codecOptions = [
     ["alac", "ALAC · 无损"], ["aac-web", "AAC Web"],
@@ -369,6 +370,7 @@
       totalInput.disabled = groupSaving;
       totalInput.setAttribute("aria-label", (group.name || group.group_id) + "：本群总解析开关");
       totalInput.addEventListener("change", () => {
+        groupSaveResult = "";
         const current = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
         groupDraft.set(key, { ...current, parsing_enabled: totalInput.checked });
         totalStatus.textContent = totalInput.checked
@@ -407,6 +409,7 @@
         input.disabled = !globalEnabled || groupSaving;
         input.setAttribute("aria-label", (group.name || group.group_id) + "：" + parser.label + (globalEnabled ? "" : "（需先全局启用）"));
         input.addEventListener("change", () => {
+          groupSaveResult = "";
           const current = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
           const next = new Set(current.enabled);
           if (input.checked) next.add(parser.key);
@@ -437,7 +440,7 @@
       : groupLoadError ? groupLoadError
       : groupSaving ? "正在保存群聊解析器配置…"
       : groupDirty ? "群聊设置有未保存更改；点击“确认并保存”后生效。"
-      : groupSnapshot !== null ? "群聊设置已与磁盘配置同步。" : "尚未读取群聊列表。";
+      : groupSaveResult || (groupSnapshot !== null ? "群聊设置已与磁盘配置同步。" : "尚未读取群聊列表。");
     state.dataset.error = String(Boolean(groupLoadError));
     const dirtyIndicator = $("group-dirty-indicator");
     if (dirtyIndicator) dirtyIndicator.hidden = !groupDirty || groupSaving;
@@ -455,7 +458,7 @@
       input.disabled = groupSaving;
     });
   }
-  async function loadGroupSettings({ discardDraft = false } = {}) {
+  async function loadGroupSettings({ discardDraft = false, preserveSaveResult = false } = {}) {
     if (!bridge || groupLoading || (groupDirty && !discardDraft)) return;
     let shouldRenderGroups = groupSnapshot === null;
     if (discardDraft && groupDirty && groupSnapshot !== null) {
@@ -465,10 +468,14 @@
     }
     groupLoading = true;
     groupLoadError = "";
+    if (!preserveSaveResult) groupSaveResult = "";
     if (groupSnapshot === null) renderGroups();
     else updateGroupActions();
     try {
-      const data = await bridge.apiGet("apple-music/group-settings");
+      const endpoint = discardDraft
+        ? "apple-music/group-settings-refresh"
+        : "apple-music/group-settings";
+      const data = await bridge.apiGet(endpoint);
       shouldRenderGroups = shouldRenderGroups || JSON.stringify(data) !== JSON.stringify(groupSnapshot);
       groupSnapshot = data;
       groupDraft = cloneGroupSettings(data.groups);
@@ -505,7 +512,7 @@
     updateGroupActions();
     notice("正在保存群聊解析器设置…");
     try {
-      await bridge.apiPost("apple-music/save-group-settings", { groups, nonce });
+      const result = await bridge.apiPost("apple-music/save-group-settings", { groups, nonce });
       groupSnapshot = {
         ...groupSnapshot,
         groups: groupSnapshot.groups.map((group) => ({
@@ -516,8 +523,13 @@
       };
       groupDraft = cloneGroupSettings(groupSnapshot.groups);
       groupDirty = false;
-      notice("群聊解析器设置已确认并保存");
-      await loadGroupSettings({ discardDraft: true });
+      const cleaned = Number.isInteger(result?.cleaned_group_count)
+        ? result.cleaned_group_count : 0;
+      const cleanedBlacklist = Number.isInteger(result?.cleaned_blacklist_group_count)
+        ? result.cleaned_blacklist_group_count : 0;
+      groupSaveResult = `群聊配置已保存；清理 ${cleaned} 个退群解析器配置、${cleanedBlacklist} 个黑名单群聊`;
+      notice(groupSaveResult);
+      await loadGroupSettings({ discardDraft: true, preserveSaveResult: true });
     } catch (error) {
       groupLoadError = error.message || "群聊配置保存失败，请重试。";
       notice(groupLoadError, true);

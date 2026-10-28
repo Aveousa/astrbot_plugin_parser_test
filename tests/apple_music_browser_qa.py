@@ -63,7 +63,7 @@ window.addEventListener('message', event => {
  let data;
  if (endpoint === 'status') data = {...state,operation:job};
  else if (endpoint === 'operation') data = job;
- else if (endpoint === 'group-settings') data = groupState;
+ else if (endpoint === 'group-settings' || endpoint === 'group-settings-refresh') data = groupState;
  else if (endpoint === 'logo') data = {data_url:'__LOGO_DATA_URL__'};
  else if (message.action === 'api:post') {
   if (message.body?.nonce !== 'qa-nonce') {send({kind:'response',requestId:message.requestId,ok:false,error:'invalid nonce'});return;}
@@ -73,7 +73,7 @@ window.addEventListener('message', event => {
     const target = groupState.groups.find(item => item.platform_id === group.platform_id && item.group_id === group.group_id);
     if (target) {target.enabled = group.enabled;target.parsing_enabled = group.parsing_enabled;}
    });
-   data = {message:'群聊总开关及解析器设置已确认并保存'};
+   data = {message:'群聊总开关及解析器设置已确认并保存',cleaned_group_count:0,cleaned_blacklist_group_count:0};
    send({kind:'response',requestId:message.requestId,ok:true,data});
    return;
   }
@@ -232,6 +232,11 @@ def run(output: Path):
             frame.locator("[data-view-link='groups']").click()
             frame.locator("#group-list .group-card").first.wait_for()
             assert frame.locator("#group-list .group-card").count() == 2
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings').length") >= 1
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings-refresh').length") == 0
+            frame.locator("#refresh-groups").click()
+            page.wait_for_function("qaRequests.filter(endpoint => endpoint === 'group-settings-refresh').length === 1")
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings-refresh').length") == 1
             assert frame.locator("[data-view='groups']").is_visible()
             assert frame.locator("[data-view='music']").is_hidden()
             assert frame.locator(".platform-status-bar").is_hidden()
@@ -280,7 +285,9 @@ def run(output: Path):
             page.wait_for_function("!window.qaGroupState.groups[0].enabled.includes('bilibili')")
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-group-settings').length") == initial_saves + 1
             assert frame.locator("#group-settings-state").get_attribute("data-error") != "true"
+            assert "清理 0 个退群解析器配置" in frame.locator("#group-settings-state").inner_text()
             assert page.evaluate("qaGroupState.groups[0].parsing_enabled === false")
+            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings-refresh').length === 2")
             page.evaluate("qaGroupState.groups[0].enabled = ['bilibili','douyin','xhs','pixiv']")
             frame.locator(".group-card").filter(has_text="解析测试群").locator(".group-total-toggle input").focus()
             scroll_before_sync = frame.locator("body").evaluate("() => window.scrollY")

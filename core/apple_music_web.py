@@ -192,6 +192,23 @@ class AppleMusicWeb:
             except Exception:
                 return response(message="当前无法读取 OneBot 群聊列表，请检查适配器连接", status_code=503)
 
+        async def get_group_settings_force_refresh():
+            owner = authenticated_owner()
+            if not owner:
+                return response(message="需要 AstrBot 后台登录", status_code=401)
+            if self.closed:
+                return response(message="插件管理页已关闭", status_code=503)
+            if self.group_parser_config is None:
+                return response(message="群聊配置服务未就绪", status_code=503)
+            try:
+                return response(
+                    await self.group_parser_config.get_groups(force_refresh=True)
+                )
+            except AppleMusicBackendError as exc:
+                return response(message=exc.message, status_code=400)
+            except Exception:
+                return response(message="当前无法读取 OneBot 群聊列表，请检查适配器连接", status_code=503)
+
         def post_handler(action: str) -> Callable:
             async def handler():
                 owner = authenticated_owner()
@@ -240,13 +257,15 @@ class AppleMusicWeb:
             ("status", get_status, ["GET"]),
             ("operation", get_operation, ["GET"]),
             ("group-settings", get_group_settings, ["GET"]),
+            ("group-settings-refresh", get_group_settings_force_refresh, ["GET"]),
         ]
         routes += [
             (action, post_handler(action), ["POST"])
             for action in (
                 "login", "two-factor", "clear-session", "clear-cache",
                 "save-settings", "save-music-settings", "save-music-cookie",
-                "check-music-cookie", "save-group-settings", "verify",
+                "check-music-cookie", "save-group-settings",
+                "verify",
             )
         ]
         for endpoint, handler, methods in routes:

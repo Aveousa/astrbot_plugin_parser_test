@@ -32,6 +32,9 @@ PARSER_LABELS = {
 }
 GROUP_ID_RE = re.compile(r"^[0-9]{1,32}$")
 ADAPTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
+GROUP_UMO_RE = re.compile(
+    r"^(?P<platform>[A-Za-z0-9_.-]{1,96}):GroupMessage:(?P<group>[0-9]{1,32})$"
+)
 
 
 def group_settings_key(platform_id: object, group_id: object) -> str:
@@ -205,7 +208,7 @@ def _stored_group_settings(config) -> dict:
     return result
 
 
-async def _fetch_live_groups(adapter) -> dict[str, str]:
+async def _fetch_live_groups(adapter, *, no_cache: bool = False) -> dict[str, str]:
     meta = getattr(adapter, "meta", None)
     meta = meta() if callable(meta) else meta
     platform_id = getattr(meta, "id", None)
@@ -217,7 +220,10 @@ async def _fetch_live_groups(adapter) -> dict[str, str]:
     if not callable(call_action):
         raise AppleMusicBackendError("当前 OneBot 实例尚未连接，无法读取群聊列表")
     try:
-        groups = await call_action("get_group_list")
+        if no_cache:
+            groups = await call_action("get_group_list", no_cache=True)
+        else:
+            groups = await call_action("get_group_list")
     except Exception:
         raise AppleMusicBackendError("当前无法读取 OneBot 群聊列表，请检查适配器连接") from None
     if not isinstance(groups, list):
@@ -232,6 +238,18 @@ async def _fetch_live_groups(adapter) -> dict[str, str]:
         name = item.get("group_name")
         result[group_id] = name.strip()[:128] if isinstance(name, str) else ""
     return result
+
+
+def _group_key_from_blacklist_entry(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = GROUP_UMO_RE.fullmatch(normalize_session_scope(value))
+    if match is None:
+        return None
+    try:
+        return group_settings_key(match.group("platform"), match.group("group"))
+    except AppleMusicBackendError:
+        return None
 
 
 class GroupParserConfigService:
@@ -280,15 +298,17 @@ class GroupParserConfigService:
             None,
         )
 
-    async def _groups(self) -> list[dict]:
+    async def _group_snapshot(self, *, no_cache: bool = False) -> tuple[list[dict], set[str]]:
         globally_enabled = supported_parser_keys(self.cfg)
         result = []
+        queried_platform_ids: set[str] = set()
         for adapter in self._adapters():
             meta = self._adapter_meta(adapter)
             if meta is None or not isinstance(getattr(meta, "id", None), str):
                 continue
             platform_id = meta.id
-            live = await _fetch_live_groups(adapter)
+            live = await _fetch_live_groups(adapter, no_cache=no_cache)
+            queried_platform_ids.add(platform_id)
             for group_id, name in live.items():
                 enabled = group_enabled_parsers(self.cfg, platform_id, group_id)
                 result.append({
@@ -311,10 +331,14 @@ class GroupParserConfigService:
                 item["group_id"],
             )
         )
-        return result
+        return result, queried_platform_ids
 
-    async def get_groups(self) -> dict:
-        groups = await self._groups()
+    async def _groups(self, *, no_cache: bool = False) -> list[dict]:
+        groups, _ = await self._group_snapshot(no_cache=no_cache)
+        return groups
+
+    async def get_groups(self, *, force_refresh: bool = False) -> dict:
+        groups, _ = await self._group_snapshot(no_cache=force_refresh)
         globally_enabled = set(supported_parser_keys(self.cfg))
         return {
             "groups": groups,
@@ -381,13 +405,6 @@ class GroupParserConfigService:
     async def save_group_settings(self, values: object) -> dict:
         if not isinstance(values, list) or not 0 <= len(values) <= GROUP_SETTINGS_MAX_GROUPS:
             raise GroupParserConfigError("群聊配置无效，请刷新群列表后重试")
-        try:
-            groups = await self._groups()
-        except AppleMusicBackendError as exc:
-            raise GroupParserConfigError(exc.message) from None
-        live_keys = set()
-        for group in groups:
-            live_keys.add(group_settings_key(group["platform_id"], group["group_id"]))
         globally_enabled = set(supported_parser_keys(self.cfg))
         submitted: dict[str, tuple[str, str, list[str], bool]] = {}
         for item in values:
@@ -399,8 +416,6 @@ class GroupParserConfigService:
                 key = group_settings_key(item["platform_id"], item["group_id"])
             except AppleMusicBackendError as exc:
                 raise GroupParserConfigError(exc.message) from None
-            if key not in live_keys:
-                raise GroupParserConfigError("群聊已不在当前 OneBot 实例中，请刷新后重试")
             enabled = item["enabled"]
             parsing_enabled = item["parsing_enabled"]
             if (
@@ -408,9 +423,9 @@ class GroupParserConfigService:
                 or len(enabled) > GROUP_SETTINGS_MAX_PARSERS
                 or any(not isinstance(value, str) for value in enabled)
                 or len(enabled) != len(set(enabled))
-                or not set(enabled) <= globally_enabled
+                or not set(enabled) <= set(PARSER_LABELS)
             ):
-                raise GroupParserConfigError("群聊启用的解析器无效或已被全局关闭")
+                raise GroupParserConfigError("群聊启用的解析器配置无效")
             if not isinstance(parsing_enabled, bool):
                 raise GroupParserConfigError("群聊总解析开关状态无效")
             submitted[key] = (
@@ -424,18 +439,20 @@ class GroupParserConfigService:
 
         async with self.lock:
             globally_enabled = set(supported_parser_keys(self.cfg))
-            if any(
-                not set(enabled) <= globally_enabled
-                for _, _, enabled, _ in submitted.values()
-            ):
-                raise GroupParserConfigError("部分解析器已在全局配置中关闭，请刷新群聊配置后重试")
-            live_groups = await self._groups()
+            try:
+                live_groups, queried_platform_ids = await self._group_snapshot(
+                    no_cache=True
+                )
+            except AppleMusicBackendError as exc:
+                raise GroupParserConfigError(exc.message) from None
+            if not queried_platform_ids:
+                raise GroupParserConfigError(
+                    "未检测到已连接的 OneBot V11 实例，无法安全确认退群配置"
+                )
             live_group_ids = {
                 group_settings_key(group["platform_id"], group["group_id"])
                 for group in live_groups
             }
-            if not set(submitted) <= live_group_ids:
-                raise GroupParserConfigError("群聊已不在当前 OneBot 实例中，请刷新后重试")
             raw_data = getattr(self.cfg, "_data", None)
             if not isinstance(raw_data, dict):
                 raise AppleMusicBackendError("插件配置不可写入")
@@ -455,10 +472,21 @@ class GroupParserConfigService:
                 raise GroupParserConfigError("群聊解析黑名单配置无效，请检查插件配置后重试")
             updated = dict(original)
             updated_blacklist = list(original_blacklist)
+            cleaned_group_count = 0
+            cleaned_blacklist_group_count = 0
             # Preserve stored switches for live groups that were not part of
             # this submission. The browser normally posts every group, but a
             # partial API client must not silently re-enable other groups.
             for key, (platform_id, group_id, enabled, parsing_enabled) in submitted.items():
+                # A page may still contain a group that was left since it was
+                # opened. Ignore that stale draft and let the fresh snapshot
+                # below decide whether persisted state should be pruned.
+                if key not in live_group_ids:
+                    continue
+                if not set(enabled) <= globally_enabled:
+                    raise GroupParserConfigError(
+                        "群聊启用的解析器中包含全局关闭的项目，请刷新群聊配置后重试"
+                    )
                 previous = updated.get(key)
                 previous = previous if isinstance(previous, dict) else {}
                 previous_disabled = previous.get("disabled_parsers", [])
@@ -484,11 +512,42 @@ class GroupParserConfigService:
                 updated_blacklist = _with_group_blacklist_state(
                     updated_blacklist, scope, parsing_enabled
                 )
-            # Prune departed groups only once an explicit configuration save
-            # is requested; reads and unsaved page edits remain side-effect free.
+            # Only a successfully queried OneBot instance can prove that a
+            # stored group has left. A disconnected adapter must not trigger
+            # broad cleanup for all of its groups.
             for key in list(updated):
-                if key not in live_group_ids:
+                _, platform_id, _ = key.split(":", 2)
+                if platform_id in queried_platform_ids and key not in live_group_ids:
                     updated.pop(key, None)
+                    cleaned_group_count += 1
+
+            cleanup_blacklist = getattr(
+                self.cfg, "cleanup_blacklist_on_group_leave", None
+            )
+            if not isinstance(cleanup_blacklist, bool):
+                raw_cleanup_blacklist = raw_data.get(
+                    "cleanup_blacklist_on_group_leave", True
+                )
+                cleanup_blacklist = (
+                    raw_cleanup_blacklist
+                    if isinstance(raw_cleanup_blacklist, bool)
+                    else True
+                )
+            if cleanup_blacklist:
+                cleaned_blacklist_keys = set()
+                kept_blacklist = []
+                for value in updated_blacklist:
+                    key = _group_key_from_blacklist_entry(value)
+                    if (
+                        key is not None
+                        and key.split(":", 2)[1] in queried_platform_ids
+                        and key not in live_group_ids
+                    ):
+                        cleaned_blacklist_keys.add(key)
+                        continue
+                    kept_blacklist.append(value)
+                updated_blacklist = kept_blacklist
+                cleaned_blacklist_group_count = len(cleaned_blacklist_keys)
             await self._persist_locked(
                 updated,
                 original_storage,
@@ -498,7 +557,11 @@ class GroupParserConfigService:
                 blacklist_was_present=blacklist_was_present,
             )
 
-        return {"message": "群聊总开关及解析器设置已确认并保存"}
+        return {
+            "message": "群聊总开关及解析器设置已确认并保存",
+            "cleaned_group_count": cleaned_group_count,
+            "cleaned_blacklist_group_count": cleaned_blacklist_group_count,
+        }
 
     async def set_group_parser(
         self, platform_id: object, group_id: object, parser_key: object, enabled: bool

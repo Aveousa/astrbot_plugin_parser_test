@@ -22,13 +22,15 @@ class _Adapter:
             adapter_display_name="NapCat",
         )
         self.groups = groups or []
+        self.calls = []
         self.client = SimpleNamespace(call_action=self.call_action)
 
     def get_client(self):
         return self.client
 
-    async def call_action(self, action):
+    async def call_action(self, action, **kwargs):
         assert action == "get_group_list"
+        self.calls.append((action, kwargs))
         return self.groups
 
 
@@ -48,7 +50,12 @@ def _config(*, disabled=(), save_error=None):
         if save_error is not None:
             raise save_error
 
-    cfg = SimpleNamespace(parser=parser, _data=data, save_config=save_config)
+    cfg = SimpleNamespace(
+        parser=parser,
+        _data=data,
+        save_config=save_config,
+        cleanup_blacklist_on_group_leave=True,
+    )
     return cfg, saves
 
 
@@ -109,6 +116,11 @@ def test_group_list_reports_live_groups_and_effective_parser_status():
     assert "bilibili" not in group["enabled"]
     assert "netease" not in group["enabled"]
     assert {item["key"] for item in result["parsers"]} >= {"bilibili", "netease"}
+    adapter = service._adapters()[0]
+    assert adapter.calls == [("get_group_list", {})]
+
+    asyncio.run(service.get_groups(force_refresh=True))
+    assert adapter.calls[-1] == ("get_group_list", {"no_cache": True})
 
 
 def test_group_list_reports_total_switch_from_canonicalized_blacklist_scope():
@@ -130,15 +142,18 @@ def test_explicit_save_persists_group_draft_and_only_changes_target_group():
     result = asyncio.run(service.save_group_settings([
         {
             "platform_id": "Napcat_V5", "group_id": "90001",
-            "enabled": ["bilibili"], "parsing_enabled": True,
+            "enabled": ["bilibili"], "parsing_enabled": False,
         }
     ]))
 
     assert result["message"] == "群聊总开关及解析器设置已确认并保存"
+    assert result["cleaned_group_count"] == 0
+    assert result["cleaned_blacklist_group_count"] == 0
     assert saves == [True]
+    assert service._adapters()[0].calls[-1] == ("get_group_list", {"no_cache": True})
     assert group_enabled_parsers(cfg, "Napcat_V5", "90001") == {"bilibili"}
     assert len(group_enabled_parsers(cfg, "Napcat_V5", "90002")) == 10
-    assert cfg._data["blacklist"] == []
+    assert cfg._data["blacklist"] == ["Napcat_V5:GroupMessage:90001"]
 
 
 def test_partial_submission_does_not_reset_another_live_group():
@@ -176,6 +191,32 @@ def test_failed_save_rolls_back_group_configuration():
     assert cfg._data[GROUP_PARSER_SETTINGS_KEY] == original
 
 
+def test_group_cleanup_does_not_prune_settings_for_disconnected_adapter():
+    cfg, _ = _config()
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [
+        {
+            "platform_id": "Napcat_V5",
+            "group_id": "90003",
+            "disabled_parsers": ["bilibili"],
+        }
+    ]
+    adapter = _Adapter("Napcat_V5", [{"group_id": "90001", "group_name": "在群"}])
+
+    async def call_action(_action, **_kwargs):
+        raise RuntimeError("adapter unavailable")
+
+    adapter.client.call_action = call_action
+    context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=[adapter])
+    )
+    service = GroupParserConfigService(cfg, context)
+
+    with pytest.raises(AppleMusicBackendError, match="无法读取 OneBot"):
+        asyncio.run(service.save_group_settings([]))
+
+    assert cfg._data[GROUP_PARSER_SETTINGS_KEY][0]["group_id"] == "90003"
+
+
 def test_confirmed_group_total_switch_updates_blacklist_and_preserves_unrelated_scopes():
     cfg, saves = _config()
     cfg.blacklist = ["Napcat_V5:GroupMessage:70001", "Other:GroupMessage:90001"]
@@ -194,12 +235,72 @@ def test_confirmed_group_total_switch_updates_blacklist_and_preserves_unrelated_
 
     assert saves == [True]
     assert cfg._data["blacklist"] == [
-        "Napcat_V5:GroupMessage:70001",
         "Other:GroupMessage:90001",
         "Napcat_V5:GroupMessage:90001",
     ]
     assert group_enabled_parsers(cfg, "Napcat_V5", "90001") == {"bilibili"}
     assert asyncio.run(service.get_groups())["groups"][0]["parsing_enabled"] is False
+
+
+@pytest.mark.parametrize("cleanup_enabled", [True, False])
+def test_confirmed_save_cleans_departed_group_settings_and_optionally_blacklist(
+    cleanup_enabled,
+):
+    cfg, saves = _config()
+    cfg.cleanup_blacklist_on_group_leave = cleanup_enabled
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [
+        {
+            "platform_id": "Napcat_V5",
+            "group_id": "90001",
+            "disabled_parsers": ["netease"],
+        },
+        {
+            "platform_id": "Napcat_V5",
+            "group_id": "90003",
+            "disabled_parsers": ["bilibili"],
+        },
+        {
+            "platform_id": "OtherBot",
+            "group_id": "90004",
+            "disabled_parsers": ["pixiv"],
+        },
+    ]
+    cfg._data["blacklist"] = [
+        "Napcat_V5:GroupMessage:90001",
+        "Napcat_V5:GroupMessage:10001_90003",
+        "OtherBot:GroupMessage:90004",
+        "Napcat_V5:FriendMessage:12345",
+    ]
+    service = _service(cfg, [
+        {"group_id": "90001", "group_name": "仍在群"},
+        {"group_id": "90002", "group_name": "新群"},
+    ])
+
+    result = asyncio.run(service.save_group_settings([
+        {
+            "platform_id": "Napcat_V5", "group_id": "90001",
+            "enabled": ["bilibili"], "parsing_enabled": False,
+        },
+        {
+            # This is a stale browser draft: it must not block save or be re-added.
+            "platform_id": "Napcat_V5", "group_id": "90003",
+            "enabled": ["netease"], "parsing_enabled": True,
+        },
+    ]))
+
+    assert result["cleaned_group_count"] == 1
+    assert result["cleaned_blacklist_group_count"] == (1 if cleanup_enabled else 0)
+    assert [entry["group_id"] for entry in cfg._data[GROUP_PARSER_SETTINGS_KEY]] == [
+        "90001", "90004",
+    ]
+    assert "Napcat_V5:GroupMessage:90001" in cfg._data["blacklist"]
+    assert "OtherBot:GroupMessage:90004" in cfg._data["blacklist"]
+    assert "Napcat_V5:FriendMessage:12345" in cfg._data["blacklist"]
+    if cleanup_enabled:
+        assert "Napcat_V5:GroupMessage:10001_90003" not in cfg._data["blacklist"]
+    else:
+        assert "Napcat_V5:GroupMessage:10001_90003" in cfg._data["blacklist"]
+    assert saves == [True]
 
 
 def test_group_total_switch_save_requires_boolean_and_persistence_rolls_back_blacklist():

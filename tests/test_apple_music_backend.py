@@ -604,6 +604,7 @@ def test_web_apis_require_auth_nonce_json_and_cleanup_only_own_routes(tmp_path, 
         assert "clear-cache" in routes
         assert "check-music-cookie" in routes
         assert "group-settings" in routes
+        assert "group-settings-refresh" in routes
         assert "save-group-settings" in routes
         assert all(
             description == "虚质解离器管理"

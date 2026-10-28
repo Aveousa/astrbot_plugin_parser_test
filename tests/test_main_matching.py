@@ -290,7 +290,9 @@ def test_netease_shortcut_updates_current_group_state_and_skips_arbitration_pars
 
     adapter = SimpleNamespace(
         meta=SimpleNamespace(id="Napcat_V5", name="aiocqhttp", adapter_display_name="NapCat"),
-        get_client=lambda: SimpleNamespace(call_action=lambda action: get_group_list()),
+        get_client=lambda: SimpleNamespace(
+            call_action=lambda action, **kwargs: get_group_list()
+        ),
     )
     service = GroupParserConfigService(
         cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
@@ -561,7 +563,9 @@ def test_registered_shortcut_immediately_updates_management_and_matching_state()
 
     adapter = SimpleNamespace(
         meta=SimpleNamespace(id="Napcat_V5", name="aiocqhttp", adapter_display_name="NapCat"),
-        get_client=lambda: SimpleNamespace(call_action=lambda action: get_group_list()),
+        get_client=lambda: SimpleNamespace(
+            call_action=lambda action, **kwargs: get_group_list()
+        ),
     )
     service = GroupParserConfigService(
         cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))

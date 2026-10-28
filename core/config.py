@@ -284,6 +284,7 @@ class PluginConfig(ConfigNode):
     # Group parser policy is stored in the plugin-global config. Keys are the
     # stable adapter instance id + group id, never the per-member UMO.
     group_parser_settings: list[dict[str, Any]]
+    cleanup_blacklist_on_group_leave: bool
 
     # 必须与 metadata.yaml 中的 name 保持一致。这样测试版会使用独立的
     # 安装目录、配置、Cookie 和卡片模板目录，可与原版同时运行。
@@ -317,6 +318,7 @@ class PluginConfig(ConfigNode):
             "emoji_style": "APPLE",
             "compact_forward_non_audio": False,
             "group_parser_settings": [],
+            "cleanup_blacklist_on_group_leave": True,
         }
         for key, value in defaults.items():
             if config.get(key) is None:

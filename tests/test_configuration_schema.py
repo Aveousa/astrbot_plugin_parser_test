@@ -302,6 +302,16 @@ def test_group_parser_settings_have_a_persistent_hidden_list_schema():
     assert setting["invisible"] is True
 
 
+def test_group_blacklist_cleanup_setting_is_independent_and_enabled_by_default():
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    setting = schema["cleanup_blacklist_on_group_leave"]
+
+    assert setting["type"] == "bool"
+    assert setting["default"] is True
+    assert "黑名单" in setting["description"]
+    assert "确认并保存" in setting["hint"]
+
+
 def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
     saves = []
     config_module.PluginConfig.save_config = lambda self: saves.append(True)
@@ -351,6 +361,7 @@ def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
             "disabled_parsers": ["bilibili"],
         }
     ]
+    assert config.cleanup_blacklist_on_group_leave is True
     assert saves
 
 
