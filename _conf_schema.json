@@ -268,7 +268,7 @@
           },
           "image_file_threshold_mb": {
             "description": "单张图片转文件阈值（MB）",
-            "hint": "解析 Pixiv 插画时，单张图片文件大于此值将使用 OneBot 文件上传发送；图片消息累计大小仍限制为 20 MiB",
+            "hint": "解析 Pixiv 插画时，单张图片文件大于此值将按当前适配器发送为文件；OneBot 使用文件 action，QQ 官方机器人使用富媒体上传；图片消息累计大小仍限制为 20 MiB",
             "type": "int",
             "slider": {"min": 1, "max": 10, "step": 1},
             "default": 10
@@ -289,7 +289,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
+            "hint": "发送器自动适配当前平台：OneBot 使用 record/action，QQ 官方机器人使用原生富媒体上传。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
@@ -342,7 +342,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
+            "hint": "发送器自动适配当前平台：OneBot 使用 record/action，QQ 官方机器人使用原生富媒体上传。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
@@ -400,7 +400,7 @@
           },
           "audio_send_format": {
             "description": "单曲音频发送模式",
-            "hint": "语音通过 OneBot record 发送；文件通过 upload_group_file/upload_private_file 上传本地缓存的音频。默认语音。",
+            "hint": "发送器自动适配当前平台：OneBot 使用 record/action，QQ 官方机器人使用原生富媒体上传。默认语音。",
             "type": "string",
             "options": ["voice", "file"],
             "default": "voice"
@@ -505,7 +505,7 @@
           },
           "audio_send_format": {
             "description": "Apple Music 音频发送格式",
-            "hint": "选择“语音”时使用 AAC Web 并让 OneBot/NapCat 通过 AstrBot 文件服务拉取音频；选择“文件”时优先下载 ALAC，不可用时自动回退 AAC Web。默认文件；语音模式需配置可被 NapCat 访问的 callback_api_base，否则自动降级为文件。",
+            "hint": "发送器按适配器自动分流：OneBot 通过 AstrBot 文件服务上传；QQ 官方 WebSocket 使用原生文件/语音消息段。文件模式优先下载 ALAC，不可用时自动回退 AAC Web。",
             "type": "string",
             "options": ["file", "voice"],
             "labels": ["文件", "语音"],

@@ -486,7 +486,7 @@ def test_pixiv_exposes_single_image_file_threshold():
     pixiv_items = schema["parsers_template"]["templates"]["pixiv"]["items"]
     assert pixiv_items["image_file_threshold_mb"] == {
         "description": "单张图片转文件阈值（MB）",
-        "hint": "解析 Pixiv 插画时，单张图片文件大于此值将使用 OneBot 文件上传发送；图片消息累计大小仍限制为 20 MiB",
+        "hint": "解析 Pixiv 插画时，单张图片文件大于此值将按当前适配器发送为文件；OneBot 使用文件 action，QQ 官方机器人使用富媒体上传；图片消息累计大小仍限制为 20 MiB",
         "type": "int",
         "slider": {"min": 1, "max": 10, "step": 1},
         "default": 10,

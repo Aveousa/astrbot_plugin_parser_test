@@ -12,6 +12,7 @@ import pytest
 from core.data import (
     AudioContent,
     DynamicContent,
+    FileContent,
     GraphicsContent,
     ImageContent,
     ParseResult,
@@ -581,6 +582,103 @@ def test_audio_as_file_overrides_global_audio_record_setting(sender_module):
     assert event.sent[1][0].__class__.__name__ == "File"
 
 
+def test_qq_official_file_mode_uses_native_file_component(sender_module):
+    class _QQOfficialEvent(_Event):
+        def get_platform_id(self):
+            return "qq_official"
+
+    result = ParseResult(
+        platform=Platform("qqmusic", "QQ音乐"),
+        title="测试歌曲",
+        contents=[AudioContent(Path("song.m4a"))],
+        extra={"audio_as_file": True, "audio_send_via_url": True},
+    )
+    event = _QQOfficialEvent()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False, audio_to_file=False), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "File"
+    assert event.sent[0][0].kwargs["name"] == f"{result.title}.m4a"
+
+
+def test_qq_official_mode_is_logged(sender_module):
+    infos = []
+    sender_module.logger.info = infos.append
+
+    class _QQOfficialEvent(_Event):
+        def get_platform_id(self):
+            return "qq_official"
+
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        contents=[ImageContent(Path("image.png"))],
+    )
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(_QQOfficialEvent(), result))
+
+    assert any("mode=qq_official" in message for message in infos)
+
+
+def test_onebot_mode_is_logged(sender_module):
+    infos = []
+    sender_module.logger.info = infos.append
+
+    class _Bot:
+        async def call_action(self, *_args, **_kwargs):
+            return {"status": "ok"}
+
+    event = _Event()
+    event.bot = _Bot()
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        contents=[ImageContent(Path("image.png"))],
+    )
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert any("mode=onebot" in message for message in infos)
+
+
+def test_qq_official_native_file_uses_name_and_avoids_forward_nodes(
+    sender_module, tmp_path: Path
+):
+    class _QQOfficialEvent(_Event):
+        def get_platform_name(self):
+            return "qq_official"
+
+    file_path = tmp_path / "source.pdf"
+    file_path.write_bytes(b"pdf")
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        send_groups=[
+            SendGroup(
+                contents=[FileContent(file_path, name="renamed.pdf")],
+                force_merge=True,
+            )
+        ],
+    )
+    event = _QQOfficialEvent()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False, forward_threshold=1), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "File"
+    assert event.sent[0][0].kwargs["name"] == "renamed.pdf"
+
+
 def test_apple_voice_uses_astrbot_file_url_without_local_wav_conversion(
     sender_module, monkeypatch
 ):
@@ -1065,6 +1163,38 @@ def test_pixiv_batches_send_in_order_and_use_onebot_for_oversized_image(
     )
     assert order[2][1] == [str(last_path)]
     assert all(len(message[0].nodes) == 1 for message in event.sent)
+
+
+def test_pixiv_oversized_image_uses_native_file_on_qq_official(
+    sender_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    image_path = tmp_path / "large.jpg"
+    image_path.write_bytes(b"oversized")
+
+    class _QQOfficialEvent(_Event):
+        def get_platform_id(self):
+            return "qq_official"
+
+    monkeypatch.setattr(
+        sender_module.MessageSender,
+        "_pixiv_image_threshold_bytes",
+        staticmethod(lambda _result, _config: 5),
+    )
+    result = ParseResult(
+        platform=Platform("pixiv", "Pixiv"),
+        url="https://www.pixiv.net/artworks/145313510",
+        send_groups=[SendGroup(contents=[ImageContent(image_path)])],
+    )
+    event = _QQOfficialEvent()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert event.sent[0][0].__class__.__name__ == "File"
+    assert event.sent[0][0].kwargs["name"] == "145313510_p0.jpg"
 
 
 def test_pixiv_compact_mode_keeps_image_batches_independent(sender_module):

@@ -7,4 +7,5 @@ author: Zhalslar & Aveousa
 repo: https://github.com/Aveousa/astrbot_plugin_parser_test
 support_platforms:
   - aiocqhttp
+  - qq_official
 

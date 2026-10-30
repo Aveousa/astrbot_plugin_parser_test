@@ -110,6 +110,56 @@ class MessageSender:
         """卡片开关开启时，才允许渲染并发送信息卡片。"""
         return bool(getattr(self.cfg, "card_enabled", True))
 
+    @staticmethod
+    def _detect_delivery_mode(event: AstrMessageEvent) -> str:
+        """Detect the outbound file-delivery protocol for this event."""
+
+        bot = getattr(event, "bot", None)
+        values: list[str] = []
+        for getter_name in ("get_platform_name", "get_platform_id"):
+            getter = getattr(event, getter_name, None)
+            if callable(getter):
+                try:
+                    value = getter()
+                except Exception:
+                    value = None
+                if value:
+                    values.append(str(value).strip().lower())
+
+        if any(value == "qq_official" for value in values):
+            return "qq_official"
+
+        event_class = getattr(event, "__class__", None)
+        event_module = str(getattr(event_class, "__module__", "")).lower()
+        event_name = str(getattr(event_class, "__name__", "")).lower()
+        if (
+            event_name == "qqofficialmessageevent"
+            or ".qqofficial." in event_module
+        ):
+            return "qq_official"
+
+        if callable(getattr(bot, "call_action", None)):
+            return "onebot"
+        return "native"
+
+    @staticmethod
+    def _log_delivery_mode(
+        event: AstrMessageEvent,
+        result: ParseResult,
+        mode: str,
+    ) -> None:
+        """Log the protocol selected for every parsed result."""
+
+        adapter = getattr(event, "get_platform_name", None)
+        try:
+            adapter_name = adapter() if callable(adapter) else "unknown"
+        except Exception:
+            adapter_name = "unknown"
+        _log_info(
+            f"解析发送适配器识别：mode={mode} adapter={adapter_name} "
+            f"source={result.platform.name.lower()}"
+        )
+
     def _compact_forward_non_audio_enabled(self) -> bool:
         """Return whether non-audio content should use the anti-spam mode."""
 
@@ -344,24 +394,44 @@ class MessageSender:
                         qishui_audio_name = self._audio_attachment_filename(
                             result.title, path, "汽水音乐"
                         )
+                    audio_as_file = (
+                        result.extra.get("audio_as_file") is True
+                        or result.extra.get("audio_delivery_mode") == "file"
+                        or (
+                            result.extra.get("audio_send_via_url") is True
+                            and result.extra.get("audio_as_voice") is not True
+                        )
+                        or (
+                            self.cfg.audio_to_file
+                            and result.extra.get("audio_as_voice") is not True
+                        )
+                    )
+                    audio_file_name = qishui_audio_name or path.name
+                    if audio_as_file and result.platform.name.lower() != "qishui":
+                        fallback = {
+                            "applemusic": "Apple Music",
+                            "netease": "网易云音乐",
+                            "qqmusic": "QQ 音乐",
+                            "kugou": "酷狗音乐",
+                        }.get(result.platform.name.lower(), "音乐")
+                        audio_file_name = self._audio_attachment_filename(
+                            result.title, path, fallback
+                        )
                     segs.append(
                         File(
-                            name=qishui_audio_name or path.name,
+                            name=audio_file_name,
                             file=self._to_file_uri(path),
                         )
-                        if (
-                            result.extra.get("audio_as_file") is True
-                            or result.extra.get("audio_delivery_mode") == "file"
-                            or result.extra.get("audio_send_via_url") is True
-                            or (
-                                self.cfg.audio_to_file
-                                and result.extra.get("audio_as_voice") is not True
-                            )
-                        )
+                        if audio_as_file
                         else self._record_from_path(path)
                     )
                 case FileContent():
-                    segs.append(File(name=path.name, file=self._to_file_uri(path)))
+                    segs.append(
+                        File(
+                            name=cont.name or path.name,
+                            file=self._to_file_uri(path),
+                        )
+                    )
 
         return segs
 
@@ -547,6 +617,13 @@ class MessageSender:
             # A failed download or an empty TextContent can reduce a compact
             # group to one actual component; do not leave a pointless single
             # node behind in that case.
+            force_merge = False
+        if (
+            self._detect_delivery_mode(event) == "qq_official"
+            and any(isinstance(seg, File) for seg in segs)
+        ):
+            # The QQ Official adapter uploads File components, but does not
+            # translate AstrBot forward Nodes back into individual files.
             force_merge = False
         segs = self._merge_segments_if_needed(event, segs, force_merge)
 
@@ -776,11 +853,26 @@ class MessageSender:
         return send_items
 
     async def _send_pixiv_file_upload(
-        self, event: AstrMessageEvent, upload: _PixivFileUpload
+        self,
+        event: AstrMessageEvent,
+        upload: _PixivFileUpload,
+        delivery_mode: str,
     ) -> bool:
-        """Register a local image and send it through OneBot's file action."""
+        """Send an oversized Pixiv image through the selected file protocol."""
+        if delivery_mode == "qq_official":
+            _log_info(
+                f"QQ Official file send: source=pixiv name={upload.name} "
+                f"size={_size_label(upload.size)}"
+            )
+            await event.send(
+                event.chain_result(
+                    [File(name=upload.name, file=self._to_file_uri(upload.path))]
+                )
+            )
+            return True
+
         if not callable(getattr(getattr(event, "bot", None), "call_action", None)):
-            _log_info("Pixiv 图片转文件发送跳过：当前事件不支持 bot.call_action")
+            _log_info("Pixiv file send skipped: current event has no file action")
             return False
 
         url = await self._register_local_file_url(
@@ -1138,6 +1230,10 @@ class MessageSender:
         3. 必要时合并转发
         4. 发送媒体；没有可发送媒体时保留原有文本兜底
         """
+        delivery_mode = self._detect_delivery_mode(event)
+        self._log_delivery_mode(event, result, delivery_mode)
+        unsupported_audio_url_delivery = False
+
         # 默认模式固定先发送信息卡片；紧凑模式则只渲染卡片，稍后与所有
         # 非音频内容一起整理，避免同一个解析结果产生多条独立消息。
         # Bilibili Opus requests explicitly keep the card separate from the
@@ -1211,7 +1307,10 @@ class MessageSender:
         # 选择通过 OneBot URL 交付的音乐单曲先保存在本次解析目录，再注册
         # 临时 URL；Apple Music 与网易云/QQ/酷狗的文件模式共用此路径。
         direct_audio_url = result.extra.get("audio_send_url")
-        use_local_audio_url = result.extra.get("audio_send_via_url") is True
+        audio_url_delivery_requested = result.extra.get("audio_send_via_url") is True
+        use_local_audio_url = (
+            audio_url_delivery_requested and delivery_mode == "onebot"
+        )
         direct_audio_content: AudioContent | None = None
         direct_audio_name: str | None = None
         direct_audio_size: int | None = None
@@ -1227,9 +1326,7 @@ class MessageSender:
                 and not audio_is_voice
             )
         )
-        has_onebot_action = callable(
-            getattr(getattr(event, "bot", None), "call_action", None)
-        )
+        has_onebot_action = delivery_mode == "onebot"
         if (
             (use_local_audio_url or audio_is_voice or audio_is_file)
             and (
@@ -1310,14 +1407,30 @@ class MessageSender:
                         # Apple Music audio, which can copy/serialize large files.
                         direct_audio_content = None
 
-        # Music configured for OneBot-only local-URL delivery must not fall
-        # back to AstrBot's native media serialization if URL registration
-        # or the platform action is unavailable.
-        if use_local_audio_url and not has_onebot_action:
+        # OneBot-only local URL delivery must not fall back to AstrBot's
+        # native media serialization if registration or the action fails.
+        # QQ Official deliberately takes the native File/Record path instead.
+        unsupported_audio_url_delivery = (
+            audio_url_delivery_requested
+            and delivery_mode not in {"onebot", "qq_official"}
+        )
+        if unsupported_audio_url_delivery:
             _log_info(
-                f"OneBot 音乐文件发送跳过：platform={result.platform.name.lower()} "
-                "原因=当前事件不支持 bot.call_action"
+                f"Native audio send skipped: source={result.platform.name.lower()} "
+                "reason=unsupported delivery mode"
             )
+            groups = [
+                SendGroup(
+                    contents=[
+                        content
+                        for content in group.contents
+                        if not isinstance(content, AudioContent)
+                    ],
+                    force_merge=group.force_merge,
+                    render_card=group.render_card,
+                )
+                for group in groups
+            ]
         if use_local_audio_url and direct_audio_content is None:
             groups = [
                 SendGroup(
@@ -1339,10 +1452,12 @@ class MessageSender:
         for item in send_items:
             if isinstance(item, _PixivFileUpload):
                 try:
-                    item_sent = await self._send_pixiv_file_upload(event, item)
+                    item_sent = await self._send_pixiv_file_upload(
+                        event, item, delivery_mode
+                    )
                 except Exception as exc:
                     logger.error(
-                        f"Pixiv 图片 OneBot 文件上传失败：name={item.name} "
+                        f"Pixiv file send failed: name={item.name} "
                         f"error={_safe_log_error(exc)}"
                     )
                     # Upload was attempted; do not also encode the oversized
@@ -1419,7 +1534,7 @@ class MessageSender:
             return
 
         if not sent:
-            if use_local_audio_url:
+            if use_local_audio_url or unsupported_audio_url_delivery:
                 # Apple Music's OneBot-only audio path may intentionally omit
                 # the audio when the platform/file URL is unavailable. The
                 # song card already contains useful information; avoid a
