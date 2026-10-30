@@ -8,6 +8,7 @@ import pytest
 from core.apple_music_backend import AppleMusicBackendError
 from core.group_parser_config import (
     GROUP_PARSER_SETTINGS_KEY,
+    QQ_OFFICIAL_KNOWN_GROUPS_KEY,
     GroupParserConfigService,
     group_enabled_parsers,
     parser_key_for_keyword,
@@ -121,6 +122,46 @@ def test_group_list_reports_live_groups_and_effective_parser_status():
 
     asyncio.run(service.get_groups(force_refresh=True))
     assert adapter.calls[-1] == ("get_group_list", {"no_cache": True})
+
+
+def test_qq_official_group_list_uses_observed_groups_without_roster_api():
+    cfg, saves = _config()
+    cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = [{
+        "platform_id": "QQBot_1",
+        "group_id": "group-openid-A1",
+        "name": "官方测试群",
+    }]
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+
+    result = asyncio.run(service.get_groups())
+
+    assert result["groups"][0]["platform_id"] == "QQBot_1"
+    assert result["groups"][0]["group_id"] == "group-openid-A1"
+    assert result["groups"][0]["name"] == "官方测试群"
+    assert adapter.calls == []
+    assert saves == []
+
+
+def test_qq_official_group_can_be_remembered_and_toggled():
+    cfg, saves = _config()
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+
+    assert asyncio.run(
+        service.remember_qq_official_group("QQBot_1", "group-openid-A1", "官方测试群")
+    ) is True
+    enabled = asyncio.run(
+        service.set_group_parser("QQBot_1", "group-openid-A1", "netease", False)
+    )
+
+    assert "netease" not in enabled
+    assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["group_id"] == "group-openid-A1"
+    assert saves == [True, True]
 
 
 def test_group_list_reports_total_switch_from_canonicalized_blacklist_scope():

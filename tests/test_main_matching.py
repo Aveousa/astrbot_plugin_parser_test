@@ -183,6 +183,75 @@ def test_matched_link_parses_without_reaction():
     assert calls == ["parse", "send"]
 
 
+def test_qq_official_group_link_parses_without_at_and_remembers_group():
+    main_module = _load_main_module()
+    calls: list[str] = []
+    plugin = _plugin(main_module, calls)
+    plugin.cfg.require_at_in_group = True
+    remembered = []
+
+    async def remember(platform_id, group_id, name=""):
+        remembered.append((platform_id, group_id))
+        return True
+
+    plugin.group_parser_config = SimpleNamespace(
+        remember_qq_official_group=remember,
+    )
+
+    class _QQEvent(_Event):
+        def get_platform_name(self):
+            return "qq_official"
+
+        def get_platform_id(self):
+            return "QQBot_1"
+
+        def get_group_id(self):
+            return "group-openid-A1"
+
+    event = _QQEvent(
+        main_module,
+        "推荐歌曲 https://163cn.tv/AbC_123",
+        calls,
+        umo="QQBot_1:GroupMessage:group-openid-A1",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
+
+    assert calls == ["parse", "send"]
+    assert remembered == [("QQBot_1", "group-openid-A1")]
+
+
+def test_qq_official_group_parser_switch_filters_matching_before_parse():
+    main_module = _load_main_module()
+    calls: list[str] = []
+    plugin = _plugin(main_module, calls)
+    plugin.cfg.require_at_in_group = True
+    _set_group_policy(plugin, disabled={
+        "v1:QQBot_1:group-openid-A1": {"disabled_parsers": ["netease"]}
+    })
+
+    class _QQEvent(_Event):
+        def get_platform_name(self):
+            return "qq_official"
+
+        def get_platform_id(self):
+            return "QQBot_1"
+
+        def get_group_id(self):
+            return "group-openid-A1"
+
+    event = _QQEvent(
+        main_module,
+        "https://163cn.tv/AbC_123",
+        calls,
+        umo="QQBot_1:GroupMessage:group-openid-A1",
+    )
+
+    asyncio.run(main_module.ParserPlugin.on_message(plugin, event))
+
+    assert calls == []
+
+
 def test_debounced_link_does_not_react_or_parse():
     main_module = _load_main_module()
     calls: list[str] = []

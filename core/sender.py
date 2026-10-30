@@ -618,12 +618,10 @@ class MessageSender:
             # group to one actual component; do not leave a pointless single
             # node behind in that case.
             force_merge = False
-        if (
-            self._detect_delivery_mode(event) == "qq_official"
-            and any(isinstance(seg, File) for seg in segs)
-        ):
-            # The QQ Official adapter uploads File components, but does not
-            # translate AstrBot forward Nodes back into individual files.
+        if self._detect_delivery_mode(event) == "qq_official":
+            # QQ Official's adapter serializes Image/Video/File/Record
+            # components, but does not translate AstrBot forward Nodes back
+            # into those media components. Keep the native media chain intact.
             force_merge = False
         segs = self._merge_segments_if_needed(event, segs, force_merge)
 

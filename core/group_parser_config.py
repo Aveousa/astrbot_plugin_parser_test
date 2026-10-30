@@ -1,4 +1,4 @@
-"""Per-OneBot-group parser switches backed by the plugin configuration."""
+"""Per-group parser switches backed by the plugin configuration."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ class GroupParserConfigError(AppleMusicBackendError):
     """Expected, safe-to-report group-policy validation error."""
 
 GROUP_PARSER_SETTINGS_KEY = "group_parser_settings"
+QQ_OFFICIAL_KNOWN_GROUPS_KEY = "qq_official_known_groups"
 GROUP_KEY_VERSION = "v1"
 GROUP_SETTINGS_MAX_GROUPS = 1000
 GROUP_SETTINGS_MAX_PARSERS = 32
@@ -31,16 +32,17 @@ PARSER_LABELS = {
     "applemusic": "Apple Music",
 }
 GROUP_ID_RE = re.compile(r"^[0-9]{1,32}$")
+QQ_GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 ADAPTER_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 GROUP_UMO_RE = re.compile(
-    r"^(?P<platform>[A-Za-z0-9_.-]{1,96}):GroupMessage:(?P<group>[0-9]{1,32})$"
+    r"^(?P<platform>[A-Za-z0-9_.-]{1,96}):GroupMessage:(?P<group>[A-Za-z0-9_.-]{1,128})$"
 )
 
 
 def group_settings_key(platform_id: object, group_id: object) -> str:
     platform, group = str(platform_id or ""), str(group_id or "")
-    if not ADAPTER_ID_RE.fullmatch(platform) or not GROUP_ID_RE.fullmatch(group):
-        raise AppleMusicBackendError("群聊或 OneBot 实例标识无效")
+    if not ADAPTER_ID_RE.fullmatch(platform) or not QQ_GROUP_ID_RE.fullmatch(group):
+        raise AppleMusicBackendError("群聊或适配器实例标识无效")
     return f"{GROUP_KEY_VERSION}:{platform}:{group}"
 
 
@@ -240,6 +242,33 @@ async def _fetch_live_groups(adapter, *, no_cache: bool = False) -> dict[str, st
     return result
 
 
+def _known_qq_official_groups(config, platform_id: str) -> dict[str, str]:
+    """Return QQ Official groups observed in messages from this bot instance.
+
+    QQ Official's public API does not expose a bot-wide group roster, so the
+    plugin can only manage groups that have sent it a message at least once.
+    """
+
+    raw = getattr(config, "_data", None)
+    stored = raw.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY) if isinstance(raw, Mapping) else None
+    if not isinstance(stored, list):
+        return {}
+    result: dict[str, str] = {}
+    for item in stored:
+        if not isinstance(item, Mapping) or item.get("platform_id") != platform_id:
+            continue
+        group_id = item.get("group_id")
+        if not isinstance(group_id, str) or not QQ_GROUP_ID_RE.fullmatch(group_id):
+            continue
+        name = item.get("name")
+        result[group_id] = (
+            name.strip()[:128]
+            if isinstance(name, str) and name.strip()
+            else f"QQ 官方群 {group_id}"
+        )
+    return result
+
+
 def _group_key_from_blacklist_entry(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -277,7 +306,7 @@ class GroupParserConfigService:
                 adapters = []
         for adapter in adapters:
             meta = self._adapter_meta(adapter)
-            if getattr(meta, "name", None) == "aiocqhttp" and isinstance(
+            if getattr(meta, "name", None) in {"aiocqhttp", "qq_official"} and isinstance(
                 getattr(meta, "id", None), str
             ) and getattr(meta, "id", None):
                 result.append(adapter)
@@ -307,13 +336,24 @@ class GroupParserConfigService:
             if meta is None or not isinstance(getattr(meta, "id", None), str):
                 continue
             platform_id = meta.id
-            live = await _fetch_live_groups(adapter, no_cache=no_cache)
+            if getattr(meta, "name", None) == "qq_official":
+                # QQ Official does not provide an endpoint to enumerate every
+                # group a bot has joined. Keep the management page scoped to
+                # groups observed from real incoming messages.
+                live = _known_qq_official_groups(self.cfg, platform_id)
+            else:
+                live = await _fetch_live_groups(adapter, no_cache=no_cache)
             queried_platform_ids.add(platform_id)
             for group_id, name in live.items():
                 enabled = group_enabled_parsers(self.cfg, platform_id, group_id)
                 result.append({
                     "platform_id": platform_id,
-                    "platform_label": getattr(meta, "adapter_display_name", None) or "OneBot V11",
+                    "platform_label": getattr(meta, "adapter_display_name", None)
+                    or (
+                        "QQ 官方机器人 (WebSocket)"
+                        if getattr(meta, "name", None) == "qq_official"
+                        else "OneBot V11"
+                    ),
                     "group_id": group_id,
                     "name": name,
                     "enabled": sorted(
@@ -453,6 +493,11 @@ class GroupParserConfigService:
                 group_settings_key(group["platform_id"], group["group_id"])
                 for group in live_groups
             }
+            qq_official_platform_ids = {
+                str(getattr(self._adapter_meta(adapter), "id", ""))
+                for adapter in self._adapters()
+                if getattr(self._adapter_meta(adapter), "name", None) == "qq_official"
+            }
             raw_data = getattr(self.cfg, "_data", None)
             if not isinstance(raw_data, dict):
                 raise AppleMusicBackendError("插件配置不可写入")
@@ -513,11 +558,16 @@ class GroupParserConfigService:
                     updated_blacklist, scope, parsing_enabled
                 )
             # Only a successfully queried OneBot instance can prove that a
-            # stored group has left. A disconnected adapter must not trigger
-            # broad cleanup for all of its groups.
+            # stored group has left. QQ Official cannot provide a full group
+            # roster, so absence from its observed-group cache is not evidence
+            # that the bot has left that group.
             for key in list(updated):
                 _, platform_id, _ = key.split(":", 2)
-                if platform_id in queried_platform_ids and key not in live_group_ids:
+                if (
+                    platform_id in queried_platform_ids
+                    and platform_id not in qq_official_platform_ids
+                    and key not in live_group_ids
+                ):
                     updated.pop(key, None)
                     cleaned_group_count += 1
 
@@ -541,6 +591,7 @@ class GroupParserConfigService:
                     if (
                         key is not None
                         and key.split(":", 2)[1] in queried_platform_ids
+                        and key.split(":", 2)[1] not in qq_official_platform_ids
                         and key not in live_group_ids
                     ):
                         cleaned_blacklist_keys.add(key)
@@ -579,10 +630,21 @@ class GroupParserConfigService:
             raise GroupParserConfigError(exc.message) from None
         target_adapter = self._adapter_by_id(str(platform_id))
         try:
-            group_is_live = (
-                target_adapter is not None
-                and str(group_id) in await _fetch_live_groups(target_adapter)
-            )
+            target_meta = self._adapter_meta(target_adapter) if target_adapter else None
+            if target_meta is not None and getattr(target_meta, "name", None) == "qq_official":
+                # This command runs inside a real group event, which itself is
+                # the strongest membership evidence QQ Official exposes.
+                known = _known_qq_official_groups(self.cfg, str(platform_id))
+                if str(group_id) not in known:
+                    await self.remember_qq_official_group(
+                        platform_id, group_id, f"QQ 官方群 {group_id}"
+                    )
+                group_is_live = True
+            else:
+                group_is_live = (
+                    target_adapter is not None
+                    and str(group_id) in await _fetch_live_groups(target_adapter)
+                )
         except AppleMusicBackendError as exc:
             raise GroupParserConfigError(exc.message) from None
         if not group_is_live:
@@ -636,3 +698,68 @@ class GroupParserConfigService:
             group_enabled_parsers(self.cfg, platform_id, group_id),
             key=lambda key: list(PARSER_LABELS).index(key),
         )
+
+    async def remember_qq_official_group(
+        self, platform_id: object, group_id: object, name: object = None
+    ) -> bool:
+        """Persist a QQ Official group after observing an incoming message."""
+
+        platform = str(platform_id or "")
+        group = str(group_id or "")
+        if not ADAPTER_ID_RE.fullmatch(platform) or not QQ_GROUP_ID_RE.fullmatch(group):
+            return False
+        adapter = self._adapter_by_id(platform)
+        meta = self._adapter_meta(adapter) if adapter is not None else None
+        if getattr(meta, "name", None) != "qq_official":
+            return False
+
+        label = name.strip()[:128] if isinstance(name, str) else ""
+        async with self.lock:
+            raw_data = getattr(self.cfg, "_data", None)
+            if not isinstance(raw_data, dict):
+                return False
+            original = copy.deepcopy(raw_data.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY))
+            stored = raw_data.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY)
+            entries = [
+                dict(item)
+                for item in stored
+                if isinstance(item, dict)
+                and isinstance(item.get("platform_id"), str)
+                and isinstance(item.get("group_id"), str)
+                and ADAPTER_ID_RE.fullmatch(item["platform_id"])
+                and QQ_GROUP_ID_RE.fullmatch(item["group_id"])
+            ] if isinstance(stored, list) else []
+            existing = next(
+                (
+                    item for item in entries
+                    if item["platform_id"] == platform and item["group_id"] == group
+                ),
+                None,
+            )
+            if existing is not None:
+                if not label:
+                    return False
+                if existing.get("name") == label:
+                    return False
+                existing["name"] = label
+            else:
+                if len(entries) >= GROUP_SETTINGS_MAX_GROUPS:
+                    return False
+                entries.append({
+                    "platform_id": platform,
+                    "group_id": group,
+                    "name": label or f"QQ 官方群 {group}",
+                })
+            raw_data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = entries
+            try:
+                save = getattr(self.cfg, "save_config", None)
+                if not callable(save):
+                    raise RuntimeError("configuration is not persistent")
+                await asyncio.get_running_loop().run_in_executor(None, save)
+            except Exception:
+                if original is None:
+                    raw_data.pop(QQ_OFFICIAL_KNOWN_GROUPS_KEY, None)
+                else:
+                    raw_data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = original
+                raise AppleMusicBackendError("QQ 官方群聊记录保存失败") from None
+        return True

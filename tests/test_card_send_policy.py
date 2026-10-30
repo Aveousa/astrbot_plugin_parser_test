@@ -679,6 +679,33 @@ def test_qq_official_native_file_uses_name_and_avoids_forward_nodes(
     assert event.sent[0][0].kwargs["name"] == "renamed.pdf"
 
 
+def test_qq_official_image_and_video_stay_native_components(sender_module):
+    class _QQOfficialEvent(_Event):
+        def get_platform_id(self):
+            return "qq_official"
+
+    result = ParseResult(
+        platform=Platform("bilibili", "Bilibili"),
+        send_groups=[
+            SendGroup(
+                contents=[ImageContent(Path("image.jpg")), VideoContent(Path("video.mp4"))],
+                force_merge=True,
+            )
+        ],
+    )
+    event = _QQOfficialEvent()
+    sender = sender_module.MessageSender(
+        _card_config(card_enabled=False, forward_threshold=1), _Renderer()
+    )
+
+    asyncio.run(sender.send_parse_result(event, result))
+
+    assert len(event.sent) == 1
+    assert [component.__class__.__name__ for component in event.sent[0]] == [
+        "Image", "Video"
+    ]
+
+
 def test_apple_voice_uses_astrbot_file_url_without_local_wav_conversion(
     sender_module, monkeypatch
 ):

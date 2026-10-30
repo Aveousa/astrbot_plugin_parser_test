@@ -376,6 +376,28 @@ class ParserPlugin(Star):
         if not chain:
             return
 
+        get_platform_name = getattr(event, "get_platform_name", None)
+        platform_name = get_platform_name() if callable(get_platform_name) else None
+        get_platform_id = getattr(event, "get_platform_id", None)
+        platform_id = get_platform_id() if callable(get_platform_id) else ""
+        get_group_id = getattr(event, "get_group_id", None)
+        group_id = (
+            str(get_group_id() or "")
+            if is_group_session(umo) and callable(get_group_id)
+            else ""
+        )
+        if (
+            platform_name == "qq_official"
+            and group_id
+            and getattr(self, "group_parser_config", None) is not None
+        ):
+            try:
+                await self.group_parser_config.remember_qq_official_group(
+                    platform_id, group_id
+                )
+            except Exception as exc:
+                logger.warning(f"[QQ Official] 群聊记录保存失败，继续处理消息: {exc}")
+
         text = event.message_str or ""
         plain_text = "".join(
             segment.text for segment in chain if isinstance(segment, Plain)
@@ -393,7 +415,7 @@ class ParserPlugin(Star):
                 mentioned_ids.update(re.findall(r"<@!?([^>\s]+)>", seg.text))
         if (
             self.cfg.require_at_in_group
-            and not isinstance(event, AiocqhttpMessageEvent)
+            and platform_name not in {"aiocqhttp", "qq_official"}
             and event.get_message_type() == MessageType.GROUP_MESSAGE
             and self_id not in mentioned_ids
         ):
@@ -414,19 +436,9 @@ class ParserPlugin(Star):
         if not text:
             return
 
-        get_platform_name = getattr(event, "get_platform_name", None)
-        platform_name = get_platform_name() if callable(get_platform_name) else None
-        get_group_id = getattr(event, "get_group_id", None)
-        group_id = (
-            get_group_id()
-            if is_group_session(umo) and callable(get_group_id)
-            else ""
-        )
-        get_platform_id = getattr(event, "get_platform_id", None)
-        platform_id = get_platform_id() if callable(get_platform_id) else ""
         group_parser_keys = (
             group_enabled_parsers(self.cfg, platform_id, group_id)
-            if group_id and platform_name == "aiocqhttp"
+            if group_id and platform_name in {"aiocqhttp", "qq_official"}
             else None
         )
         group_parser_map = None
@@ -517,7 +529,7 @@ class ParserPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭bilibili解析", alias=GROUP_PARSER_COMMAND_ALIASES_FOR_FILTER)
     async def toggle_group_parser(self, event: AstrMessageEvent):
-        """让 AstrBot Bot 管理员快速切换当前 OneBot 群的单个解析器。"""
+        """Let an AstrBot administrator toggle a parser in the current QQ group."""
         is_bot_admin = getattr(event, "is_admin", None)
         if not callable(is_bot_admin) or not is_bot_admin():
             event.stop_event()
@@ -525,21 +537,21 @@ class ParserPlugin(Star):
             return
         if not is_group_session(event.unified_msg_origin):
             event.stop_event()
-            yield event.plain_result("解析器快捷开关目前仅支持 OneBot 群聊")
+            yield event.plain_result("解析器快捷开关目前仅支持群聊")
             return
         command = re.sub(r"\s+", " ", (event.message_str or "").strip())
         command_parts = GROUP_PARSER_COMMANDS.get(command)
         if command_parts is None:
             return
-        if event.get_platform_name() != "aiocqhttp":
+        if event.get_platform_name() not in {"aiocqhttp", "qq_official"}:
             event.stop_event()
-            yield event.plain_result("解析器快捷开关目前仅支持 OneBot V11 群聊")
+            yield event.plain_result("解析器快捷开关目前仅支持 OneBot V11 和 QQ 官方机器人群聊")
             return
         platform_id, group_id = event.get_platform_id(), event.get_group_id()
         parser_key = self._resolve_group_parser_key(command_parts[1].strip())
         if not platform_id or not group_id:
             event.stop_event()
-            yield event.plain_result("无法识别当前 OneBot 实例或群聊")
+            yield event.plain_result("无法识别当前适配器实例或群聊")
             return
         if parser_key is None:
             event.stop_event()
@@ -566,7 +578,7 @@ class ParserPlugin(Star):
         except Exception:
             logger.warning("保存群聊解析器快捷设置失败")
             event.stop_event()
-            yield event.plain_result("群聊解析器设置失败，请检查全局开关和 OneBot 群聊状态后重试")
+            yield event.plain_result("群聊解析器设置失败，请检查全局开关和群聊状态后重试")
 
     @staticmethod
     def _resolve_group_parser_key(value: str) -> str | None:
