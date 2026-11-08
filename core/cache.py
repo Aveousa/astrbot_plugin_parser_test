@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,6 +23,42 @@ _ACTIVE_CACHE_DIR: ContextVar[Path | None] = ContextVar(
     "parser_active_cache_dir", default=None
 )
 _CACHE_LABEL_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_CACHE_ACTIVITY_LOCK = threading.RLock()
+_ACTIVE_CACHE_DIRS: dict[Path, int] = {}
+
+
+def _normalized_cache_path(directory: Path | str) -> Path:
+    """Return a stable path key without requiring the target to exist."""
+
+    return Path(directory).resolve(strict=False)
+
+
+@contextmanager
+def cache_dir_activity(directory: Path | str | None) -> Iterator[Path | None]:
+    """Keep a cache directory protected from cleanup while it is in use.
+
+    Registration and cleanup's atomic rename are serialized by a short-lived
+    process-local lock. Recursive deletion happens after the lock is released,
+    so cache cleanup never blocks the asyncio loop for the duration of rmtree.
+    """
+
+    if directory is None:
+        yield None
+        return
+
+    path = _normalized_cache_path(directory)
+    with _CACHE_ACTIVITY_LOCK:
+        path.mkdir(parents=True, exist_ok=True)
+        _ACTIVE_CACHE_DIRS[path] = _ACTIVE_CACHE_DIRS.get(path, 0) + 1
+    try:
+        yield path
+    finally:
+        with _CACHE_ACTIVITY_LOCK:
+            remaining = _ACTIVE_CACHE_DIRS.get(path, 0) - 1
+            if remaining > 0:
+                _ACTIVE_CACHE_DIRS[path] = remaining
+            else:
+                _ACTIVE_CACHE_DIRS.pop(path, None)
 
 
 def get_active_cache_dir(default: Path | str) -> Path:
@@ -58,13 +95,15 @@ def cache_dir_scope(directory: Path | str | None) -> Iterator[Path | None]:
         yield None
         return
 
-    path = Path(directory)
-    path.mkdir(parents=True, exist_ok=True)
-    token = _ACTIVE_CACHE_DIR.set(path)
-    try:
-        yield path
-    finally:
-        _ACTIVE_CACHE_DIR.reset(token)
+    with cache_dir_activity(directory) as active_path:
+        if active_path is None:  # pragma: no cover - handled above for typing
+            yield None
+            return
+        token = _ACTIVE_CACHE_DIR.set(active_path)
+        try:
+            yield active_path
+        finally:
+            _ACTIVE_CACHE_DIR.reset(token)
 
 
 def get_cache_size(cache_root: Path | str) -> tuple[int, int]:
@@ -103,19 +142,42 @@ def clear_cache_dir(cache_root: Path | str) -> tuple[int, int]:
     removed_files = 0
     removed_bytes = 0
     failures = 0
+    root_key = _normalized_cache_path(root)
     for entry in tuple(root.iterdir()):
-        if entry.is_symlink() or entry.is_file():
+        claimed: Path | None = None
+        entry_key = _normalized_cache_path(entry)
+        with _CACHE_ACTIVITY_LOCK:
+            active_paths = tuple(_ACTIVE_CACHE_DIRS)
+            is_active = any(
+                active == root_key
+                or active == entry_key
+                or active.is_relative_to(entry_key)
+                for active in active_paths
+            )
+            if is_active:
+                continue
+            claimed = root / f".cleanup-{uuid.uuid4().hex}-{entry.name}"
             try:
-                if entry.is_file() and not entry.is_symlink():
-                    removed_bytes += entry.stat().st_size
-                entry.unlink()
+                entry.replace(claimed)
+            except FileNotFoundError:
+                claimed = None
+            except OSError:
+                failures += 1
+                claimed = None
+        if claimed is None:
+            continue
+        if claimed.is_symlink() or claimed.is_file():
+            try:
+                if claimed.is_file() and not claimed.is_symlink():
+                    removed_bytes += claimed.stat().st_size
+                claimed.unlink()
                 removed_files += 1
             except OSError:
                 failures += 1
-        elif entry.is_dir():
-            size, count = get_cache_size(entry)
+        elif claimed.is_dir():
+            size, count = get_cache_size(claimed)
             try:
-                shutil.rmtree(entry)
+                shutil.rmtree(claimed)
                 removed_files += count
                 removed_bytes += size
             except OSError:

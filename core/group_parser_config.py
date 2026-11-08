@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 
 from .apple_music_backend import AppleMusicBackendError
+from .config import save_config_to_completion
 from .session_scope import normalize_session_scope, session_scope_in
 
 
@@ -284,10 +285,53 @@ def _group_key_from_blacklist_entry(value: object) -> str | None:
 class GroupParserConfigService:
     """Validated API/service logic for group parser policy management."""
 
-    def __init__(self, cfg, context, *, lock: asyncio.Lock | None = None):
+    def __init__(
+        self,
+        cfg,
+        context,
+        *,
+        lock: asyncio.Lock | None = None,
+        config_lock: asyncio.Lock | None = None,
+    ):
         self.cfg = cfg
         self.context = context
         self.lock = lock or asyncio.Lock()
+        # Shared with backend config writers, not with Apple Music operations.
+        # Always acquire the group business lock before the config write lock.
+        self.config_lock = config_lock or asyncio.Lock()
+        self._qq_official_group_index: dict[tuple[str, str], str] = {}
+        self.refresh_qq_official_group_index()
+
+    def refresh_qq_official_group_index(self) -> None:
+        """Rebuild the observed QQ Official group index from persisted data."""
+
+        raw_data = getattr(self.cfg, "_data", None)
+        stored = (
+            raw_data.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY)
+            if isinstance(raw_data, Mapping)
+            else None
+        )
+        index: dict[tuple[str, str], str] = {}
+        if isinstance(stored, list):
+            for item in stored:
+                if not isinstance(item, Mapping):
+                    continue
+                platform = item.get("platform_id")
+                group = item.get("group_id")
+                if (
+                    not isinstance(platform, str)
+                    or not ADAPTER_ID_RE.fullmatch(platform)
+                    or not isinstance(group, str)
+                    or not QQ_GROUP_ID_RE.fullmatch(group)
+                ):
+                    continue
+                name = item.get("name")
+                index[(platform, group)] = (
+                    name.strip()[:128]
+                    if isinstance(name, str) and name.strip()
+                    else f"QQ 官方群 {group}"
+                )
+        self._qq_official_group_index = index
 
     def _adapters(self) -> list:
         manager = getattr(self.context, "platform_manager", None)
@@ -397,7 +441,7 @@ class GroupParserConfigService:
         updated_blacklist: list | None = None,
         original_blacklist: object = None,
         blacklist_was_present: bool = False,
-    ) -> None:
+    ) -> asyncio.CancelledError | None:
         raw_data = getattr(self.cfg, "_data", None)
         if not isinstance(raw_data, dict):
             raise AppleMusicBackendError("插件配置不可写入")
@@ -425,12 +469,8 @@ class GroupParserConfigService:
         raw_data[GROUP_PARSER_SETTINGS_KEY] = encoded
         if updated_blacklist is not None:
             raw_data["blacklist"] = updated_blacklist
-        try:
-            save = getattr(self.cfg, "save_config", None)
-            if not callable(save):
-                raise RuntimeError("configuration is not persistent")
-            await asyncio.get_running_loop().run_in_executor(None, save)
-        except Exception:
+        outcome = await save_config_to_completion(self.cfg)
+        if outcome.error is not None:
             if key_was_present:
                 raw_data[GROUP_PARSER_SETTINGS_KEY] = original_storage
             else:
@@ -440,7 +480,10 @@ class GroupParserConfigService:
                     raw_data["blacklist"] = original_blacklist
                 else:
                     raw_data.pop("blacklist", None)
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
             raise AppleMusicBackendError("群聊解析器设置保存失败，请稍后重试") from None
+        return outcome.cancellation
 
     async def save_group_settings(self, values: object) -> dict:
         if not isinstance(values, list) or not 0 <= len(values) <= GROUP_SETTINGS_MAX_GROUPS:
@@ -477,7 +520,7 @@ class GroupParserConfigService:
         if len(submitted) != len(values):
             raise GroupParserConfigError("同一群聊不能重复提交")
 
-        async with self.lock:
+        async with self.lock, self.config_lock:
             globally_enabled = set(supported_parser_keys(self.cfg))
             try:
                 live_groups, queried_platform_ids = await self._group_snapshot(
@@ -599,7 +642,7 @@ class GroupParserConfigService:
                     kept_blacklist.append(value)
                 updated_blacklist = kept_blacklist
                 cleaned_blacklist_group_count = len(cleaned_blacklist_keys)
-            await self._persist_locked(
+            cancellation = await self._persist_locked(
                 updated,
                 original_storage,
                 GROUP_PARSER_SETTINGS_KEY in raw_data,
@@ -607,6 +650,8 @@ class GroupParserConfigService:
                 original_blacklist=original_blacklist,
                 blacklist_was_present=blacklist_was_present,
             )
+            if cancellation is not None:
+                raise cancellation
 
         return {
             "message": "群聊总开关及解析器设置已确认并保存",
@@ -650,7 +695,7 @@ class GroupParserConfigService:
         if not group_is_live:
             raise AppleMusicBackendError("群聊已不在当前 OneBot 实例中")
 
-        async with self.lock:
+        async with self.lock, self.config_lock:
             globally_enabled = set(supported_parser_keys(self.cfg))
             if enabled and parser_key not in globally_enabled:
                 raise AppleMusicBackendError(
@@ -688,11 +733,13 @@ class GroupParserConfigService:
                 store[key] = entry
             else:
                 store.pop(key, None)
-            await self._persist_locked(
+            cancellation = await self._persist_locked(
                 store,
                 original_storage,
                 GROUP_PARSER_SETTINGS_KEY in raw_data,
             )
+            if cancellation is not None:
+                raise cancellation
 
         return sorted(
             group_enabled_parsers(self.cfg, platform_id, group_id),
@@ -708,16 +755,29 @@ class GroupParserConfigService:
         group = str(group_id or "")
         if not ADAPTER_ID_RE.fullmatch(platform) or not QQ_GROUP_ID_RE.fullmatch(group):
             return False
+        key = (platform, group)
+        label = name.strip()[:128] if isinstance(name, str) else ""
+        indexed_name = self._qq_official_group_index.get(key)
+        if key in self._qq_official_group_index and (
+            not label or indexed_name == label
+        ):
+            return False
+
         adapter = self._adapter_by_id(platform)
         meta = self._adapter_meta(adapter) if adapter is not None else None
         if getattr(meta, "name", None) != "qq_official":
             return False
 
-        label = name.strip()[:128] if isinstance(name, str) else ""
-        async with self.lock:
+        async with self.lock, self.config_lock:
+            indexed_name = self._qq_official_group_index.get(key)
+            if key in self._qq_official_group_index and (
+                not label or indexed_name == label
+            ):
+                return False
             raw_data = getattr(self.cfg, "_data", None)
             if not isinstance(raw_data, dict):
                 return False
+            key_was_present = QQ_OFFICIAL_KNOWN_GROUPS_KEY in raw_data
             original = copy.deepcopy(raw_data.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY))
             stored = raw_data.get(QQ_OFFICIAL_KNOWN_GROUPS_KEY)
             entries = [
@@ -738,8 +798,15 @@ class GroupParserConfigService:
             )
             if existing is not None:
                 if not label:
+                    self._qq_official_group_index[key] = (
+                        existing.get("name")
+                        if isinstance(existing.get("name"), str)
+                        and existing.get("name")
+                        else f"QQ 官方群 {group}"
+                    )
                     return False
                 if existing.get("name") == label:
+                    self._qq_official_group_index[key] = label
                     return False
                 existing["name"] = label
             else:
@@ -751,15 +818,62 @@ class GroupParserConfigService:
                     "name": label or f"QQ 官方群 {group}",
                 })
             raw_data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = entries
-            try:
-                save = getattr(self.cfg, "save_config", None)
-                if not callable(save):
-                    raise RuntimeError("configuration is not persistent")
-                await asyncio.get_running_loop().run_in_executor(None, save)
-            except Exception:
-                if original is None:
-                    raw_data.pop(QQ_OFFICIAL_KNOWN_GROUPS_KEY, None)
-                else:
+            outcome = await save_config_to_completion(self.cfg)
+            if outcome.error is not None:
+                if key_was_present:
                     raw_data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = original
+                else:
+                    raw_data.pop(QQ_OFFICIAL_KNOWN_GROUPS_KEY, None)
+                if outcome.cancellation is not None:
+                    raise outcome.cancellation
                 raise AppleMusicBackendError("QQ 官方群聊记录保存失败") from None
+            saved_name = label or (
+                existing.get("name")
+                if existing is not None and isinstance(existing.get("name"), str)
+                else f"QQ 官方群 {group}"
+            )
+            self._qq_official_group_index[key] = saved_name
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
         return True
+
+    async def set_session_parsing_enabled(
+        self, session_scope: object, enabled: bool
+    ) -> bool:
+        """Persist the total parser switch under the shared config write lock."""
+
+        if not isinstance(enabled, bool):
+            raise GroupParserConfigError("会话解析开关状态无效")
+        scope = normalize_session_scope(str(session_scope or ""))
+        if not scope:
+            raise GroupParserConfigError("会话标识无效")
+
+        async with self.lock, self.config_lock:
+            raw_data = getattr(self.cfg, "_data", None)
+            if not isinstance(raw_data, dict):
+                raise AppleMusicBackendError("插件配置不可写入")
+            key_was_present = "blacklist" in raw_data
+            try:
+                original = copy.deepcopy(
+                    raw_data.get("blacklist", getattr(self.cfg, "blacklist", []))
+                )
+            except Exception:
+                raise GroupParserConfigError("会话黑名单配置无效") from None
+            if not isinstance(original, list):
+                raise GroupParserConfigError("会话黑名单配置无效")
+            updated = _with_group_blacklist_state(list(original), scope, enabled)
+            if updated == original:
+                return False
+            raw_data["blacklist"] = updated
+            outcome = await save_config_to_completion(self.cfg)
+            if outcome.error is not None:
+                if key_was_present:
+                    raw_data["blacklist"] = original
+                else:
+                    raw_data.pop("blacklist", None)
+                if outcome.cancellation is not None:
+                    raise outcome.cancellation
+                raise AppleMusicBackendError("会话解析设置保存失败，请稍后重试") from None
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
+            return True

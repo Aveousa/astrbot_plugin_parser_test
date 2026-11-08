@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from core.cache import (
+    cache_dir_activity,
     cache_dir_scope,
     clear_cache_dir,
     create_parse_cache_dir,
@@ -80,3 +81,33 @@ def test_cache_clear_reports_locked_entries(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("core.cache.shutil.rmtree", fail_remove)
     with pytest.raises(OSError, match="could not remove"):
         clear_cache_dir(cache)
+
+
+def test_cache_clear_preserves_active_directory_and_removes_completed_cache(
+    tmp_path: Path,
+):
+    cache = tmp_path / "cache"
+    active = cache / "parse_active"
+    completed = cache / "parse_completed"
+    active.mkdir(parents=True)
+    completed.mkdir()
+    (active / "downloading.part").write_bytes(b"active")
+    (completed / "card.png").write_bytes(b"completed")
+
+    with cache_dir_activity(active):
+        removed_files, removed_bytes = clear_cache_dir(cache)
+        assert active.is_dir()
+        assert (active / "downloading.part").read_bytes() == b"active"
+        assert not completed.exists()
+
+    assert (removed_files, removed_bytes) == (1, len(b"completed"))
+
+
+def test_cache_clear_removes_inactive_partial_download(tmp_path: Path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    partial = cache / ".media.bin.deadbeef.part"
+    partial.write_bytes(b"partial")
+
+    assert clear_cache_dir(cache) == (1, len(b"partial"))
+    assert not partial.exists()

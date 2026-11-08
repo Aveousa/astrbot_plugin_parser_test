@@ -515,7 +515,11 @@ def test_download_checks_file_and_full_duration(tmp_path, actual, produces, size
         async def probe():
             return {"available": True, "ffmpeg": True, "ffprobe": True}
         async def execute(argv, **kwargs):
+            from core.cache import clear_cache_dir
+
             commands.append(argv)
+            assert clear_cache_dir(cfg.cache_dir) == (0, 0)
+            assert Path(kwargs["cwd"]).is_dir() if "cwd" in kwargs else True
             if "--output-path" in argv:
                 if produces:
                     output = Path(argv[argv.index("--output-path") + 1])

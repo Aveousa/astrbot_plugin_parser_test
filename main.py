@@ -93,7 +93,9 @@ class ParserPlugin(Star):
         )
         self.apple_music_web = AppleMusicWeb(self.apple_music_backend, self.cfg._plugin_name)
         self.group_parser_config = GroupParserConfigService(
-            self.cfg, self.context, lock=self.apple_music_backend.lock
+            self.cfg,
+            self.context,
+            config_lock=self.apple_music_backend.config_write_lock,
         )
         self.apple_music_web.group_parser_config = self.group_parser_config
 
@@ -166,6 +168,10 @@ class ParserPlugin(Star):
 
     async def initialize(self):
         """加载、重载插件时触发"""
+        group_config = getattr(self, "group_parser_config", None)
+        refresh_groups = getattr(group_config, "refresh_qq_official_group_index", None)
+        if callable(refresh_groups):
+            refresh_groups()
         # 插件启动/重载时回收超过 24 小时且未被浏览器使用的 Playwright
         # 临时目录；清理失败不会阻断后续解析器和渲染器启动。
         await self.cleaner.clean_stale_playwright_profiles()
@@ -512,19 +518,22 @@ class ParserPlugin(Star):
         )
         if parser is None:
             return
+        # Keep the directory active for the complete parse-to-send lifetime.
+        # Individual download tasks also hold their own activity lease so an
+        # unused/background media task remains protected after an early return.
         with cache_dir_scope(parse_cache_dir):
             parse_res = await parser.parse(keyword, searched)
-        if parse_cache_dir is not None:
-            parse_res.cache_dir = parse_cache_dir
+            if parse_cache_dir is not None:
+                parse_res.cache_dir = parse_cache_dir
 
-        # 基于资源ID防抖
-        resource_id = parse_res.get_resource_id()
-        if self.debouncer.hit_resource(umo, resource_id):
-            logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
-            return
+            # 基于资源ID防抖
+            resource_id = parse_res.get_resource_id()
+            if self.debouncer.hit_resource(umo, resource_id):
+                logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
+                return
 
-        # 发送
-        await self.sender.send_parse_result(event, parse_res)
+            # 发送
+            await self.sender.send_parse_result(event, parse_res)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭bilibili解析", alias=GROUP_PARSER_COMMAND_ALIASES_FOR_FILTER)
@@ -602,7 +611,13 @@ class ParserPlugin(Star):
     async def open_parser(self, event: AstrMessageEvent):
         """开启当前会话的解析"""
         umo = event.unified_msg_origin
-        self.cfg.remove_blacklist(normalize_session_scope(umo))
+        scope = normalize_session_scope(umo)
+        group_config = getattr(self, "group_parser_config", None)
+        persist = getattr(group_config, "set_session_parsing_enabled", None)
+        if callable(persist):
+            await persist(scope, True)
+        else:
+            self.cfg.remove_blacklist(scope)
         target = "当前群聊" if is_group_session(umo) else "当前会话"
         yield event.plain_result(f"{target}的解析已开启")
 
@@ -611,7 +626,13 @@ class ParserPlugin(Star):
     async def close_parser(self, event: AstrMessageEvent):
         """关闭当前会话的解析"""
         umo = event.unified_msg_origin
-        self.cfg.add_blacklist(normalize_session_scope(umo))
+        scope = normalize_session_scope(umo)
+        group_config = getattr(self, "group_parser_config", None)
+        persist = getattr(group_config, "set_session_parsing_enabled", None)
+        if callable(persist):
+            await persist(scope, False)
+        else:
+            self.cfg.add_blacklist(scope)
         target = "当前群聊" if is_group_session(umo) else "当前会话"
         yield event.plain_result(f"{target}的解析已关闭")
 

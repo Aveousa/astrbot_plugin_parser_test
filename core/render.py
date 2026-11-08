@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 from collections.abc import Mapping
+from contextlib import ExitStack
 from html import escape as html_escape
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -14,7 +15,7 @@ from typing import Any, ClassVar
 
 from astrbot.api import logger
 
-from .cache import get_active_cache_dir
+from .cache import cache_dir_activity, get_active_cache_dir
 from .config import PluginConfig
 from .data import (
     AudioContent,
@@ -529,9 +530,13 @@ class Renderer:
             except Exception:
                 return token, None
 
-        for token, path in await asyncio.gather(*(resolve(token) for token in tokens)):
-            self._emoji_path_cache[token] = path
-            self._emoji_uri_cache[token] = self._file_uri(path)
+        emoji_cache_dir = Path(self.cfg.cache_dir) / "emojis"
+        with cache_dir_activity(emoji_cache_dir):
+            for token, path in await asyncio.gather(
+                *(resolve(token) for token in tokens)
+            ):
+                self._emoji_path_cache[token] = path
+                self._emoji_uri_cache[token] = self._file_uri(path)
 
     def _emoji_markup(self, value: object) -> Markup:
         """安全地保留 Unicode 表情，并赋予 Apple 风格的字体优先级。
@@ -785,43 +790,55 @@ class Renderer:
             return False
 
         temporary = path.with_name(f".{path.stem}_{uuid.uuid4().hex}.png")
-        try:
-            with Image.open(path) as source:
-                image = source.convert("RGBA")
-                width, height = image.size
-                if width <= 0 or height <= 0:
-                    return False
-
-                scale = 4
-                scaled_width = width * scale
-                scaled_height = height * scale
-                scaled_radius = max(
-                    0,
-                    min(
-                        int(round(radius_px * scale)),
-                        min(scaled_width, scaled_height) // 2,
-                    ),
-                )
-                mask = Image.new("L", (scaled_width, scaled_height), 0)
-                draw = ImageDraw.Draw(mask)
-                draw.rounded_rectangle(
-                    (0, 0, scaled_width - 1, scaled_height - 1),
-                    radius=scaled_radius,
-                    fill=255,
-                )
-                resample = getattr(Image, "Resampling", Image).LANCZOS
-                mask = mask.resize((width, height), resample)
-                image.putalpha(mask)
-                image.save(temporary)
-            temporary.replace(path)
-            return True
-        except Exception as exc:
-            cls._log_warning(f"卡片圆角裁切失败，保留原图: {exc}")
+        # A cancelled to_thread await cannot stop Pillow's worker. The worker
+        # therefore holds its own cache lease until all file access finishes.
+        with cache_dir_activity(path.parent):
             try:
-                temporary.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return False
+                with Image.open(path) as source:
+                    image = source.convert("RGBA")
+                    try:
+                        width, height = image.size
+                        if width <= 0 or height <= 0:
+                            return False
+
+                        scale = 4
+                        scaled_width = width * scale
+                        scaled_height = height * scale
+                        scaled_radius = max(
+                            0,
+                            min(
+                                int(round(radius_px * scale)),
+                                min(scaled_width, scaled_height) // 2,
+                            ),
+                        )
+                        mask = Image.new("L", (scaled_width, scaled_height), 0)
+                        try:
+                            draw = ImageDraw.Draw(mask)
+                            draw.rounded_rectangle(
+                                (0, 0, scaled_width - 1, scaled_height - 1),
+                                radius=scaled_radius,
+                                fill=255,
+                            )
+                            resample = getattr(Image, "Resampling", Image).LANCZOS
+                            resized_mask = mask.resize((width, height), resample)
+                            try:
+                                image.putalpha(resized_mask)
+                                image.save(temporary)
+                            finally:
+                                resized_mask.close()
+                        finally:
+                            mask.close()
+                    finally:
+                        image.close()
+                temporary.replace(path)
+                return True
+            except Exception as exc:
+                cls._log_warning(f"卡片圆角裁切失败，保留原图: {exc}")
+                try:
+                    temporary.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return False
 
     @staticmethod
     def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
@@ -848,32 +865,32 @@ class Renderer:
             return None
 
         try:
-            with Image.open(path) as source:
+            with cache_dir_activity(path.parent), Image.open(path) as source:
                 source.thumbnail((72, 72))
-                image = source.convert("RGBA")
-                weighted = [0.0, 0.0, 0.0]
-                total_weight = 0.0
-                pixels = (
-                    image.get_flattened_data()
-                    if hasattr(image, "get_flattened_data")
-                    else image.getdata()
-                )
-                for red, green, blue, alpha in pixels:
-                    if alpha < 64:
-                        continue
-                    maximum = max(red, green, blue)
-                    minimum = min(red, green, blue)
-                    chroma = maximum - minimum
-                    lightness = (maximum + minimum) / 510
-                    saturation = 0.0 if maximum == 0 else chroma / maximum
-                    if lightness < 0.04 or lightness > 0.98:
-                        weight = 0.25
-                    else:
-                        weight = 0.55 + saturation * 1.35 + chroma / 255
-                    weighted[0] += red * weight
-                    weighted[1] += green * weight
-                    weighted[2] += blue * weight
-                    total_weight += weight
+                with source.convert("RGBA") as image:
+                    weighted = [0.0, 0.0, 0.0]
+                    total_weight = 0.0
+                    pixels = (
+                        image.get_flattened_data()
+                        if hasattr(image, "get_flattened_data")
+                        else image.getdata()
+                    )
+                    for red, green, blue, alpha in pixels:
+                        if alpha < 64:
+                            continue
+                        maximum = max(red, green, blue)
+                        minimum = min(red, green, blue)
+                        chroma = maximum - minimum
+                        lightness = (maximum + minimum) / 510
+                        saturation = 0.0 if maximum == 0 else chroma / maximum
+                        if lightness < 0.04 or lightness > 0.98:
+                            weight = 0.25
+                        else:
+                            weight = 0.55 + saturation * 1.35 + chroma / 255
+                        weighted[0] += red * weight
+                        weighted[1] += green * weight
+                        weighted[2] += blue * weight
+                        total_weight += weight
                 if total_weight <= 0:
                     return None
         except Exception as exc:
@@ -1068,7 +1085,11 @@ class Renderer:
 
         contents = [await self._content_context(content) for content in result.contents]
         dynamic_color_enabled = bool(getattr(self.cfg, "card_dynamic_color", False))
-        theme = self._dynamic_theme_from_contents(contents) if dynamic_color_enabled else None
+        theme = (
+            await asyncio.to_thread(self._dynamic_theme_from_contents, contents)
+            if dynamic_color_enabled
+            else None
+        )
         if dynamic_color_enabled:
             if theme:
                 self._log_debug(
@@ -1275,8 +1296,12 @@ class Renderer:
         # HTML preview next to a PNG without it being removed by this renderer.
         temporary_html = target.with_name(f".{target.stem}_{uuid.uuid4().hex}.html")
         page: Any | None = None
+        activity = ExitStack()
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            activity.enter_context(cache_dir_activity(target.parent))
+            activity.enter_context(
+                cache_dir_activity(Path(self.cfg.cache_dir) / "emojis")
+            )
             temporary_html.write_text(
                 self._inject_base_url(html, base_url),
                 encoding="utf-8",
@@ -1327,7 +1352,9 @@ class Renderer:
                     type="png",
                 )
                 if radius_px > 0:
-                    self._round_png_corners(target.resolve(), radius_px)
+                    await asyncio.to_thread(
+                        self._round_png_corners, target.resolve(), radius_px
+                    )
             else:
                 # Custom templates may not add the marker; crop to the body so
                 # the browser viewport itself never becomes an exported border.
@@ -1350,15 +1377,18 @@ class Renderer:
             self._log_exception(f"Playwright PNG 卡片渲染失败: {exc}")
             return False
         finally:
-            if page is not None:
-                try:
-                    await page.close()
-                except Exception as exc:
-                    self._log_warning(f"关闭卡片渲染页面失败: {exc}")
             try:
-                temporary_html.unlink(missing_ok=True)
-            except OSError as exc:
-                self._log_warning(f"清理卡片临时 HTML 失败: {exc}")
+                if page is not None:
+                    try:
+                        await page.close()
+                    except Exception as exc:
+                        self._log_warning(f"关闭卡片渲染页面失败: {exc}")
+                try:
+                    temporary_html.unlink(missing_ok=True)
+                except OSError as exc:
+                    self._log_warning(f"清理卡片临时 HTML 失败: {exc}")
+            finally:
+                activity.close()
 
     @staticmethod
     def _lyrics_lines(lyrics: str) -> list[dict[str, Any]]:
@@ -1618,9 +1648,13 @@ class Renderer:
 
         qr_path: Path | None = None
         target: Path | None = None
+        activity = None
         try:
             cache_dir = get_active_cache_dir(self.cfg.cache_dir)
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            activity_context = cache_dir_activity(cache_dir)
+            cache_dir = activity_context.__enter__()
+            activity = activity_context
+            assert cache_dir is not None
             token = uuid.uuid4().hex
             qr_path = cache_dir / f".{platform_key}_login_qr_{token}.png"
             target = cache_dir / f"{platform_key}_login_{token}.png"
@@ -1697,6 +1731,8 @@ class Renderer:
                         f"Failed to clean temporary {platform_display_name} QR image: "
                         f"{cleanup_error}"
                     )
+            if activity is not None:
+                activity.__exit__(None, None, None)
 
     async def render_card(self, result: ParseResult) -> Path | None:
         """将解析实体渲染为缓存 PNG；失败只返回 ``None``，不影响媒体发送。"""

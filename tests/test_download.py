@@ -267,3 +267,227 @@ def test_download_audio_accepts_audio_only_mp4_container(
     path = asyncio.run(download())
 
     assert path.read_bytes() == body
+
+
+@pytest.mark.parametrize("batched", [True, False])
+def test_download_concurrency_is_bounded(download_module, tmp_path: Path, batched):
+    active = 0
+    maximum = 0
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Content:
+        async def iter_chunked(self, _size: int):
+            await release.wait()
+            yield b"x"
+
+    class Response:
+        status = 200
+        reason = "OK"
+        content_length = 1
+        headers = {}
+
+        def __init__(self):
+            self.content = Content()
+
+        async def __aenter__(self):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            if active == 2:
+                two_started.set()
+            return self
+
+        async def __aexit__(self, *_args):
+            nonlocal active
+            active -= 1
+
+    class Client:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Progress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def update(self, _size: int):
+            return None
+
+    downloader = object.__new__(download_module.Downloader)
+    downloader.cfg = SimpleNamespace(cache_dir=tmp_path, download_retry_times=0)
+    downloader.max_size = 1
+    downloader.max_concurrent_downloads = 2
+    downloader._download_semaphore = asyncio.Semaphore(2)
+    downloader.default_headers = {}
+    downloader.client = Client()
+    downloader.get_progress_bar = lambda *_args, **_kwargs: Progress()
+
+    async def run():
+        urls = [f"https://example.test/{index}.jpg" for index in range(8)]
+        if batched:
+            task = asyncio.create_task(downloader.download_imgs_without_raise(urls))
+        else:
+            task = asyncio.gather(*(downloader.download_img(url) for url in urls))
+        await asyncio.wait_for(two_started.wait(), timeout=1)
+        assert maximum == 2
+        release.set()
+        paths = await task
+        assert len(paths) == 8
+
+    asyncio.run(run())
+    assert maximum == 2
+
+
+@pytest.mark.parametrize("interruption", ["cancel", "error"])
+def test_interrupted_download_never_exposes_or_leaves_partial_file(
+    download_module, tmp_path: Path, interruption
+):
+    partial_written = asyncio.Event()
+    never_finish = asyncio.Event()
+
+    class Content:
+        async def iter_chunked(self, _size: int):
+            yield b"partial"
+            partial_written.set()
+            await never_finish.wait()
+            if interruption == "error":
+                raise OSError("interrupted stream")
+            yield b"remaining"
+
+    class Response:
+        status = 200
+        reason = "OK"
+        content_length = len(b"partialremaining")
+        headers = {}
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Client:
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Progress:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def update(self, _size: int):
+            return None
+
+    downloader = object.__new__(download_module.Downloader)
+    downloader.cfg = SimpleNamespace(cache_dir=tmp_path, download_retry_times=0)
+    downloader.max_size = 1
+    downloader.max_concurrent_downloads = 1
+    downloader._download_semaphore = asyncio.Semaphore(1)
+    downloader.default_headers = {}
+    downloader.client = Client()
+    downloader.get_progress_bar = lambda *_args, **_kwargs: Progress()
+
+    async def run():
+        task = downloader.streamd(
+            "https://example.test/media.bin", file_name="media.bin"
+        )
+        await asyncio.wait_for(partial_written.wait(), timeout=1)
+        assert not (tmp_path / "media.bin").exists()
+        assert len(list(tmp_path.glob(".media.bin.*.part"))) == 1
+        if interruption == "cancel":
+            task.cancel()
+            expected = asyncio.CancelledError
+        else:
+            never_finish.set()
+            expected = OSError
+        with pytest.raises(expected):
+            await task
+
+    asyncio.run(run())
+    assert not (tmp_path / "media.bin").exists()
+    assert list(tmp_path.glob(".media.bin.*.part")) == []
+
+
+@pytest.mark.parametrize("stage", ["open", "write", "close"])
+def test_cancel_during_file_io_waits_for_handle_close_and_cleans_partial(
+    download_module, tmp_path: Path, monkeypatch, stage
+):
+    from core.cache import clear_cache_dir
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed = []
+    original_open = download_module.aiofiles.open
+
+    class File:
+        def __init__(self, handle):
+            self.handle = handle
+
+        async def write(self, chunk):
+            result = await self.handle.write(chunk)
+            if stage == "write":
+                started.set()
+                await release.wait()
+            return result
+
+        async def close(self):
+            if stage == "close":
+                started.set()
+                await release.wait()
+            await self.handle.close()
+            closed.append(True)
+
+    async def slow_open(*args, **kwargs):
+        handle = await original_open(*args, **kwargs)
+        if stage == "open":
+            started.set()
+            await release.wait()
+        return File(handle)
+
+    monkeypatch.setattr(download_module.aiofiles, "open", slow_open)
+
+    class Content:
+        async def iter_chunked(self, _size):
+            yield b"partial"
+
+    class Response:
+        status = 200
+        reason = "OK"
+        content_length = len(b"partial")
+        content = Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    downloader = object.__new__(download_module.Downloader)
+    downloader.cfg = SimpleNamespace(cache_dir=tmp_path, download_retry_times=0)
+    downloader.max_size = 1
+    downloader.default_headers = {}
+    downloader.client = SimpleNamespace(get=lambda *_a, **_k: Response())
+
+    async def run():
+        task = downloader.streamd("https://example.test/media.bin", file_name="media.bin")
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert clear_cache_dir(tmp_path) == (0, 0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert closed == [True]
+    assert list(tmp_path.iterdir()) == []

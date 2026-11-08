@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from astrbot.api import logger
 
+from .cache import clear_cache_dir
 from .config import PluginConfig
 
 
@@ -56,12 +57,16 @@ class CacheCleaner:
             logger.error(f"[{self.JOBNAME}] Cron 格式错误：{e}")
 
     async def _clean_plugin_cache(self) -> None:
-        """删除并重建缓存目录"""
+        """清理非活跃缓存内容并保留正在使用的目录。"""
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, shutil.rmtree, self.cfg.cache_dir)
-            self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
-            logger.info("Cache directory cleaned and recreated.")
+            removed_files, removed_bytes = await loop.run_in_executor(
+                None, clear_cache_dir, self.cfg.cache_dir
+            )
+            logger.info(
+                "Cache directory cleaned: "
+                f"removed_files={removed_files}, removed_bytes={removed_bytes}."
+            )
         except Exception:
             logger.exception("Error while cleaning cache directory.")
 

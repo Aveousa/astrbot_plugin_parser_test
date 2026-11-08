@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import httpx
 from PIL import Image, ImageFilter
 
-from ..cache import get_active_cache_dir
+from ..cache import cache_dir_activity, get_active_cache_dir
 from ..config import PluginConfig
 from ..constants import COMMON_HEADER
 from ..cookie import CookieJar
@@ -219,8 +219,11 @@ class PixivHelper:
     def blur(image_path: str | Path, radius: int = 20) -> Path:
         image_path = Path(image_path)
         output_path = image_path.parent / f"{image_path.stem}_blur{image_path.suffix}"
-        with Image.open(image_path) as img:
-            blurred = img.filter(ImageFilter.GaussianBlur(radius=radius))
+        with (
+            cache_dir_activity(image_path.parent),
+            Image.open(image_path) as img,
+            img.filter(ImageFilter.GaussianBlur(radius=radius)) as blurred,
+        ):
             blurred.save(output_path)
         return output_path
 
@@ -231,15 +234,19 @@ class PixivHelper:
         if not img_paths:
             raise ParseException("图片列表为空")
         images: list[Image.Image] = []
-        for img_path in img_paths:
-            with Image.open(img_path) as img:
-                images.append(img.convert("RGB"))
-        images[0].save(
-            save_path,
-            "PDF",
-            save_all=True,
-            append_images=images[1:],
-        )
+        try:
+            for img_path in img_paths:
+                with Image.open(img_path) as img:
+                    images.append(img.convert("RGB"))
+            images[0].save(
+                save_path,
+                "PDF",
+                save_all=True,
+                append_images=images[1:],
+            )
+        finally:
+            for image in images:
+                image.close()
         return save_path
 
     @staticmethod
@@ -248,27 +255,30 @@ class PixivHelper:
     ) -> None:
         images: list[Image.Image] = []
         durations: list[int] = []
-        with zipfile.ZipFile(zip_path) as zf:
-            for frame in frames:
-                file_name = frame.get("file", "")
-                delay = frame.get("delay", 100)
-                if not file_name:
-                    continue
-                with zf.open(file_name) as f:
-                    img = Image.open(f)
-                    img.load()
-                    images.append(img)
-                    durations.append(delay)
-        if not images:
-            raise ParseException("动图帧提取失败")
-        images[0].save(
-            gif_path,
-            "GIF",
-            save_all=True,
-            append_images=images[1:],
-            duration=durations,
-            loop=0,
-        )
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for frame in frames:
+                    file_name = frame.get("file", "")
+                    delay = frame.get("delay", 100)
+                    if not file_name:
+                        continue
+                    with zf.open(file_name) as f, Image.open(f) as img:
+                        img.load()
+                        images.append(img.copy())
+                        durations.append(delay)
+            if not images:
+                raise ParseException("动图帧提取失败")
+            images[0].save(
+                gif_path,
+                "GIF",
+                save_all=True,
+                append_images=images[1:],
+                duration=durations,
+                loop=0,
+            )
+        finally:
+            for image in images:
+                image.close()
 
     @staticmethod
     def build_pdf_from_zip_sync(
@@ -276,23 +286,26 @@ class PixivHelper:
     ) -> Path:
         """从动图 zip 中提取帧并合成为 PDF"""
         images: list[Image.Image] = []
-        with zipfile.ZipFile(zip_path) as zf:
-            for frame in frames:
-                file_name = frame.get("file", "")
-                if not file_name:
-                    continue
-                with zf.open(file_name) as f:
-                    img = Image.open(f)
-                    img.load()
-                    images.append(img.convert("RGB"))
-        if not images:
-            raise ParseException("动图帧提取失败")
-        images[0].save(
-            pdf_path,
-            "PDF",
-            save_all=True,
-            append_images=images[1:],
-        )
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                for frame in frames:
+                    file_name = frame.get("file", "")
+                    if not file_name:
+                        continue
+                    with zf.open(file_name) as f, Image.open(f) as img:
+                        img.load()
+                        images.append(img.convert("RGB"))
+            if not images:
+                raise ParseException("动图帧提取失败")
+            images[0].save(
+                pdf_path,
+                "PDF",
+                save_all=True,
+                append_images=images[1:],
+            )
+        finally:
+            for image in images:
+                image.close()
         return pdf_path
 
 
@@ -408,7 +421,9 @@ class PixivParser(BaseParser):
             cover_url, headers=PIXIV_IMG_HEADERS, proxy=self.proxy
         )
         if blur:
-            cover_path = PixivHelper.blur(cover_path, radius=5)
+            cover_path = await asyncio.to_thread(
+                PixivHelper.blur, cover_path, radius=5
+            )
         return [ImageContent(cover_path)]
 
     async def _get_series_info(

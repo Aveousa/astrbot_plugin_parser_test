@@ -23,11 +23,13 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import aiohttp
 
 from .cache import (
+    cache_dir_activity,
     clear_cache_dir,
     create_parse_cache_dir,
     get_active_cache_dir,
     get_cache_size,
 )
+from .config import save_config_to_completion
 from .exception import DownloadException
 from .music_quality import (
     is_valid_qq_file_quality_priority,
@@ -203,6 +205,7 @@ class AppleMusicBackend:
         *,
         platform_status_provider: Callable[[], object] | None = None,
         runtime_parser_provider: Callable[[], object] | None = None,
+        config_write_lock: asyncio.Lock | None = None,
     ):
         self.cfg = config
         self.settings = settings or BackendSettings.from_config(config)
@@ -214,6 +217,10 @@ class AppleMusicBackend:
         self._last_auth_state = "unknown"
         self._session: aiohttp.ClientSession | None = None
         self.lock = asyncio.Lock()
+        # Fixed order: business lock -> config write lock. This shared lock
+        # covers _data mutation, saving to completion, and rollback only; group
+        # policy operations never need the Apple Music business lock.
+        self.config_write_lock = config_write_lock or asyncio.Lock()
         self.pending_owner: str | None = None
         self.pending_until = 0.0
         self._probe_cache: tuple[float, dict] | None = None
@@ -873,19 +880,24 @@ class AppleMusicBackend:
             for field, value in settings.items():
                 updates.append((item, field, list(value) if field == "file_quality_priority" else value))
 
-        async with self.lock:
+        async with self.lock, self.config_write_lock:
             self.check_owner(owner)
             previous = [(item, field, getattr(item, field, None)) for item, field, _ in updates]
             raw_data = getattr(self.cfg, "_data", None)
             history_store = raw_data.get("__parser_management_history_v1") if isinstance(raw_data, dict) else None
+            history_was_present = (
+                isinstance(raw_data, dict)
+                and "__parser_management_history_v1" in raw_data
+            )
             history_snapshot = (
                 json.loads(json.dumps(history_store))
                 if isinstance(history_store, dict)
-                else None
+                else history_store
             )
             if isinstance(raw_data, dict) and not isinstance(history_store, dict):
                 history_store = {}
                 raw_data["__parser_management_history_v1"] = history_store
+            outcome = None
             try:
                 for item, field, value in updates:
                     setattr(item, field, value)
@@ -898,17 +910,28 @@ class AppleMusicBackend:
                         saved_settings.update(settings)
                         saved.update(settings=saved_settings, cookie_configured=bool(saved.get("cookie_configured")))
                         history_store[parser_key] = saved
-                save = getattr(self.cfg, "save_config", None)
-                if not callable(save):
-                    raise RuntimeError("configuration is not persistent")
-                await asyncio.get_running_loop().run_in_executor(None, save)
+                outcome = await save_config_to_completion(self.cfg)
+                if outcome.error is not None:
+                    raise outcome.error
             except Exception:
                 for item, field, value in previous:
                     setattr(item, field, value)
-                if isinstance(history_store, dict) and history_snapshot is not None:
-                    history_store.clear()
-                    history_store.update(history_snapshot)
+                if isinstance(raw_data, dict):
+                    if history_was_present:
+                        if isinstance(history_store, dict) and isinstance(
+                            history_snapshot, dict
+                        ):
+                            history_store.clear()
+                            history_store.update(history_snapshot)
+                        else:
+                            raw_data["__parser_management_history_v1"] = history_snapshot
+                    else:
+                        raw_data.pop("__parser_management_history_v1", None)
+                if outcome is not None and outcome.cancellation is not None:
+                    raise outcome.cancellation
                 raise AppleMusicBackendError("音乐解析设置保存失败，请稍后重试") from None
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
             all_entries = self._parser_config_entries()
             for key in values:
                 responses[key] = all_entries[key]
@@ -929,7 +952,7 @@ class AppleMusicBackend:
         item = self._parser_item(parser_key)
         if item is None:
             raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
-        async with self.lock:
+        async with self.lock, self.config_write_lock:
             self.check_owner(owner)
             old_cookie = getattr(item, "cookies", None)
             cookiejars = [
@@ -940,15 +963,21 @@ class AppleMusicBackend:
             cookie_states = [(jar, jar.raw_cookies, list(jar.cookies), jar.cookies_str) for jar in cookiejars]
             raw_data = getattr(self.cfg, "_data", None)
             history_store = None
+            history_was_present = False
+            history_snapshot = None
             if isinstance(raw_data, dict):
+                history_was_present = "__parser_management_history_v1" in raw_data
                 history_store = raw_data.get("__parser_management_history_v1")
+                history_snapshot = (
+                    json.loads(json.dumps(history_store))
+                    if isinstance(history_store, dict)
+                    else history_store
+                )
                 if not isinstance(history_store, dict):
                     history_store = {}
                     raw_data["__parser_management_history_v1"] = history_store
             previous_check = self._music_cookie_checks.pop(parser_key, None)
-            history_snapshot = None
-            if history_store is not None:
-                history_snapshot = json.loads(json.dumps(history_store))
+            outcome = None
             try:
                 item.cookies = cookie
                 for jar in cookiejars:
@@ -958,15 +987,22 @@ class AppleMusicBackend:
                     saved = dict(saved) if isinstance(saved, dict) else {}
                     saved["cookie_configured"] = bool(cookie)
                     history_store[parser_key] = saved
-                save = getattr(self.cfg, "save_config", None)
-                if not callable(save):
-                    raise RuntimeError("configuration is not persistent")
-                await asyncio.get_running_loop().run_in_executor(None, save)
+                outcome = await save_config_to_completion(self.cfg)
+                if outcome.error is not None:
+                    raise outcome.error
             except Exception:
                 item.cookies = old_cookie
-                if history_store is not None and history_snapshot is not None:
-                    history_store.clear()
-                    history_store.update(history_snapshot)
+                if isinstance(raw_data, dict):
+                    if history_was_present:
+                        if isinstance(history_store, dict) and isinstance(
+                            history_snapshot, dict
+                        ):
+                            history_store.clear()
+                            history_store.update(history_snapshot)
+                        else:
+                            raw_data["__parser_management_history_v1"] = history_snapshot
+                    else:
+                        raw_data.pop("__parser_management_history_v1", None)
                 if previous_check is not None:
                     self._music_cookie_checks[parser_key] = previous_check
                 for jar, raw, cookies, cookies_str in cookie_states:
@@ -975,7 +1011,11 @@ class AppleMusicBackend:
                         jar.save_to_file()
                     except Exception:
                         pass
+                if outcome is not None and outcome.cancellation is not None:
+                    raise outcome.cancellation
                 raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]} Cookie 保存失败") from None
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
             entry = self._parser_config_entries()[parser_key]
             return {
                 "message": f"{PARSER_LABELS[parser_key]} Cookie 已{ '清除' if clear or not cookie else '保存' }",
@@ -1009,28 +1049,31 @@ class AppleMusicBackend:
             ):
                 raise AppleMusicBackendError("Apple Music 文件音质优先级无效")
 
-        async with self.lock:
+        async with self.lock, self.config_write_lock:
             self.check_owner(owner)
             item = self._parser_item("applemusic")
             if item is None:
                 raise AppleMusicBackendError("Apple Music 解析器未配置，请先在插件配置页恢复该解析器配置")
             previous = {key: getattr(item, key, None) for key in values}
+            outcome = None
             try:
                 for key, value in values.items():
                     setattr(item, key, list(value) if key == "file_codec_priority" else value)
-                save = getattr(self.cfg, "save_config", None)
-                if not callable(save):
-                    raise RuntimeError("configuration is not persistent")
-                await asyncio.get_running_loop().run_in_executor(None, save)
+                outcome = await save_config_to_completion(self.cfg)
+                if outcome.error is not None:
+                    raise outcome.error
             except Exception:
                 for key, value in previous.items():
                     setattr(item, key, value)
+                if outcome is not None and outcome.cancellation is not None:
+                    raise outcome.cancellation
                 raise AppleMusicBackendError("Apple Music 设置保存失败，请稍后重试") from None
-
             # BackendSettings is immutable and normally created at plugin load.
             # Refresh it so backend_enabled takes effect without a plugin reload.
             self.settings = BackendSettings.from_config(self.cfg)
             self._probe_cache = None
+            if outcome.cancellation is not None:
+                raise outcome.cancellation
             return {
                 "message": "Apple Music 解析设置已保存并立即生效",
                 "settings": self.management_settings(),
@@ -1364,68 +1407,69 @@ class AppleMusicBackend:
             configured_timeout = float(self.settings.timeout)
         except (TypeError, ValueError, OverflowError):
             configured_timeout = self._LYRICS_TIMEOUT
-        await self._run(
-            [
-                self.settings.python,
-                "-m",
-                "gamdl",
-                "--no-config-file",
-                "--no-exceptions",
-                "--log-level",
-                "ERROR",
-                "--use-wrapper",
-                "--wrapper-url",
-                self.settings.validate(),
-                "--wrapper-decrypt-host",
-                self.settings.decrypt_host,
-                "--wrapper-decrypt-port",
-                str(self.settings.decrypt_port),
-                "--synced-lyrics-only",
-                "--synced-lyrics-format",
-                "lrc",
-                "--output-path",
-                str(output),
-                "--temp-path",
-                str(temporary),
-                # Make the generated path deterministic, while still
-                # validating it by walking the isolated output directory below.
-                "--album-folder-template",
-                "album",
-                "--compilation-folder-template",
-                "album",
-                "--no-album-folder-template",
-                "album",
-                "--single-disc-file-template",
-                identifier,
-                "--multi-disc-file-template",
-                identifier,
-                "--no-album-file-template",
-                identifier,
-                canonical,
-            ],
-            timeout=min(self._LYRICS_TIMEOUT, max(1.0, configured_timeout)),
-            cwd=str(directory),
-        )
+        with cache_dir_activity(directory):
+            await self._run(
+                [
+                    self.settings.python,
+                    "-m",
+                    "gamdl",
+                    "--no-config-file",
+                    "--no-exceptions",
+                    "--log-level",
+                    "ERROR",
+                    "--use-wrapper",
+                    "--wrapper-url",
+                    self.settings.validate(),
+                    "--wrapper-decrypt-host",
+                    self.settings.decrypt_host,
+                    "--wrapper-decrypt-port",
+                    str(self.settings.decrypt_port),
+                    "--synced-lyrics-only",
+                    "--synced-lyrics-format",
+                    "lrc",
+                    "--output-path",
+                    str(output),
+                    "--temp-path",
+                    str(temporary),
+                    # Make the generated path deterministic, while still
+                    # validating it by walking the isolated output directory below.
+                    "--album-folder-template",
+                    "album",
+                    "--compilation-folder-template",
+                    "album",
+                    "--no-album-folder-template",
+                    "album",
+                    "--single-disc-file-template",
+                    identifier,
+                    "--multi-disc-file-template",
+                    identifier,
+                    "--no-album-file-template",
+                    identifier,
+                    canonical,
+                ],
+                timeout=min(self._LYRICS_TIMEOUT, max(1.0, configured_timeout)),
+                cwd=str(directory),
+            )
 
-        candidates: list[tuple[Path, str]] = []
-        try:
-            output_root = output.resolve()
-            for path in output.rglob("*"):
-                if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".lrc":
-                    continue
-                try:
-                    resolved = path.resolve()
-                    if not resolved.is_relative_to(output_root):
+            candidates: list[tuple[Path, str]] = []
+            try:
+                output_root = output.resolve()
+                for path in output.rglob("*"):
+                    if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".lrc":
                         continue
-                    if path.stat().st_size <= 0 or path.stat().st_size > self._MAX_LYRICS_SIZE:
+                    try:
+                        resolved = path.resolve()
+                        if not resolved.is_relative_to(output_root):
+                            continue
+                        if path.stat().st_size <= 0 or path.stat().st_size > self._MAX_LYRICS_SIZE:
+                            continue
+                        text = path.read_text(encoding="utf-8-sig")
+                    except (OSError, UnicodeError):
                         continue
-                    text = path.read_text(encoding="utf-8-sig")
-                except (OSError, UnicodeError):
-                    continue
-                if self._valid_synced_lyrics(text):
-                    candidates.append((path, text.strip()))
-        except OSError:
-            candidates = []
+                    if self._valid_synced_lyrics(text):
+                        candidates.append((path, text.strip()))
+            except OSError:
+                candidates = []
 
         # A direct single-track request should produce exactly one LRC file.
         # If gamdl emitted none or an ambiguous set, do not risk displaying a
@@ -1490,52 +1534,53 @@ class AppleMusicBackend:
                 raise AppleMusicBackendError("Apple Music 音质配置无效")
             codec_arg = ",".join(codec_priority)
             directory = create_parse_cache_dir(get_active_cache_dir(self.cfg.cache_dir), "applemusic")
-            output, temporary = directory / "output", directory / "temporary"
-            output.mkdir()
-            temporary.mkdir()
-            await self._run([
-                self.settings.python, "-m", "gamdl", "--no-config-file", "--no-exceptions",
-                "--log-level", "ERROR", "--use-wrapper", "--wrapper-url", self.settings.validate(),
-                "--wrapper-decrypt-host", self.settings.decrypt_host,
-                "--wrapper-decrypt-port", str(self.settings.decrypt_port),
-                "--song-codec-priority", codec_arg, "--no-synced-lyrics",
-                "--output-path", str(output), "--temp-path", str(temporary),
-                "--album-folder-template", "album", "--compilation-folder-template", "album",
-                "--no-album-folder-template", "album",
-                "--single-disc-file-template", identifier,
-                "--multi-disc-file-template", identifier,
-                "--no-album-file-template", identifier, canonical,
-            ], timeout=self.settings.timeout, cwd=str(directory))
-            # gamdl can exit zero after a track error, so exit code is not proof.
-            files = [p for p in output.rglob("*.m4a") if p.is_file() and not p.is_symlink()]
-            if len(files) != 1 or not files[0].resolve().is_relative_to(output.resolve()):
-                raise AppleMusicBackendError("gamdl 未生成唯一的歌曲音频；登录不代表下载可用")
-            path = files[0]
-            if not 0 < path.stat().st_size <= self.cfg.max_size:
-                raise AppleMusicBackendError("生成的音频为空或超过插件大小限制")
-            raw = await self._run([
-                shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries",
-                "format=duration:stream=codec_type,codec_name,codec_tag_string", "-of", "json", str(path),
-            ], timeout=20, capture=True)
-            try:
-                info = json.loads(raw)
-                actual = float(info["format"]["duration"])
-                playable = any(
-                    isinstance(s, dict) and s.get("codec_type") == "audio"
-                    and s.get("codec_name") in {
-                        "aac", "alac", "ac3", "eac3", "ec-3",
-                    }
-                    and s.get("codec_tag_string") != "enca"
-                    for s in info["streams"]
-                )
-                # Check the decoded file, not a preview URL or a mere file name.
-                if not playable or not math.isfinite(actual) or actual <= 0 or actual > self.cfg.max_duration:
-                    raise ValueError
-                if duration and abs(actual - duration) > max(5, duration * 0.05):
-                    raise AppleMusicBackendError("音频时长与歌曲不一致，可能只有试听，已拒绝发送")
-            except (KeyError, TypeError, ValueError):
-                raise AppleMusicBackendError("输出文件未通过音频格式/时长检查") from None
-            return path
+            with cache_dir_activity(directory):
+                output, temporary = directory / "output", directory / "temporary"
+                output.mkdir()
+                temporary.mkdir()
+                await self._run([
+                    self.settings.python, "-m", "gamdl", "--no-config-file", "--no-exceptions",
+                    "--log-level", "ERROR", "--use-wrapper", "--wrapper-url", self.settings.validate(),
+                    "--wrapper-decrypt-host", self.settings.decrypt_host,
+                    "--wrapper-decrypt-port", str(self.settings.decrypt_port),
+                    "--song-codec-priority", codec_arg, "--no-synced-lyrics",
+                    "--output-path", str(output), "--temp-path", str(temporary),
+                    "--album-folder-template", "album", "--compilation-folder-template", "album",
+                    "--no-album-folder-template", "album",
+                    "--single-disc-file-template", identifier,
+                    "--multi-disc-file-template", identifier,
+                    "--no-album-file-template", identifier, canonical,
+                ], timeout=self.settings.timeout, cwd=str(directory))
+                # gamdl can exit zero after a track error, so exit code is not proof.
+                files = [p for p in output.rglob("*.m4a") if p.is_file() and not p.is_symlink()]
+                if len(files) != 1 or not files[0].resolve().is_relative_to(output.resolve()):
+                    raise AppleMusicBackendError("gamdl 未生成唯一的歌曲音频；登录不代表下载可用")
+                path = files[0]
+                if not 0 < path.stat().st_size <= self.cfg.max_size:
+                    raise AppleMusicBackendError("生成的音频为空或超过插件大小限制")
+                raw = await self._run([
+                    shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries",
+                    "format=duration:stream=codec_type,codec_name,codec_tag_string", "-of", "json", str(path),
+                ], timeout=20, capture=True)
+                try:
+                    info = json.loads(raw)
+                    actual = float(info["format"]["duration"])
+                    playable = any(
+                        isinstance(s, dict) and s.get("codec_type") == "audio"
+                        and s.get("codec_name") in {
+                            "aac", "alac", "ac3", "eac3", "ec-3",
+                        }
+                        and s.get("codec_tag_string") != "enca"
+                        for s in info["streams"]
+                    )
+                    # Check the decoded file, not a preview URL or a mere file name.
+                    if not playable or not math.isfinite(actual) or actual <= 0 or actual > self.cfg.max_duration:
+                        raise ValueError
+                    if duration and abs(actual - duration) > max(5, duration * 0.05):
+                        raise AppleMusicBackendError("音频时长与歌曲不一致，可能只有试听，已拒绝发送")
+                except (KeyError, TypeError, ValueError):
+                    raise AppleMusicBackendError("输出文件未通过音频格式/时长检查") from None
+                return path
 
     async def close(self) -> None:
         self.closed = True

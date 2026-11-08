@@ -143,11 +143,13 @@ class AppleMusicWeb:
         self._context = context
         if self.group_parser_config is None:
             self.group_parser_config = GroupParserConfigService(
-                self.backend.cfg, context, lock=self.backend.lock
+                self.backend.cfg,
+                context,
+                config_lock=self.backend.config_write_lock,
             )
         else:
             # ParserPlugin shares this service with the chat command handler.
-            # Keep its lock and point it at the current platform manager.
+            # Keep its locks and point it at the current platform manager.
             self.group_parser_config.context = context
 
         def response(data=None, *, message=None, status_code=200):

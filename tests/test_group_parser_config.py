@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
-from core.apple_music_backend import AppleMusicBackendError
+from core.apple_music_backend import (
+    AppleMusicBackend,
+    AppleMusicBackendError,
+    BackendSettings,
+)
 from core.group_parser_config import (
     GROUP_PARSER_SETTINGS_KEY,
     QQ_OFFICIAL_KNOWN_GROUPS_KEY,
@@ -162,6 +169,128 @@ def test_qq_official_group_can_be_remembered_and_toggled():
     assert "netease" not in enabled
     assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["group_id"] == "group-openid-A1"
     assert saves == [True, True]
+
+
+def test_known_qq_official_group_uses_lock_free_fast_path():
+    cfg, saves = _config()
+    cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = [{
+        "platform_id": "QQBot_1",
+        "group_id": "group-openid-A1",
+        "name": "官方测试群",
+    }]
+    service = GroupParserConfigService(cfg, SimpleNamespace())
+
+    class FailingLock:
+        async def __aenter__(self):
+            raise AssertionError("已记录群不应进入群配置锁")
+
+        async def __aexit__(self, *_args):
+            return None
+
+    service.lock = FailingLock()
+
+    assert asyncio.run(
+        service.remember_qq_official_group("QQBot_1", "group-openid-A1")
+    ) is False
+    assert saves == []
+
+
+def test_concurrent_first_observation_persists_one_qq_official_group():
+    cfg, saves = _config()
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+
+    async def run():
+        return await asyncio.gather(*(
+            service.remember_qq_official_group(
+                "QQBot_1", "group-openid-A1", "官方测试群"
+            )
+            for _ in range(8)
+        ))
+
+    results = asyncio.run(run())
+
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+    assert saves == [True]
+    assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] == [{
+        "platform_id": "QQBot_1",
+        "group_id": "group-openid-A1",
+        "name": "官方测试群",
+    }]
+
+
+def test_cancelled_group_record_waits_for_save_and_then_updates_index():
+    cfg, _ = _config()
+    started = threading.Event()
+    release = threading.Event()
+
+    def save_config():
+        started.set()
+        assert release.wait(timeout=2)
+
+    cfg.save_config = save_config
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+
+    async def run():
+        task = asyncio.create_task(service.remember_qq_official_group(
+            "QQBot_1", "group-openid-A1", "官方测试群"
+        ))
+        await asyncio.wait_for(asyncio.to_thread(started.wait, 1), timeout=2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+
+    assert service._qq_official_group_index[
+        ("QQBot_1", "group-openid-A1")
+    ] == "官方测试群"
+    assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["group_id"] == "group-openid-A1"
+
+
+def test_failed_group_record_rolls_back_without_updating_index():
+    cfg, _ = _config(save_error=OSError("disk full"))
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter]))
+    )
+
+    with pytest.raises(AppleMusicBackendError, match="记录保存失败"):
+        asyncio.run(service.remember_qq_official_group(
+            "QQBot_1", "group-openid-A1", "官方测试群"
+        ))
+
+    assert QQ_OFFICIAL_KNOWN_GROUPS_KEY not in cfg._data
+    assert ("QQBot_1", "group-openid-A1") not in service._qq_official_group_index
+
+
+def test_group_index_refresh_rebuilds_from_reloaded_configuration():
+    cfg, saves = _config()
+    service = _service(cfg)
+    cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = [{
+        "platform_id": "QQBot_1",
+        "group_id": "group-reloaded",
+        "name": "Reloaded group",
+    }]
+
+    service.refresh_qq_official_group_index()
+
+    assert service._qq_official_group_index == {
+        ("QQBot_1", "group-reloaded"): "Reloaded group"
+    }
+    assert asyncio.run(service.remember_qq_official_group(
+        "QQBot_1", "group-reloaded"
+    )) is False
+    assert saves == []
 
 
 def test_group_list_reports_total_switch_from_canonicalized_blacklist_scope():
@@ -371,6 +500,33 @@ def test_group_total_switch_save_requires_boolean_and_persistence_rolls_back_bla
     assert GROUP_PARSER_SETTINGS_KEY not in cfg._data
 
 
+def test_session_total_switch_persists_once_per_real_change():
+    cfg, saves = _config()
+    service = _service(cfg)
+    scope = "Napcat_V5:GroupMessage:90001"
+
+    assert asyncio.run(service.set_session_parsing_enabled(scope, False)) is True
+    assert cfg._data["blacklist"] == [scope]
+    assert asyncio.run(service.set_session_parsing_enabled(scope, False)) is False
+    assert asyncio.run(service.set_session_parsing_enabled(scope, True)) is True
+    assert cfg._data["blacklist"] == []
+    assert saves == [True, True]
+
+
+def test_failed_session_total_switch_save_restores_blacklist_and_key_presence():
+    cfg, _ = _config(save_error=OSError("disk full"))
+    cfg.blacklist = ["Other:GroupMessage:1"]
+    service = _service(cfg)
+
+    with pytest.raises(AppleMusicBackendError, match="会话解析设置保存失败"):
+        asyncio.run(service.set_session_parsing_enabled(
+            "Napcat_V5:GroupMessage:90001", False
+        ))
+
+    assert "blacklist" not in cfg._data
+    assert cfg.blacklist == ["Other:GroupMessage:1"]
+
+
 def test_failed_save_restores_schema_stable_storage_and_key_presence():
     cfg, _ = _config(save_error=OSError("disk full"))
     original = [
@@ -445,12 +601,165 @@ def test_quick_toggle_rejects_group_not_joined_to_target_instance():
         asyncio.run(service.set_group_parser("Napcat_V5", "90001", "bilibili", False))
 
 
-def test_group_configuration_reuses_backend_lock():
+def test_group_configuration_accepts_a_dedicated_group_lock():
     cfg, _ = _config()
     lock = asyncio.Lock()
     service = GroupParserConfigService(cfg, SimpleNamespace(), lock=lock)
 
     assert service.lock is lock
+
+
+def test_group_and_apple_business_locks_are_separate_but_config_writes_are_shared():
+    cfg, _ = _config()
+    config_lock = asyncio.Lock()
+    backend = AppleMusicBackend(
+        cfg,
+        BackendSettings(enabled=False),
+        config_write_lock=config_lock,
+    )
+    service = GroupParserConfigService(
+        cfg, SimpleNamespace(), config_lock=backend.config_write_lock
+    )
+
+    assert service.lock is not backend.lock
+    assert service.config_lock is backend.config_write_lock
+
+
+def test_group_and_apple_config_saves_cannot_overlap():
+    cfg, _ = _config()
+    cfg.parser.get = lambda key: cfg.parser._nodes.get(key)
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    config_lock = asyncio.Lock()
+    active_saves = 0
+    maximum_active_saves = 0
+    save_count = 0
+    counter_lock = threading.Lock()
+
+    def save_config():
+        nonlocal active_saves, maximum_active_saves, save_count
+        with counter_lock:
+            active_saves += 1
+            maximum_active_saves = max(maximum_active_saves, active_saves)
+        time.sleep(0.03)
+        with counter_lock:
+            save_count += 1
+            active_saves -= 1
+
+    cfg.save_config = save_config
+    backend = AppleMusicBackend(
+        cfg,
+        BackendSettings(enabled=False),
+        config_write_lock=config_lock,
+    )
+    service = GroupParserConfigService(
+        cfg,
+        SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter])),
+        config_lock=config_lock,
+    )
+
+    async def run():
+        try:
+            await asyncio.gather(
+                service.remember_qq_official_group(
+                    "QQBot_1", "group-openid-A1", "官方测试群"
+                ),
+                backend.update_music_parser_settings(
+                    "admin", {"qqmusic": {"enable": False}}
+                ),
+            )
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+    assert maximum_active_saves == 1
+    assert save_count == 2
+    assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["group_id"] == "group-openid-A1"
+    assert cfg._data["__parser_management_history_v1"]["qqmusic"]["settings"] == {
+        "enable": False
+    }
+
+
+def test_failed_apple_config_save_restores_shared_history_object_in_place():
+    cfg, _ = _config(save_error=OSError("disk full"))
+    cfg.parser.get = lambda key: cfg.parser._nodes.get(key)
+    history = {"qqmusic": {"settings": {"enable": True}}}
+    cfg._data["__parser_management_history_v1"] = history
+    cfg._parser_management_history = history
+    backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+
+    async def run():
+        try:
+            with pytest.raises(AppleMusicBackendError, match="音乐解析设置保存失败"):
+                await backend.update_music_parser_settings(
+                    "admin", {"qqmusic": {"enable": False}}
+                )
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+    assert cfg._data["__parser_management_history_v1"] is history
+    assert cfg._parser_management_history is history
+    assert history == {"qqmusic": {"settings": {"enable": True}}}
+    assert cfg.parser._nodes["qqmusic"].enable is True
+
+
+def test_failed_transaction_cannot_roll_back_a_later_group_write():
+    cfg, _ = _config()
+    cfg.parser.get = lambda key: cfg.parser._nodes.get(key)
+    config_lock = asyncio.Lock()
+    adapter = _Adapter("QQBot_1", name="qq_official")
+    started = threading.Event()
+    release = threading.Event()
+    saved = []
+    attempts = 0
+
+    def save_config():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            started.set()
+            assert release.wait(timeout=2)
+            raise OSError("disk full")
+        saved.append(copy.deepcopy(cfg._data))
+
+    cfg.save_config = save_config
+    backend = AppleMusicBackend(
+        cfg, BackendSettings(enabled=False), config_write_lock=config_lock
+    )
+    service = GroupParserConfigService(
+        cfg,
+        SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[adapter])),
+        config_lock=config_lock,
+    )
+
+    async def run():
+        first = asyncio.create_task(backend.update_music_parser_settings(
+            "admin", {"qqmusic": {"enable": False}}
+        ))
+        try:
+            assert await asyncio.to_thread(started.wait, 1)
+            second = asyncio.create_task(service.remember_qq_official_group(
+                "QQBot_1", "group-openid-A1"
+            ))
+            await asyncio.sleep(0)
+            assert not second.done()
+            release.set()
+            with pytest.raises(AppleMusicBackendError):
+                await first
+            assert await second is True
+        finally:
+            release.set()
+            await backend.close()
+
+    asyncio.run(run())
+
+    assert attempts == 2
+    assert saved == [cfg._data]
+    assert "__parser_management_history_v1" not in saved[0]
+    assert saved[0][QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["group_id"] == "group-openid-A1"
+    assert cfg.parser._nodes["qqmusic"].enable is True
 
 
 def test_parser_keyword_mapping_checks_qishui_before_douyin_host():

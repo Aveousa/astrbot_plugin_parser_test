@@ -1,4 +1,7 @@
+import asyncio
+import os
 import re
+import uuid
 from asyncio import Task, TimeoutError, create_task, gather, sleep
 from collections.abc import Callable, Coroutine
 from functools import wraps
@@ -12,8 +15,8 @@ from yarl import URL
 
 from astrbot.api import logger
 
+from .cache import cache_dir_activity, get_active_cache_dir
 from .config import PluginConfig
-from .cache import get_active_cache_dir
 from .constants import COMMON_HEADER
 from .exception import (
     DownloadException,
@@ -63,6 +66,32 @@ def _looks_like_invalid_audio(content_type: str, chunk: bytes) -> bool:
     return prefix.startswith(_AUDIO_ERROR_PREFIXES)
 
 
+async def _finish_file_io(operation):
+    """Settle an executor-backed file operation before closing its handle.
+
+    Cancelling an aiofiles await does not stop its worker. Remember cancellation
+    until open/write/close has finished so no worker can outlive the handle or
+    recreate a partial file after cancellation cleanup.
+    """
+
+    task = asyncio.ensure_future(operation)
+    cancellation = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except Exception:
+            break
+    try:
+        value = task.result()
+    except Exception:
+        if cancellation is not None:
+            raise cancellation
+        raise
+    return value, cancellation
+
+
 def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]:
     """装饰器：自动将异步函数调用转换为 Task, 完整保留类型提示"""
 
@@ -78,9 +107,13 @@ def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]
 class Downloader:
     """保留平台共用的流式媒体下载器。"""
 
+    MAX_CONCURRENT_DOWNLOADS = 4
+
     def __init__(self, config: PluginConfig):
         self.cfg = config
         self.max_size = self.cfg.source_max_size
+        self.max_concurrent_downloads = self.MAX_CONCURRENT_DOWNLOADS
+        self._download_semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
         self.default_headers: dict[str, str] = COMMON_HEADER.copy()
         # 用于流式下载的客户端
         self.client = ClientSession(
@@ -113,89 +146,147 @@ class Downloader:
         if not file_name:
             file_name = generate_file_name(url)
         cache_dir = get_active_cache_dir(self.cfg.cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        file_path = cache_dir / file_name
-        # 如果文件存在，则直接返回
-        if file_path.exists():
-            return file_path
-        headers = headers or self.default_headers
-        request_url = self._request_url(url)
-        proxy_kwargs = {} if proxy is ... else {"proxy": proxy}
-        retries = self.cfg.download_retry_times
-        for attempt in range(retries + 1):
+        with cache_dir_activity(cache_dir) as active_cache_dir:
+            assert active_cache_dir is not None
+            file_path = active_cache_dir / file_name
+            temporary_path = file_path.with_name(
+                f".{file_path.name}.{uuid.uuid4().hex}.part"
+            )
+            headers = headers or self.default_headers
+            request_url = self._request_url(url)
+            proxy_kwargs = {} if proxy is ... else {"proxy": proxy}
+            retries = self.cfg.download_retry_times
+            semaphore = getattr(self, "_download_semaphore", None)
+            if semaphore is None:
+                # Keep lightweight test doubles/backward-compatible constructions
+                # safe while ensuring real Downloader instances share one limiter.
+                limit = max(1, int(getattr(
+                    self, "max_concurrent_downloads", self.MAX_CONCURRENT_DOWNLOADS
+                )))
+                semaphore = asyncio.Semaphore(limit)
+                self._download_semaphore = semaphore
             try:
-                if worker_proxy_url:
-                    request = self.client.post(
-                        f"{worker_proxy_url.rstrip('/')}/download",
-                        json={"url": url, "headers": headers},
-                        allow_redirects=True,
-                        **proxy_kwargs,
-                    )
-                else:
-                    request = self.client.get(
-                        request_url,
-                        headers=headers,
-                        allow_redirects=True,
-                        **proxy_kwargs,
-                    )
-                async with request as response:
-                    if response.status >= 400:
-                        raise ClientError(f"HTTP {response.status} {response.reason}")
-                    content_length = response.content_length
-                    max_bytes = self.max_size * 1024 * 1024
-                    response_headers = getattr(response, "headers", {}) or {}
-                    content_type = str(response_headers.get("Content-Type", ""))
+                async with semaphore:
+                    # A formal cache path represents only a completed download.
+                    try:
+                        if file_path.is_file() and file_path.stat().st_size > 0:
+                            return file_path
+                    except OSError:
+                        pass
+                    if file_path.exists():
+                        await safe_unlink(file_path)
 
-                    if content_length == 0:
-                        logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
-                        raise ZeroSizeException
-                    if content_length and content_length > max_bytes:
-                        logger.warning(
-                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
-                        )
-                        raise SizeLimitException
+                    for attempt in range(retries + 1):
+                        try:
+                            if worker_proxy_url:
+                                request = self.client.post(
+                                    f"{worker_proxy_url.rstrip('/')}/download",
+                                    json={"url": url, "headers": headers},
+                                    allow_redirects=True,
+                                    **proxy_kwargs,
+                                )
+                            else:
+                                request = self.client.get(
+                                    request_url,
+                                    headers=headers,
+                                    allow_redirects=True,
+                                    **proxy_kwargs,
+                                )
+                            async with request as response:
+                                if response.status >= 400:
+                                    raise ClientError(
+                                        f"HTTP {response.status} {response.reason}"
+                                    )
+                                content_length = response.content_length
+                                max_bytes = self.max_size * 1024 * 1024
+                                response_headers = getattr(response, "headers", {}) or {}
+                                content_type = str(response_headers.get("Content-Type", ""))
 
-                    downloaded = 0
-                    first_chunk = True
-                    with self.get_progress_bar(file_name, content_length) as bar:
-                        async with aiofiles.open(file_path, "wb") as file:
-                            async for chunk in response.content.iter_chunked(
-                                1024 * 1024
-                            ):
-                                if validate_audio and first_chunk:
-                                    first_chunk = False
-                                    if _looks_like_invalid_audio(content_type, chunk):
-                                        raise DownloadException(
-                                            "音频地址返回的不是可用媒体文件"
-                                        )
-                                downloaded += len(chunk)
-                                if downloaded > max_bytes:
+                                if content_length == 0:
+                                    logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
+                                    raise ZeroSizeException
+                                if content_length and content_length > max_bytes:
+                                    logger.warning(
+                                        f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                                    )
                                     raise SizeLimitException
-                                await file.write(chunk)
-                                bar.update(len(chunk))
 
-                    if downloaded == 0:
-                        logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
-                        raise ZeroSizeException
-                    if content_length and downloaded < content_length:
-                        raise ClientError(
-                            f"HTTP payload incomplete {downloaded}/{content_length}"
-                        )
+                                downloaded = 0
+                                first_chunk = True
+                                with self.get_progress_bar(file_name, content_length) as bar:
+                                    file, cancellation = await _finish_file_io(
+                                        aiofiles.open(temporary_path, "wb")
+                                    )
+                                    try:
+                                        if cancellation is not None:
+                                            raise cancellation
+                                        async for chunk in response.content.iter_chunked(
+                                            1024 * 1024
+                                        ):
+                                            if validate_audio and first_chunk:
+                                                first_chunk = False
+                                                if _looks_like_invalid_audio(
+                                                    content_type, chunk
+                                                ):
+                                                    raise DownloadException(
+                                                        "音频地址返回的不是可用媒体文件"
+                                                    )
+                                            downloaded += len(chunk)
+                                            if downloaded > max_bytes:
+                                                raise SizeLimitException
+                                            _, cancellation = await _finish_file_io(
+                                                file.write(chunk)
+                                            )
+                                            if cancellation is not None:
+                                                raise cancellation
+                                            bar.update(len(chunk))
+                                    finally:
+                                        _, cancellation = await _finish_file_io(
+                                            file.close()
+                                        )
+                                        if cancellation is not None:
+                                            raise cancellation
 
-                return file_path
-            except (ZeroSizeException, SizeLimitException):
-                await safe_unlink(file_path)
+                                if downloaded == 0:
+                                    logger.warning(
+                                        f"媒体 url: {url}, 实际大小为 0, 取消下载"
+                                    )
+                                    raise ZeroSizeException
+                                if content_length and downloaded < content_length:
+                                    raise ClientError(
+                                        f"HTTP payload incomplete {downloaded}/{content_length}"
+                                    )
+
+                            os.replace(temporary_path, file_path)
+                            return file_path
+                        except (ZeroSizeException, SizeLimitException):
+                            await safe_unlink(temporary_path)
+                            raise
+                        except DownloadException:
+                            await safe_unlink(temporary_path)
+                            raise
+                        except (ClientError, TimeoutError) as exc:
+                            await safe_unlink(temporary_path)
+                            if attempt < retries:
+                                await sleep(1 + attempt)
+                                continue
+                            logger.exception(
+                                f"下载失败 | url: {url}, file_path: {file_path}"
+                            )
+                            raise DownloadException("媒体下载失败") from exc
+            except asyncio.CancelledError:
+                # The file handle has closed while unwinding. A local
+                # metadata operation here guarantees cleanup before the
+                # cancellation is propagated, even if the task is cancelled
+                # repeatedly while handling the first cancellation.
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning(f"删除未完成下载 {temporary_path} 失败: {exc}")
                 raise
-            except DownloadException:
-                await safe_unlink(file_path)
+            except Exception:
+                await safe_unlink(temporary_path)
                 raise
-            except (ClientError, TimeoutError) as exc:
-                await safe_unlink(file_path)
-                if attempt < retries:
-                    await sleep(1 + attempt)
-                    continue
-                logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
-                raise DownloadException("媒体下载失败") from exc
         raise DownloadException("媒体下载失败")
 
     @staticmethod
@@ -308,19 +399,25 @@ class Downloader:
         proxy: str | None | object = ...,
         worker_proxy_url: str | None = None,
     ) -> list[Path]:
-        paths_or_errs = await gather(
-            *[
-                self.download_img(
-                    url,
-                    headers=headers,
-                    proxy=proxy,
-                    worker_proxy_url=worker_proxy_url,
-                )
-                for url in urls
-            ],
-            return_exceptions=True,
-        )
-        return [p for p in paths_or_errs if isinstance(p, Path)]
+        limit = max(1, int(getattr(
+            self, "max_concurrent_downloads", self.MAX_CONCURRENT_DOWNLOADS
+        )))
+        paths: list[Path] = []
+        for offset in range(0, len(urls), limit):
+            paths_or_errs = await gather(
+                *[
+                    self.download_img(
+                        url,
+                        headers=headers,
+                        proxy=proxy,
+                        worker_proxy_url=worker_proxy_url,
+                    )
+                    for url in urls[offset : offset + limit]
+                ],
+                return_exceptions=True,
+            )
+            paths.extend(p for p in paths_or_errs if isinstance(p, Path))
+        return paths
 
     @auto_task
     async def download_av_and_merge(

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
 import zoneinfo
 from collections.abc import Mapping, MutableMapping
+from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
 from types import MappingProxyType, UnionType
@@ -19,6 +21,45 @@ from astrbot.core.utils.astrbot_path import (
 )
 
 from .session_scope import normalize_session_scope
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSaveOutcome:
+    """Result of a synchronous config save that was allowed to finish."""
+
+    cancellation: asyncio.CancelledError | None = None
+    error: Exception | None = None
+
+
+async def save_config_to_completion(config) -> ConfigSaveOutcome:
+    """Run ``save_config`` in a worker and never abandon it mid-write.
+
+    Releasing a configuration lock while the executor thread is still reading
+    the shared mapping would allow a later transaction to overlap the first
+    save. Cancellation is therefore remembered and reported to the caller only
+    after the worker has finished; the caller can then commit its memory index
+    or roll back fields before re-raising the cancellation.
+    """
+
+    save = getattr(config, "save_config", None)
+    if not callable(save):
+        return ConfigSaveOutcome(error=RuntimeError("configuration is not persistent"))
+
+    task = asyncio.create_task(asyncio.to_thread(save), name="plugin-config-save")
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+        except Exception:
+            # Read and return the worker exception below after it is done.
+            break
+    try:
+        task.result()
+    except Exception as exc:
+        return ConfigSaveOutcome(cancellation=cancellation, error=exc)
+    return ConfigSaveOutcome(cancellation=cancellation)
 
 
 class ConfigNode:

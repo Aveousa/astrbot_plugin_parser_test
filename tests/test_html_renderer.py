@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import sys
 import tempfile
+import threading
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -299,6 +300,71 @@ def test_apple_dynamic_color_uses_first_preview_image(renderer_module, tmp_path:
     assert f"--card-page-bg: {theme['page_bg']};" in html
     assert f"--card-bg: {theme['card_bg']};" in html
     assert f"--card-glow: {theme['glow']};" in html
+
+
+def test_apple_dynamic_color_processing_uses_to_thread(
+    renderer_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _Config(tmp_path)
+    config.card_template = "apple"
+    config.card_dynamic_color = True
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    preview = tmp_path / "large-preview.png"
+    Image.new("RGB", (256, 256), (30, 90, 200)).save(preview)
+    result = ParseResult(
+        platform=Platform("douyin", "抖音"),
+        contents=[ImageContent(preview)],
+    )
+    calls = []
+
+    async def run_in_thread(func, *args, **kwargs):
+        calls.append(getattr(func, "__name__", ""))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(renderer_module.asyncio, "to_thread", run_in_thread)
+
+    context = asyncio.run(renderer._result_context(result))
+
+    assert context["card"]["theme"] is not None
+    assert "_dynamic_theme_from_contents" in calls
+
+
+def test_image_processing_leaves_event_loop_responsive(
+    renderer_module, tmp_path: Path, monkeypatch
+):
+    config = _Config(tmp_path)
+    config.card_dynamic_color = True
+    renderer = renderer_module.Renderer(config)
+    renderer._emoji_source = None
+    result = ParseResult(platform=Platform("douyin", "抖音"), contents=[])
+    started = threading.Event()
+    release = threading.Event()
+    loop_thread = threading.get_ident()
+
+    def slow_image_processing(_contents):
+        assert threading.get_ident() != loop_thread
+        started.set()
+        assert release.wait(timeout=2)
+        return None
+
+    monkeypatch.setattr(renderer, "_dynamic_theme_from_contents", slow_image_processing)
+
+    async def run():
+        task = asyncio.create_task(renderer._result_context(result))
+        try:
+            async def wait_for_worker():
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+
+            await asyncio.wait_for(wait_for_worker(), timeout=1)
+            # This coroutine can run while the image worker is still busy.
+            assert not task.done()
+        finally:
+            release.set()
+            await task
+
+    asyncio.run(run())
 
 
 def test_apple_dynamic_color_skips_error_preview_placeholder(
@@ -1538,6 +1604,13 @@ def test_playwright_screenshot_crops_marked_card_root(
     manager = _FakePlaywrightManager(fake)
     monkeypatch.setattr(renderer_module, "_PLAYWRIGHT_AVAILABLE", True)
     monkeypatch.setattr(renderer_module, "async_playwright", manager)
+    thread_calls = []
+
+    async def run_in_thread(func, *args, **kwargs):
+        thread_calls.append(getattr(func, "__name__", ""))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(renderer_module.asyncio, "to_thread", run_in_thread)
 
     target = config.cache_dir / "card-root.png"
     assert asyncio.run(
@@ -1557,6 +1630,7 @@ def test_playwright_screenshot_crops_marked_card_root(
         assert rgba.getpixel((rgba.width - 1, rgba.height - 1))[3] == 0
         assert rgba.getpixel((rgba.width // 2, rgba.height // 2))[3] == 255
     assert "full_page" not in page.element_screenshot_calls[0]
+    assert "_round_png_corners" in thread_calls
 
 
 def test_base_url_injection_preserves_existing_base(renderer_module, tmp_path: Path):

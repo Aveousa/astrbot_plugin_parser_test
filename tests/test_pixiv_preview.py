@@ -2,8 +2,10 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from core.data import Author
-from core.parsers.pixiv import PixivParser
+from core.parsers.pixiv import PixivHelper, PixivParser
 
 
 class _Downloader:
@@ -60,3 +62,28 @@ def test_missing_detail_cover_reuses_first_page_as_card_preview():
     assert len(result.send_groups[0].contents) == 2
     assert result.contents[0] is result.send_groups[0].contents[0]
     assert result.contents[0].path_task.result() == Path("first.jpg")
+
+
+def test_pixiv_cover_blur_runs_in_worker_thread(monkeypatch: pytest.MonkeyPatch):
+    parser = PixivParser.__new__(PixivParser)
+    parser.downloader = _Downloader()
+    parser.cfg = SimpleNamespace(proxy=None)
+    calls = []
+
+    def blur(path: Path, radius: int = 20) -> Path:
+        calls.append((path, radius))
+        return path.with_name("blurred.jpg")
+
+    async def run_in_thread(func, *args, **kwargs):
+        assert func is PixivHelper.blur
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(PixivHelper, "blur", blur)
+    monkeypatch.setattr(asyncio, "to_thread", run_in_thread)
+
+    result = asyncio.run(
+        parser._download_cover("https://i.pximg.net/cover.jpg", blur=True)
+    )
+
+    assert calls == [(Path("cover.jpg"), 5)]
+    assert result[0].path_task == Path("blurred.jpg")

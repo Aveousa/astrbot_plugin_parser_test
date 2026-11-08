@@ -13,8 +13,8 @@ def test_cache_cleaner_keeps_the_existing_whole_cache_cleanup_policy(tmp_path):
     """Cards, downloaded media, emoji assets and temporary HTML share one cache.
 
     The renderer deliberately writes its transient HTML next to the card PNG;
-    the existing scheduled ``rmtree + mkdir`` policy must continue to clear
-    every kind of generated file together.
+    scheduled cleanup must continue to clear every inactive generated file
+    while preserving the cache root itself.
     """
     cache_dir = tmp_path / "cache"
     emoji_dir = cache_dir / "emojis"
