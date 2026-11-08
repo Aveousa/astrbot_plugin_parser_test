@@ -548,11 +548,23 @@ def run(output: Path):
             frame.locator("[data-view='music']").wait_for(state="visible")
             assert frame.locator("[data-view='overview']").is_hidden()
             assert frame.locator(".platform-status-bar").is_visible()
+            assert frame.locator("#music > .music-connection-summary").count() == 1
+            assert frame.locator(".music-connection-summary").count() == 1
+            assert frame.locator("#music").evaluate("el => el.children[1].matches('.music-connection-summary') && el.children[2].id === 'plugin-configuration'")
             config_list = frame.locator("#parser-configuration-list")
             assert config_list.locator("[data-parser]").count() == 10
+            apple_music = frame.locator("#wrapper-configuration")
+            assert apple_music.locator("#wrapper-configuration-title").inner_text() == "Apple Music wrapper 与账号环境"
+            assert apple_music.locator("#account").count() == 1
+            assert apple_music.locator("#verify").count() == 1
+            assert frame.locator(".music-connection-summary").evaluate("el => el.compareDocumentPosition(document.querySelector('#plugin-configuration')) & Node.DOCUMENT_POSITION_FOLLOWING")
             assert frame.locator("#plugin-configuration").evaluate("el => el.compareDocumentPosition(document.querySelector('#wrapper-configuration')) & Node.DOCUMENT_POSITION_FOLLOWING")
             assert frame.locator("#verify").evaluate("el => el.compareDocumentPosition(document.querySelector('#parser-configuration')) & Node.DOCUMENT_POSITION_FOLLOWING")
             assert frame.locator("[data-parser='pixiv'] input").first.is_disabled()
+            page.set_viewport_size({"width": 375, "height": 812})
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            screenshot("mobile-apple-music-top.png")
+            page.set_viewport_size({"width": 1200, "height": 980})
             frame.locator("#config-global-require_at_in_group").uncheck()
             page.wait_for_function("qaConfiguration.global_values.require_at_in_group === false")
             frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()

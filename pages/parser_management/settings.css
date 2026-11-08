@@ -34,7 +34,11 @@ html[data-theme="dark"] .config-field textarea { background: var(--surface, #252
 .config-parser-heading::after { content: "+"; font-size: 22px; }
 .parser-config-panel[open] > .config-parser-heading::after { content: "−"; }
 .parser-config-panel[open] > .config-grid { margin-top: 24px; }
-#wrapper-configuration > .music-connection-summary { margin-top: 24px; }
+#wrapper-configuration .music-subsection-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 28px 0 12px; }
+#wrapper-configuration .music-subsection-heading h3 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
+#wrapper-configuration .music-subsection-heading p { margin: 0; color: var(--muted); font-size: 12px; }
+#wrapper-configuration #wrapper-fields { margin-top: 0; }
+#wrapper-configuration #account { margin-top: 32px; }
 #cache-configuration { margin-top: 20px; }
 .config-field :focus-visible, .config-parser-heading:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 @media (max-width: 760px) {
@@ -43,4 +47,6 @@ html[data-theme="dark"] .config-field textarea { background: var(--surface, #252
   .config-parser-heading { flex-wrap: wrap; gap: 8px; }
   .config-field input, .config-field select, .config-field textarea { font-size: 16px; }
   .config-actions button, .config-priority button { min-height: 44px; }
+  #wrapper-configuration .music-subsection-heading { display: block; }
+  #wrapper-configuration .music-subsection-heading p { margin-top: 4px; }
 }
