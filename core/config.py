@@ -323,7 +323,8 @@ class PluginConfig(ConfigNode):
     parsers_template: list[dict[str, Any]]
 
     # Group parser policy is stored in the plugin-global config. Keys are the
-    # stable adapter instance id + group id, never the per-member UMO.
+    # stable adapter instance id + group id, never the per-member UMO. Entries
+    # may also hold a local group remark independent of the platform group name.
     group_parser_settings: list[dict[str, Any]]
     # QQ Official cannot enumerate a bot's groups; remember groups observed in
     # incoming WebSocket events so the management page can expose them.
@@ -396,6 +397,8 @@ class PluginConfig(ConfigNode):
                             "group_id": group_id,
                             "disabled_parsers": disabled,
                         })
+                        if isinstance(entry.get("remark"), str):
+                            migrated_group_settings[-1]["remark"] = entry["remark"]
             config["group_parser_settings"] = migrated_group_settings
             defaults_changed = True
         super().__init__(config)

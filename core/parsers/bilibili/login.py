@@ -20,6 +20,8 @@ class BilibiliLogin:
 
     def _save_credential(self):
         """存储哔哩哔哩登录凭证"""
+        if not getattr(self, "persistence_enabled", True):
+            return
         if self._credential is None:
             return
         if not self._credential.has_sessdata():

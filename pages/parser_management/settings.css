@@ -1,0 +1,46 @@
+/* Reuse both existing palettes and fonts; these rules only lay out new forms. */
+.config-groups { display: grid; gap: 20px; }
+.config-panel { padding: 24px; min-width: 0; }
+.config-group-title { margin: 0 0 20px; font-size: 18px; }
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 28px; }
+.config-field { min-width: 0; display: flex; flex-direction: column; align-items: stretch; }
+.config-label { font-weight: 600; margin-bottom: 4px; line-height: 1.6; }
+.config-help { font-size: 13px; opacity: .8; line-height: 1.65; margin: 0 0 10px; overflow-wrap: anywhere; }
+.config-help:empty { display: none; }
+.config-field input:not([type="checkbox"]), .config-field select, .config-field textarea { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+.config-field textarea { resize: vertical; padding: 12px; border: 1px solid var(--line, #b8b5bc); border-radius: 10px; background: var(--surface, #fff); color: inherit; }
+html[data-theme="dark"] .config-field textarea { background: var(--surface, #25252c); }
+.config-toggle { display: grid; grid-template-columns: 1fr 48px; align-content: start; column-gap: 16px; }
+.config-toggle .config-help, .config-toggle .config-field-status { grid-column: 1 / -1; }
+.config-toggle .config-field-retry { grid-column: 1 / -1; }
+.config-field-retry { align-self: start; justify-self: start; }
+.config-toggle input { grid-column: 2; grid-row: 1; appearance: none; position: relative; width: 44px; height: 26px; margin: 0; border-radius: 20px; border: 1px solid var(--line, #b8b5bc); background: var(--surface, #eee); align-self: center; cursor: pointer; transition: background .15s; }
+.config-toggle input::before { content: ""; position: absolute; left: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: var(--text, #555); transition: transform .15s; }
+.config-toggle input:checked { background: var(--accent, #98738a); }
+.config-toggle input:checked::before { transform: translateX(18px); background: #fff; }
+.config-toggle input:disabled { opacity: .45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .config-toggle input, .config-toggle input::before { transition: none; } }
+.config-field-status { font-size: 13px; min-height: 20px; line-height: 1.5; margin: 7px 0 0; overflow-wrap: anywhere; }
+.config-field-status[data-error="true"], #configuration-state[data-error="true"] { color: var(--danger, #b33d49); }
+.config-feedback { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.config-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.config-actions .panel-note { margin: 0; overflow-wrap: anywhere; }
+.config-priority { display: grid; gap: 8px; }
+.config-priority-row { display: grid; grid-template-columns: minmax(80px, 1fr) repeat(3, auto); gap: 6px; }
+.config-priority-row button { min-height: 36px; padding: 5px 8px; }
+.config-priority > button { justify-self: start; }
+.config-parser-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; cursor: pointer; list-style: none; }
+.config-parser-heading h3 { font-size: 18px; margin: 0; }
+.config-parser-heading::after { content: "+"; font-size: 22px; }
+.parser-config-panel[open] > .config-parser-heading::after { content: "−"; }
+.parser-config-panel[open] > .config-grid { margin-top: 24px; }
+#wrapper-configuration > .music-connection-summary { margin-top: 24px; }
+#cache-configuration { margin-top: 20px; }
+.config-field :focus-visible, .config-parser-heading:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+@media (max-width: 760px) {
+  .config-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .config-panel { padding: 18px; }
+  .config-parser-heading { flex-wrap: wrap; gap: 8px; }
+  .config-field input, .config-field select, .config-field textarea { font-size: 16px; }
+  .config-actions button, .config-priority button { min-height: 44px; }
+}

@@ -67,6 +67,7 @@ class CookieJar:
 
         self.cookie_file = config.cookie_dir / f"{parser_cfg.name}_cookies.txt"
         self.cookies: list[Cookie] = []
+        self.persistence_enabled = True
 
         self.raw_cookies = parser_cfg.cookies
         self.cookies_str = ""
@@ -284,6 +285,10 @@ class CookieJar:
         self._sync_cookies_str()
 
     def save_to_file(self) -> None:
+        # A replaced parser may finish an older request, but must not overwrite
+        # the credentials belonging to its live replacement.
+        if not getattr(self, "persistence_enabled", True):
+            return
         cj = cookiejar.MozillaCookieJar(self.cookie_file)
 
         for c in self.cookies:

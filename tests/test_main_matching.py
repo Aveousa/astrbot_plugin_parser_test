@@ -902,3 +902,85 @@ def test_platform_account_statuses_distinguish_login_cookies_and_disabled_parser
         "key": "qqmusic", "available": False, "text": "账号 Cookie 不完整"
     }
     assert statuses["kugou"]["text"] == "解析器未启用"
+
+
+def test_hot_update_refreshes_derived_settings_and_only_affected_parsers():
+    async def run():
+        main = _load_main_module()
+        plugin = main.ParserPlugin.__new__(main.ParserPlugin)
+        calls = []
+        plugin.cfg = SimpleNamespace(source_max_size=120, source_max_minute=20, debounce_interval=10)
+        plugin.downloader = SimpleNamespace(max_size=90)
+        plugin.debouncer = SimpleNamespace(interval=300)
+        plugin.cleaner = SimpleNamespace(update_schedule=lambda: calls.append("cron"))
+        plugin.renderer = SimpleNamespace(refresh_emoji_source=lambda: calls.append("emoji"))
+        plugin._register_parser = lambda **kwargs: calls.append(kwargs)
+        await plugin._apply_management_config({"source_max_size", "source_max_minute", "debounce_interval", "clean_cron", "emoji_style"}, set())
+        assert plugin.cfg.max_size == 120 * 1024 * 1024 and plugin.cfg.max_duration == 1200
+        assert plugin.downloader.max_size == 120 and plugin.debouncer.interval == 10
+        assert calls == ["cron", "emoji"]
+        await plugin._apply_management_config(set(), {"douyin"})
+        assert calls[-1] == {"replace_keys": {"douyin"}}
+        await plugin._apply_management_config({"common_timeout"}, set())
+        assert calls[-1] == {"replace_keys": None}
+    asyncio.run(run())
+
+
+def test_arbiter_toggle_is_read_for_each_subsequent_message(monkeypatch):
+    async def run():
+        main = _load_main_module()
+        calls = []
+        plugin = _plugin(main, calls)
+        class OneBotEvent(_Event):
+            def is_private_chat(self): return False
+        monkeypatch.setattr(main, "AiocqhttpMessageEvent", OneBotEvent)
+        event = OneBotEvent(main, "https://163cn.tv/abc", calls)
+        event.bot = object()
+        event.message_obj.raw_message = {"message_id": "1", "time": "1000", "self_id": "2"}
+        async def compete(**kwargs):
+            calls.append("compete")
+            return False
+        plugin.arbiter = SimpleNamespace(compete=compete)
+        plugin.cfg.arbiter = True
+        await plugin.on_message(event)
+        assert calls == ["compete"]
+        plugin.cfg.arbiter = False
+        await plugin.on_message(event)
+        assert calls == ["compete", "parse", "send"]
+    asyncio.run(run())
+
+
+def test_replaced_parser_finishes_active_message_before_closing(monkeypatch):
+    async def run():
+        main = _load_main_module()
+        calls = []
+        plugin = _plugin(main, calls)
+        previous = plugin.parser_map["163cn.tv"]
+        previous.cookiejar = SimpleNamespace(persistence_enabled=True)
+        closed, started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        async def close(): closed.set()
+        previous.close_session = close
+        async def finish(*args):
+            started.set()
+            await release.wait()
+        plugin._parse_and_send = finish
+        plugin.apple_music_backend = SimpleNamespace()
+        class Replacement:
+            platform = SimpleNamespace(name="netease")
+            _key_patterns = [("163cn.tv", main.re.compile(r"163cn\.tv/\w+"))]
+            def __init__(self, *args): pass
+            async def close_session(self): pass
+        monkeypatch.setattr(main.BaseParser, "get_all_subclass", classmethod(lambda cls: [Replacement]))
+        plugin.cfg.parser.enabled_platforms = lambda: ["netease"]
+        plugin.downloader = None
+        task = asyncio.create_task(plugin.on_message(_Event(main, "https://163cn.tv/abc", calls)))
+        await started.wait()
+        plugin._register_parser(replace_keys={"netease"})
+        assert plugin.parser_map["163cn.tv"] is not previous
+        assert previous in plugin._retired_parsers and not closed.is_set()
+        assert previous.cookiejar.persistence_enabled is False
+        release.set()
+        await task
+        await asyncio.wait_for(closed.wait(), timeout=1)
+        assert not plugin._parser_users and not plugin._retired_parsers
+    asyncio.run(run())

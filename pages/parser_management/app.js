@@ -36,7 +36,7 @@
   let groupLoading = false;
   let groupLoadError = "";
   let groupSaveResult = "";
-  const viewTitles = { overview: "总览", music: "音乐管理", groups: "群聊配置" };
+  const viewTitles = { overview: "总览", music: "解析器管理", groups: "群聊配置" };
   const codecOptions = [
     ["alac", "ALAC · 无损"], ["aac-web", "AAC Web"],
     ["aac-he-web", "HE-AAC Web"], ["aac", "AAC"],
@@ -218,7 +218,7 @@
     $("two-factor-fields").disabled = !connected || busy || !needs2fa;
     $("clear-session").disabled = !connected || busy;
     $("clear-cache").disabled = !nonce || busy;
-    $("settings-fields").disabled = !nonce || (busy && activeAction !== "save-settings");
+    if ($("settings-fields")) $("settings-fields").disabled = !nonce || (busy && activeAction !== "save-settings");
     updateGroupActions();
     updateSettingsState();
     $("verify-fields").disabled = !connected || busy || needs2fa || snapshot?.auth_state !== "authenticated"
@@ -228,6 +228,7 @@
   function render(data) {
     snapshot = data;
     nonce = data.nonce || "";
+    window.dispatchEvent(new CustomEvent("management-status", { detail: { nonce } }));
     needs2fa = Boolean(data.can_submit_2fa);
     field("wrapper-state", !data.enabled ? "未启用" : data.connected ? `已连接 · ${data.version}` : "无法连接", data.connected ? "positive" : "");
     const labels = { authenticated: "已登录", logged_out: "未登录", awaiting_2fa: "等待验证码", in_progress: "登录中", failed: "登录失败" };
@@ -263,18 +264,45 @@
       groupKey(group), {
         enabled: new Set(Array.isArray(group.enabled) ? group.enabled : []),
         parsing_enabled: group.parsing_enabled !== false,
+        remark: typeof group.remark === "string" ? group.remark : "",
       },
     ]));
   }
   function groupSettingsDifferFromSnapshot() {
     const groups = Array.isArray(groupSnapshot?.groups) ? groupSnapshot.groups : [];
-    return groups.some((group) => {
-      const saved = new Set(Array.isArray(group.enabled) ? group.enabled : []);
-      const draft = groupDraft.get(groupKey(group)) || { enabled: new Set(), parsing_enabled: true };
-      return (group.parsing_enabled !== false) !== draft.parsing_enabled
-        || saved.size !== draft.enabled.size
-        || [...saved].some((key) => !draft.enabled.has(key));
+    return groups.some(groupHasDraft);
+  }
+  function groupHasDraft(group) {
+    const saved = new Set(Array.isArray(group.enabled) ? group.enabled : []);
+    const draft = groupDraft.get(groupKey(group)) || { enabled: new Set(), parsing_enabled: true };
+    return (group.parsing_enabled !== false) !== draft.parsing_enabled
+      || (group.remark || "") !== (draft.remark || "").trim()
+      || saved.size !== draft.enabled.size
+      || [...saved].some((key) => !draft.enabled.has(key));
+  }
+  function groupInstanceErrors() {
+    const errors = [...(Array.isArray(groupSnapshot?.instance_errors) ? groupSnapshot.instance_errors : [])];
+    // An instance may have disappeared from AstrBot's adapter list entirely.
+    // Retained drafts still need a visible recovery action in that case.
+    (groupSnapshot?.groups || []).filter((group) => group.unavailable).forEach((group) => {
+      if (!errors.some((item) => item.platform_id === group.platform_id)) errors.push({
+        platform_id: group.platform_id, platform_label: group.platform_label,
+        error: "该实例或群记录暂不可用，请检查机器人连接或群记录后重试",
+      });
     });
+    return errors;
+  }
+  function renderGroupInstanceErrors() {
+    const panel = $("group-instance-errors");
+    if (!panel) return;
+    const errors = groupInstanceErrors();
+    panel.hidden = !errors.length;
+    const list = $("group-instance-error-list");
+    list.replaceChildren(...errors.map((item) => {
+      const row = document.createElement("li");
+      row.textContent = `${item.platform_label || "机器人"} · ${item.platform_id}：${item.error}`;
+      return row;
+    }));
   }
   function renderGroupsPreservingView() {
     const active = document.activeElement;
@@ -282,6 +310,8 @@
     const focusedInput = active instanceof HTMLInputElement && activeCard ? {
       groupKey: activeCard.dataset.groupKey,
       label: active.getAttribute("aria-label"),
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd,
     } : null;
     const focusedElementId = active instanceof HTMLElement && active.id ? active.id : "";
     const scrollY = window.scrollY;
@@ -293,6 +323,9 @@
       const input = [...(card?.querySelectorAll("input") || [])]
         .find((item) => item.getAttribute("aria-label") === focusedInput.label);
       input?.focus({ preventScroll: true });
+      if (input?.type === "text" && focusedInput.selectionStart !== null) {
+        input.setSelectionRange(focusedInput.selectionStart, focusedInput.selectionEnd);
+      }
     } else if (focusedElementId) {
       $(focusedElementId)?.focus({ preventScroll: true });
     }
@@ -301,11 +334,12 @@
     const list = $("group-list");
     if (!list) return;
     list.setAttribute("aria-busy", String(groupLoading));
+    renderGroupInstanceErrors();
     if (groupSnapshot === null) {
       list.replaceChildren();
       const empty = document.createElement("div");
       empty.className = "group-empty";
-      empty.textContent = groupLoading ? "正在读取当前 OneBot 已加入的群聊…"
+      empty.textContent = groupLoading ? "正在读取各机器人实例的群聊…"
         : groupLoadError || "尚未读取群聊列表。请点击刷新群列表重试。";
       list.append(empty);
       $("group-summary").textContent = groupLoading ? "正在读取…" : "读取失败";
@@ -315,15 +349,15 @@
     const groups = Array.isArray(groupSnapshot.groups) ? groupSnapshot.groups : [];
     $("group-summary").textContent = groups.length + " 个群聊";
     const query = ($("group-search")?.value || "").trim().toLocaleLowerCase();
-    const visible = groups.filter((group) => [group.name, group.group_id, group.platform_id, group.platform_label]
+    const visible = groups.filter((group) => [group.name, group.remark, groupDraft.get(groupKey(group))?.remark, group.group_id, group.platform_id, group.platform_label]
       .some((part) => String(part || "").toLocaleLowerCase().includes(query)));
     list.replaceChildren();
     if (!groups.length || !visible.length) {
       const empty = document.createElement("div");
       empty.className = "group-empty";
       empty.textContent = !groups.length
-        ? "未发现已加入的 OneBot 群聊。请确认 OneBot V11 已连接并授权读取群列表。"
-        : "没有匹配的群聊，请尝试其他群名、群号或 Bot 实例。";
+        ? "暂无可展示的群聊。请确认 OneBot 已连接；QQ 官方机器人（WebSocket）需先收到群消息才能记录群聊。"
+        : "没有匹配的群聊，请尝试其他备注名、群名、群号或 Bot 实例。";
       list.append(empty);
       updateGroupActions();
       return;
@@ -339,18 +373,55 @@
       const card = document.createElement("article");
       card.className = "group-card";
       card.dataset.groupKey = key;
+      card.dataset.unavailable = String(Boolean(group.unavailable));
       const heading = document.createElement("header");
       const identity = document.createElement("div");
       identity.className = "group-identity";
       const title = document.createElement("h2");
-      title.textContent = group.name || ("群聊 " + group.group_id);
+      const originalName = group.name || ("群聊 " + group.group_id);
+      title.textContent = (draft.remark || "").trim() || originalName;
       const meta = document.createElement("p");
       meta.textContent = (group.platform_label || "OneBot V11") + " · 群号 " + group.group_id + " · Bot 实例 " + group.platform_id;
       identity.append(title, meta);
+      const original = document.createElement("p");
+      original.textContent = "原始名称：" + originalName;
+      original.hidden = !(draft.remark || "").trim();
+      identity.append(original);
+      if (group.unavailable) {
+        const warning = document.createElement("p");
+        warning.textContent = "群列表暂未验证 · 显示上次信息，草稿已保留；请重试后保存。";
+        identity.append(warning);
+      }
       const count = document.createElement("span");
       count.className = "group-enabled-count";
       count.textContent = enabled.size + "/" + globallyEnabled.size + " 个解析器启用";
       heading.append(identity, count);
+      const remarkField = document.createElement("div");
+      remarkField.className = "group-remark-field";
+      const remarkLabel = document.createElement("label");
+      const remarkInput = document.createElement("input");
+      const remarkHelp = document.createElement("small");
+      remarkInput.id = "group-remark-" + key;
+      remarkLabel.htmlFor = remarkInput.id;
+      remarkLabel.textContent = "群聊备注名";
+      remarkInput.type = "text";
+      remarkInput.maxLength = 128;
+      remarkInput.value = draft.remark || "";
+      remarkInput.placeholder = "选填，留空使用原群名或默认名称";
+      remarkInput.setAttribute("aria-label", `${group.platform_id} / ${group.group_id}：群聊备注名`);
+      remarkHelp.id = remarkInput.id + "-help";
+      remarkHelp.textContent = "最多 128 个字符，仅用于本插件显示；确认并保存后生效，不修改真实群名。";
+      remarkInput.setAttribute("aria-describedby", remarkHelp.id);
+      remarkInput.addEventListener("input", () => {
+        groupSaveResult = "";
+        const current = groupDraft.get(key) || { enabled: new Set(), parsing_enabled: true };
+        groupDraft.set(key, { ...current, remark: remarkInput.value });
+        title.textContent = remarkInput.value.trim() || originalName;
+        original.hidden = !remarkInput.value.trim();
+        groupDirty = groupSettingsDifferFromSnapshot();
+        updateGroupActions();
+      });
+      remarkField.append(remarkLabel, remarkInput, remarkHelp);
       const total = document.createElement("label");
       total.className = "group-total-toggle";
       const totalText = document.createElement("span");
@@ -427,7 +498,7 @@
         label.append(text, switchWrap);
         controls.append(label);
       });
-      card.append(heading, total, controls);
+      card.append(heading, remarkField, total, controls);
       fragment.append(card);
     });
     list.append(fragment);
@@ -436,54 +507,66 @@
   function updateGroupActions() {
     const state = $("group-settings-state");
     if (!state) return;
-    state.textContent = groupLoading ? "正在读取 OneBot 群聊…"
+    state.textContent = groupLoading ? "正在读取各机器人实例的群聊…"
       : groupLoadError ? groupLoadError
       : groupSaving ? "正在保存群聊解析器配置…"
-      : groupDirty ? "群聊设置有未保存更改；点击“确认并保存”后生效。"
-      : groupSaveResult || (groupSnapshot !== null ? "群聊设置已与磁盘配置同步。" : "尚未读取群聊列表。");
+      : groupSaveResult || (groupDirty ? "群聊设置有未保存更改；点击“确认并保存”后生效。"
+      : groupInstanceErrors().length ? "部分实例或群记录暂不可用；正常群仍可管理，失败实例的历史配置不会清理。"
+      : groupSnapshot !== null ? "群聊设置已与磁盘配置同步。" : "尚未读取群聊列表。");
     state.dataset.error = String(Boolean(groupLoadError));
     const dirtyIndicator = $("group-dirty-indicator");
     if (dirtyIndicator) dirtyIndicator.hidden = !groupDirty || groupSaving;
     const unavailable = !nonce || groupSnapshot === null;
     const save = $("save-group-settings");
     const discard = $("discard-group-settings");
-    if (save) save.disabled = unavailable || groupSaving || !groupDirty;
-    if (discard) discard.disabled = unavailable || groupSaving || !groupDirty;
+    if (save) save.disabled = unavailable || groupLoading || groupSaving || !groupDirty;
+    if (discard) discard.disabled = unavailable || groupLoading || groupSaving || !groupDirty;
     if ($("refresh-groups")) $("refresh-groups").disabled = groupLoading || groupSaving;
+    if ($("retry-groups")) $("retry-groups").disabled = groupLoading || groupSaving;
     if ($("group-search")) $("group-search").disabled = groupSnapshot === null || groupLoading;
     document.querySelectorAll(".group-parser-grid input").forEach((input) => {
-      input.disabled = input.closest(".group-parser-toggle")?.dataset.globalEnabled !== "true" || groupSaving;
+      input.disabled = input.closest(".group-parser-toggle")?.dataset.globalEnabled !== "true"
+        || input.closest(".group-card")?.dataset.unavailable === "true" || groupSaving || groupLoading;
     });
     document.querySelectorAll(".group-total-toggle input").forEach((input) => {
-      input.disabled = groupSaving;
+      input.disabled = input.closest(".group-card")?.dataset.unavailable === "true" || groupSaving || groupLoading;
+    });
+    document.querySelectorAll(".group-remark-field input").forEach((input) => {
+      input.disabled = input.closest(".group-card")?.dataset.unavailable === "true" || groupSaving || groupLoading;
     });
   }
-  async function loadGroupSettings({ discardDraft = false, preserveSaveResult = false } = {}) {
-    if (!bridge || groupLoading || (groupDirty && !discardDraft)) return;
+  async function loadGroupSettings({ discardDraft = false, preserveSaveResult = false, preserveDraft = false, forceRefresh = false } = {}) {
+    if (!bridge || groupLoading || (groupDirty && !discardDraft && !preserveDraft)) return;
     let shouldRenderGroups = groupSnapshot === null;
-    if (discardDraft && groupDirty && groupSnapshot !== null) {
-      groupDraft = cloneGroupSettings(groupSnapshot.groups);
-      groupDirty = false;
-      shouldRenderGroups = true;
-    }
     groupLoading = true;
     groupLoadError = "";
     if (!preserveSaveResult) groupSaveResult = "";
     if (groupSnapshot === null) renderGroups();
     else updateGroupActions();
     try {
-      const endpoint = discardDraft
+      const endpoint = discardDraft || forceRefresh
         ? "apple-music/group-settings-refresh"
         : "apple-music/group-settings";
       const data = await bridge.apiGet(endpoint);
-      shouldRenderGroups = shouldRenderGroups || JSON.stringify(data) !== JSON.stringify(groupSnapshot);
-      groupSnapshot = data;
-      groupDraft = cloneGroupSettings(data.groups);
-      groupDirty = false;
+      const failed = new Set((data.instance_errors || []).map((item) => item.platform_id));
+      const fresh = Array.isArray(data.groups) ? data.groups : [];
+      const freshKeys = new Set(fresh.map(groupKey));
+      const previous = groupSnapshot?.groups || [];
+      const retained = previous.filter((group) => !freshKeys.has(groupKey(group))
+        && (failed.has(group.platform_id) || (preserveDraft && groupHasDraft(group))))
+        .map((group) => ({ ...group, unavailable: true }));
+      const pending = new Map(previous.filter(groupHasDraft).map((group) => [groupKey(group), groupDraft.get(groupKey(group))]));
+      const merged = { ...data, groups: [...fresh, ...retained] };
+      shouldRenderGroups = shouldRenderGroups || discardDraft || JSON.stringify(merged) !== JSON.stringify(groupSnapshot);
+      groupSnapshot = merged;
+      groupDraft = cloneGroupSettings(merged.groups);
+      if (preserveDraft) pending.forEach((draft, key) => {
+        if (groupDraft.has(key)) groupDraft.set(key, draft);
+      });
+      groupDirty = groupSettingsDifferFromSnapshot();
       groupLoadError = "";
     } catch (error) {
-      groupLoadError = error.message || "读取群聊配置失败，请检查 OneBot 连接后重试。";
-      if (discardDraft) groupDirty = false;
+      groupLoadError = error.message || "读取群聊配置失败，请检查机器人连接后重试。";
     } finally {
       groupLoading = false;
       if (shouldRenderGroups) renderGroupsPreservingView();
@@ -498,38 +581,52 @@
     if (groupSaving || groupSnapshot === null) return;
     groupDraft = cloneGroupSettings(groupSnapshot.groups);
     groupDirty = false;
+    groupSaveResult = "";
     renderGroupsPreservingView();
   }
   async function saveGroupSettings() {
     if (!nonce || !groupDirty || groupSaving || groupSnapshot === null) return;
-    const groups = (Array.isArray(groupSnapshot.groups) ? groupSnapshot.groups : []).map((group) => ({
+    const groups = (Array.isArray(groupSnapshot.groups) ? groupSnapshot.groups : []).filter(groupHasDraft).map((group) => ({
       platform_id: group.platform_id, group_id: group.group_id,
       enabled: [...(groupDraft.get(groupKey(group))?.enabled || [])],
       parsing_enabled: groupDraft.get(groupKey(group))?.parsing_enabled !== false,
+      remark: (groupDraft.get(groupKey(group))?.remark || "").trim(),
     }));
     groupSaving = true;
     groupLoadError = "";
+    groupSaveResult = "";
     updateGroupActions();
     notice("正在保存群聊解析器设置…");
     try {
       const result = await bridge.apiPost("apple-music/save-group-settings", { groups, nonce });
+      const saved = new Set((result.saved_groups || []).map(groupKey));
+      const departed = new Set((result.departed_groups || []).map(groupKey));
+      const unsaved = new Set((result.unsaved_groups || []).map(groupKey));
       groupSnapshot = {
         ...groupSnapshot,
-        groups: groupSnapshot.groups.map((group) => ({
+        instance_errors: result.instance_errors || [],
+        groups: groupSnapshot.groups.filter((group) => !departed.has(groupKey(group))).map((group) => saved.has(groupKey(group)) ? ({
           ...group,
           enabled: [...(groupDraft.get(groupKey(group))?.enabled || [])],
           parsing_enabled: groupDraft.get(groupKey(group))?.parsing_enabled !== false,
-        })),
+          remark: (groupDraft.get(groupKey(group))?.remark || "").trim(),
+        }) : ({ ...group, unavailable: unsaved.has(groupKey(group)) || group.unavailable })),
       };
-      groupDraft = cloneGroupSettings(groupSnapshot.groups);
-      groupDirty = false;
+      saved.forEach((key) => {
+        const draft = groupDraft.get(key);
+        if (draft) groupDraft.set(key, { ...draft, remark: (draft.remark || "").trim() });
+      });
+      departed.forEach((key) => groupDraft.delete(key));
+      groupDirty = groupSettingsDifferFromSnapshot();
       const cleaned = Number.isInteger(result?.cleaned_group_count)
         ? result.cleaned_group_count : 0;
       const cleanedBlacklist = Number.isInteger(result?.cleaned_blacklist_group_count)
         ? result.cleaned_blacklist_group_count : 0;
-      groupSaveResult = `群聊配置已保存；清理 ${cleaned} 个退群解析器配置、${cleanedBlacklist} 个黑名单群聊`;
-      notice(groupSaveResult);
-      await loadGroupSettings({ discardDraft: true, preserveSaveResult: true });
+      groupSaveResult = unsaved.size
+        ? `已保存 ${saved.size} 个群聊；${unsaved.size} 个群聊未保存，草稿已保留。请重试读取或确认并保存。`
+        : `群聊配置已保存；清理 ${cleaned} 个退群解析器配置、${cleanedBlacklist} 个黑名单群聊`;
+      notice(groupSaveResult, unsaved.size > 0);
+      await loadGroupSettings({ forceRefresh: true, preserveDraft: true, preserveSaveResult: true });
     } catch (error) {
       groupLoadError = error.message || "群聊配置保存失败，请重试。";
       notice(groupLoadError, true);
@@ -887,6 +984,7 @@
     $("cache-meter-fill").style.width = `${Math.min(100, Math.max(2, (bytes / (1024 * 1024 * 512)) * 100))}%`;
   }
   function readSettings() {
+    if (!$("settings-form")) return snapshot?.settings || { file_codec_priority: [] };
     return {
       backend_enabled: $("setting-backend").checked,
       return_audio: $("setting-return-audio").checked,
@@ -898,6 +996,7 @@
     };
   }
   function renderSettings(settings) {
+    if (!$("settings-form")) return;
     if (!settings) return;
     if (activeAction === "save-settings" || settingsDirty || changedSettings()) return;
     $("setting-backend").checked = Boolean(settings.backend_enabled);
@@ -1018,6 +1117,7 @@
   }
   function showOperation(operation) {
     busy = operation.state === "running" || Boolean(operation.busy);
+    window.dispatchEvent(new CustomEvent("management-operation", { detail: operation }));
     controls();
     if (busy) {
       notice(operation.busy ? "另一位管理员正在操作，请稍后刷新。" : "操作进行中，请等待。关闭页面不会取消服务端任务。");
@@ -1033,9 +1133,8 @@
       $("verification-result").textContent = operation.message + details;
     }
     if (operation.action === "clear-cache" && operation.state === "complete") {
-      $("cache-size").textContent = "0 B";
-      $("cache-files").textContent = "0 个文件";
-      $("cache-meter-fill").style.width = "2%";
+      // A cleanup can intentionally retain active task files. The status
+      // refresh reports the actual remaining size instead of assuming zero.
       resetClearCacheConfirmation();
       const details = Number.isFinite(Number(operation.removed_files))
         ? ` · 已清理 ${operation.removed_files} 个文件`
@@ -1167,7 +1266,10 @@
     }
   }
   $("refresh").addEventListener("click", () => refresh());
+  window.addEventListener("management-config-saved", () => refresh(false));
+  window.addEventListener("management-check-cookie", (event) => submit("check-music-cookie", { parser: event.detail }));
   $("refresh-groups")?.addEventListener("click", refreshGroupSettings);
+  $("retry-groups")?.addEventListener("click", () => void loadGroupSettings({ forceRefresh: true, preserveDraft: true }));
   $("group-search")?.addEventListener("input", () => renderGroups());
   $("save-group-settings")?.addEventListener("click", () => saveGroupSettings());
   $("discard-group-settings")?.addEventListener("click", () => discardGroupChanges());
@@ -1234,19 +1336,19 @@
     resetClearCacheConfirmation();
     submit("clear-cache", { confirm: true });
   });
-  $("settings-form").addEventListener("change", () => {
+  $("settings-form")?.addEventListener("change", () => {
     updateSettingsState();
     scheduleSettingsSave();
   });
   $("music-parser-list")?.addEventListener("change", scheduleMusicSave);
-  $("add-codec").addEventListener("click", () => {
+  $("add-codec")?.addEventListener("click", () => {
     const used = new Set(readSettings().file_codec_priority);
     const next = codecOptions.find(([value]) => !used.has(value));
     if (next) $("codec-priority-list").append(codecRow(next[0]));
     updateSettingsState();
     scheduleSettingsSave();
   });
-  $("settings-form").addEventListener("submit", (event) => {
+  $("settings-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     saveSettings();
   });

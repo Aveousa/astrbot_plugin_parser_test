@@ -20,6 +20,9 @@ QQ_OFFICIAL_KNOWN_GROUPS_KEY = "qq_official_known_groups"
 GROUP_KEY_VERSION = "v1"
 GROUP_SETTINGS_MAX_GROUPS = 1000
 GROUP_SETTINGS_MAX_PARSERS = 32
+GROUP_REMARK_MAX_LENGTH = 128
+GROUP_QUERY_TIMEOUT = 5.0
+GROUP_QUERY_CONCURRENCY = 4
 PARSER_LABELS = {
     "bilibili": "Bilibili",
     "douyin": "抖音",
@@ -45,6 +48,18 @@ def group_settings_key(platform_id: object, group_id: object) -> str:
     if not ADAPTER_ID_RE.fullmatch(platform) or not QQ_GROUP_ID_RE.fullmatch(group):
         raise AppleMusicBackendError("群聊或适配器实例标识无效")
     return f"{GROUP_KEY_VERSION}:{platform}:{group}"
+
+
+def _group_remark(entry: object) -> str:
+    """Read an optional local label, never replacing the platform group name."""
+
+    value = entry.get("remark") if isinstance(entry, Mapping) else None
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if len(value) > GROUP_REMARK_MAX_LENGTH or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return ""
+    return value
 
 
 def supported_parser_keys(config) -> list[str]:
@@ -223,10 +238,12 @@ async def _fetch_live_groups(adapter, *, no_cache: bool = False) -> dict[str, st
     if not callable(call_action):
         raise AppleMusicBackendError("当前 OneBot 实例尚未连接，无法读取群聊列表")
     try:
-        if no_cache:
-            groups = await call_action("get_group_list", no_cache=True)
-        else:
-            groups = await call_action("get_group_list")
+        groups = await asyncio.wait_for(
+            call_action("get_group_list", **({"no_cache": True} if no_cache else {})),
+            timeout=GROUP_QUERY_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise AppleMusicBackendError("读取 OneBot 群聊列表超时，请检查连接后重试") from None
     except Exception:
         raise AppleMusicBackendError("当前无法读取 OneBot 群聊列表，请检查适配器连接") from None
     if not isinstance(groups, list):
@@ -240,6 +257,8 @@ async def _fetch_live_groups(adapter, *, no_cache: bool = False) -> dict[str, st
             continue
         name = item.get("group_name")
         result[group_id] = name.strip()[:128] if isinstance(name, str) else ""
+    if groups and not result:
+        raise AppleMusicBackendError("OneBot 返回的群聊列表无效，请检查适配器连接")
     return result
 
 
@@ -371,35 +390,63 @@ class GroupParserConfigService:
             None,
         )
 
-    async def _group_snapshot(self, *, no_cache: bool = False) -> tuple[list[dict], set[str]]:
+    async def _group_snapshot(
+        self, *, no_cache: bool = False
+    ) -> tuple[list[dict], set[str], list[dict]]:
         globally_enabled = supported_parser_keys(self.cfg)
         result = []
         queried_platform_ids: set[str] = set()
-        for adapter in self._adapters():
+        instance_errors = []
+        query_slots = asyncio.Semaphore(GROUP_QUERY_CONCURRENCY)
+
+        async def query(adapter):
             meta = self._adapter_meta(adapter)
-            if meta is None or not isinstance(getattr(meta, "id", None), str):
-                continue
             platform_id = meta.id
-            if getattr(meta, "name", None) == "qq_official":
-                # QQ Official does not provide an endpoint to enumerate every
-                # group a bot has joined. Keep the management page scoped to
-                # groups observed from real incoming messages.
-                live = _known_qq_official_groups(self.cfg, platform_id)
-            else:
-                live = await _fetch_live_groups(adapter, no_cache=no_cache)
+            label = getattr(meta, "adapter_display_name", None) or (
+                "QQ 官方机器人 (WebSocket)"
+                if getattr(meta, "name", None) == "qq_official" else "OneBot V11"
+            )
+            try:
+                if getattr(meta, "name", None) == "qq_official":
+                    # An observed group is manageable, but absence never
+                    # proves departure for QQ Official.
+                    live = _known_qq_official_groups(self.cfg, platform_id)
+                else:
+                    async with query_slots:
+                        live = await _fetch_live_groups(adapter, no_cache=no_cache)
+            except Exception as exc:
+                # CancelledError must propagate to cancel sibling queries.
+                return platform_id, label, None, (
+                    exc.message if isinstance(exc, AppleMusicBackendError)
+                    else "当前无法读取群聊列表，请检查适配器连接后重试"
+                )
+            return platform_id, label, live, None
+
+        # One failed/slow instance must not prevent the others from being read.
+        queries = [asyncio.create_task(query(adapter)) for adapter in self._adapters()]
+        try:
+            snapshots = await asyncio.gather(*queries)
+        finally:
+            for task in queries:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*queries, return_exceptions=True)
+        for platform_id, label, live, error in snapshots:
+            if error is not None:
+                instance_errors.append({
+                    "platform_id": platform_id, "platform_label": label, "error": error,
+                })
+                continue
             queried_platform_ids.add(platform_id)
+            stored_settings = _stored_group_settings(self.cfg)
             for group_id, name in live.items():
                 enabled = group_enabled_parsers(self.cfg, platform_id, group_id)
                 result.append({
                     "platform_id": platform_id,
-                    "platform_label": getattr(meta, "adapter_display_name", None)
-                    or (
-                        "QQ 官方机器人 (WebSocket)"
-                        if getattr(meta, "name", None) == "qq_official"
-                        else "OneBot V11"
-                    ),
+                    "platform_label": label,
                     "group_id": group_id,
                     "name": name,
+                    "remark": _group_remark(stored_settings.get(group_settings_key(platform_id, group_id))),
                     "enabled": sorted(
                         enabled, key=lambda key: list(PARSER_LABELS).index(key)
                     ),
@@ -415,17 +462,18 @@ class GroupParserConfigService:
                 item["group_id"],
             )
         )
-        return result, queried_platform_ids
+        return result, queried_platform_ids, instance_errors
 
     async def _groups(self, *, no_cache: bool = False) -> list[dict]:
-        groups, _ = await self._group_snapshot(no_cache=no_cache)
+        groups, _, _ = await self._group_snapshot(no_cache=no_cache)
         return groups
 
     async def get_groups(self, *, force_refresh: bool = False) -> dict:
-        groups, _ = await self._group_snapshot(no_cache=force_refresh)
+        groups, _, instance_errors = await self._group_snapshot(no_cache=force_refresh)
         globally_enabled = set(supported_parser_keys(self.cfg))
         return {
             "groups": groups,
+            "instance_errors": instance_errors,
             "parsers": [
                 {"key": key, "label": label, "globally_enabled": key in globally_enabled}
                 for key, label in PARSER_LABELS.items()
@@ -466,6 +514,9 @@ class GroupParserConfigService:
                     if isinstance(parser, str) and parser in PARSER_LABELS
                 }),
             })
+            remark = _group_remark(entry)
+            if remark:
+                encoded[-1]["remark"] = remark
         raw_data[GROUP_PARSER_SETTINGS_KEY] = encoded
         if updated_blacklist is not None:
             raw_data["blacklist"] = updated_blacklist
@@ -489,11 +540,10 @@ class GroupParserConfigService:
         if not isinstance(values, list) or not 0 <= len(values) <= GROUP_SETTINGS_MAX_GROUPS:
             raise GroupParserConfigError("群聊配置无效，请刷新群列表后重试")
         globally_enabled = set(supported_parser_keys(self.cfg))
-        submitted: dict[str, tuple[str, str, list[str], bool]] = {}
+        submitted: dict[str, tuple[str, str, list[str], bool, str | None]] = {}
         for item in values:
-            if not isinstance(item, dict) or set(item) != {
-                "platform_id", "group_id", "enabled", "parsing_enabled"
-            }:
+            required = {"platform_id", "group_id", "enabled", "parsing_enabled"}
+            if not isinstance(item, dict) or not required <= set(item) or set(item) - required - {"remark"}:
                 raise GroupParserConfigError("群聊配置字段无效")
             try:
                 key = group_settings_key(item["platform_id"], item["group_id"])
@@ -511,11 +561,22 @@ class GroupParserConfigService:
                 raise GroupParserConfigError("群聊启用的解析器配置无效")
             if not isinstance(parsing_enabled, bool):
                 raise GroupParserConfigError("群聊总解析开关状态无效")
+            remark = None
+            if "remark" in item:
+                remark = item["remark"]
+                if (
+                    not isinstance(remark, str)
+                    or len(remark.strip()) > GROUP_REMARK_MAX_LENGTH
+                    or any(ord(char) < 32 or ord(char) == 127 for char in remark)
+                ):
+                    raise GroupParserConfigError("群聊备注名须为不超过 128 个字符的单行文本")
+                remark = remark.strip()
             submitted[key] = (
                 str(item["platform_id"]),
                 str(item["group_id"]),
                 enabled,
                 parsing_enabled,
+                remark,
             )
         if len(submitted) != len(values):
             raise GroupParserConfigError("同一群聊不能重复提交")
@@ -523,14 +584,15 @@ class GroupParserConfigService:
         async with self.lock, self.config_lock:
             globally_enabled = set(supported_parser_keys(self.cfg))
             try:
-                live_groups, queried_platform_ids = await self._group_snapshot(
+                live_groups, queried_platform_ids, instance_errors = await self._group_snapshot(
                     no_cache=True
                 )
             except AppleMusicBackendError as exc:
                 raise GroupParserConfigError(exc.message) from None
             if not queried_platform_ids:
                 raise GroupParserConfigError(
-                    "未检测到已连接的 OneBot V11 实例，无法安全确认退群配置"
+                    (instance_errors[0]["error"] + "；" if instance_errors else "")
+                    + "没有可用的 OneBot / QQ 官方机器人实例，未保存任何修改，请检查连接后重试"
                 )
             live_group_ids = {
                 group_settings_key(group["platform_id"], group["group_id"])
@@ -562,14 +624,29 @@ class GroupParserConfigService:
             updated_blacklist = list(original_blacklist)
             cleaned_group_count = 0
             cleaned_blacklist_group_count = 0
-            # Preserve stored switches for live groups that were not part of
-            # this submission. The browser normally posts every group, but a
-            # partial API client must not silently re-enable other groups.
-            for key, (platform_id, group_id, enabled, parsing_enabled) in submitted.items():
+            saved_groups = []
+            unsaved_groups = []
+            departed_groups = []
+            errors_by_platform = {item["platform_id"]: item["error"] for item in instance_errors}
+            # Preserve stored switches for groups outside this submission;
+            # the browser posts only changed drafts, not every visible group.
+            for key, (platform_id, group_id, enabled, parsing_enabled, remark) in submitted.items():
+                identity = {"platform_id": platform_id, "group_id": group_id}
+                if platform_id not in queried_platform_ids:
+                    unsaved_groups.append({
+                        **identity,
+                        "error": errors_by_platform.get(platform_id, "该机器人实例不可用，请检查连接后重试"),
+                    })
+                    continue
                 # A page may still contain a group that was left since it was
                 # opened. Ignore that stale draft and let the fresh snapshot
                 # below decide whether persisted state should be pruned.
                 if key not in live_group_ids:
+                    # Only a complete OneBot roster can confirm departure.
+                    if platform_id in qq_official_platform_ids:
+                        unsaved_groups.append({**identity, "error": "该官方群记录暂不可用，请收到群消息后重试"})
+                    else:
+                        departed_groups.append(identity)
                     continue
                 if not set(enabled) <= globally_enabled:
                     raise GroupParserConfigError(
@@ -577,6 +654,9 @@ class GroupParserConfigService:
                     )
                 previous = updated.get(key)
                 previous = previous if isinstance(previous, dict) else {}
+                # Older API clients only submit parser switches. Omitting the
+                # new field must not erase an administrator's existing label.
+                saved_remark = _group_remark(previous) if remark is None else remark
                 previous_disabled = previous.get("disabled_parsers", [])
                 if not isinstance(previous_disabled, list):
                     previous_disabled = []
@@ -588,18 +668,21 @@ class GroupParserConfigService:
                     if isinstance(value, str) and value in PARSER_LABELS and value not in globally_enabled
                 } | (globally_enabled - set(enabled))
                 disabled = sorted(disabled)
-                if disabled:
+                if disabled or saved_remark:
                     updated[key] = {
                         "platform_id": platform_id,
                         "group_id": group_id,
                         "disabled_parsers": disabled,
                     }
+                    if saved_remark:
+                        updated[key]["remark"] = saved_remark
                 else:
                     updated.pop(key, None)
                 scope = f"{platform_id}:GroupMessage:{group_id}"
                 updated_blacklist = _with_group_blacklist_state(
                     updated_blacklist, scope, parsing_enabled
                 )
+                saved_groups.append(identity)
             # Only a successfully queried OneBot instance can prove that a
             # stored group has left. QQ Official cannot provide a full group
             # roster, so absence from its observed-group cache is not evidence
@@ -642,19 +725,29 @@ class GroupParserConfigService:
                     kept_blacklist.append(value)
                 updated_blacklist = kept_blacklist
                 cleaned_blacklist_group_count = len(cleaned_blacklist_keys)
-            cancellation = await self._persist_locked(
-                updated,
-                original_storage,
-                GROUP_PARSER_SETTINGS_KEY in raw_data,
-                updated_blacklist=updated_blacklist,
-                original_blacklist=original_blacklist,
-                blacklist_was_present=blacklist_was_present,
-            )
-            if cancellation is not None:
-                raise cancellation
+            # Do not persist an apparent success when every submitted change
+            # was skipped and no confirmed departure needs cleaning.
+            if saved_groups or not unsaved_groups or updated != original or updated_blacklist != original_blacklist:
+                cancellation = await self._persist_locked(
+                    updated,
+                    original_storage,
+                    GROUP_PARSER_SETTINGS_KEY in raw_data,
+                    updated_blacklist=updated_blacklist,
+                    original_blacklist=original_blacklist,
+                    blacklist_was_present=blacklist_was_present,
+                )
+                if cancellation is not None:
+                    raise cancellation
 
         return {
-            "message": "群聊总开关及解析器设置已确认并保存",
+            "message": (
+                f"已保存 {len(saved_groups)} 个群聊，{len(unsaved_groups)} 个群聊未保存，请检查实例连接后重试"
+                if unsaved_groups else "群聊总开关及解析器设置已确认并保存"
+            ),
+            "saved_groups": saved_groups,
+            "unsaved_groups": unsaved_groups,
+            "departed_groups": departed_groups,
+            "instance_errors": instance_errors,
             "cleaned_group_count": cleaned_group_count,
             "cleaned_blacklist_group_count": cleaned_blacklist_group_count,
         }
@@ -728,7 +821,7 @@ class GroupParserConfigService:
                 disabled.discard(parser_key)
             else:
                 disabled.add(parser_key)
-            if disabled:
+            if disabled or _group_remark(entry):
                 entry["disabled_parsers"] = sorted(disabled)
                 store[key] = entry
             else:

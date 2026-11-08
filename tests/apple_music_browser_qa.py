@@ -39,6 +39,14 @@ const state = {enabled:true,connected:true,version:'0.0.2',auth_state:'logged_ou
   {key:'qqmusic',label:'QQ 音乐',known:true,configured:true,enabled:true,cookie_configured:false,cookie_status:'账号 Cookie 不完整'},
  {key:'kugou',label:'酷狗音乐',known:true,configured:true,enabled:false,cookie_configured:false,cookie_status:'解析器未启用'}],
 };
+const configuration = __CONFIGURATION__;
+window.qaConfiguration = configuration;
+window.qaBodies = [];
+window.qaFailNextSave = false;
+window.qaFailedPlatforms = [];
+window.qaFailNextGroupSave = false;
+window.qaFailNextGroupRead = false;
+window.qaGroupBodies = [];
 const groupState = {parsers:[
  {key:'bilibili',label:'Bilibili',globally_enabled:true},
  {key:'douyin',label:'抖音',globally_enabled:true},
@@ -47,7 +55,9 @@ const groupState = {parsers:[
  {key:'netease',label:'网易云音乐',globally_enabled:true}],
  groups:[
   {platform_id:'Napcat_V5',platform_label:'NapCat',group_id:'90001',name:'解析测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:true,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']},
-  {platform_id:'Lagrange',platform_label:'Lagrange.OneBot',group_id:'90002',name:'另一个测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:false,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']}]};
+  {platform_id:'Lagrange',platform_label:'Lagrange.OneBot',group_id:'90002',name:'另一个测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:false,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']},
+  {platform_id:'QQBot',platform_label:'QQ 官方机器人 (WebSocket)',group_id:'openid-A',name:'官方测试群',enabled:['bilibili','douyin','xhs','pixiv','netease'],parsing_enabled:true,globally_enabled:['bilibili','douyin','xhs','pixiv','netease']}]};
+function groupErrors() {return window.qaFailedPlatforms.map(platform_id=>({platform_id,platform_label:platform_id,error:'模拟群列表查询超时，请检查连接后重试'}));}
 let job = {state:'idle'};
 window.qaState = state;
 window.qaGroupState = groupState;
@@ -63,17 +73,49 @@ window.addEventListener('message', event => {
  let data;
  if (endpoint === 'status') data = {...state,operation:job};
  else if (endpoint === 'operation') data = job;
- else if (endpoint === 'group-settings' || endpoint === 'group-settings-refresh') data = groupState;
+ else if (endpoint === 'group-settings' || endpoint === 'group-settings-refresh') {
+  if (window.qaFailNextGroupRead) {window.qaFailNextGroupRead=false;send({kind:'response',requestId:message.requestId,ok:false,error:'模拟群列表读取失败，请重试'});return;}
+  data = {...groupState,groups:groupState.groups.filter(item=>!window.qaFailedPlatforms.includes(item.platform_id)),instance_errors:groupErrors()};
+ }
  else if (endpoint === 'logo') data = {data_url:'__LOGO_DATA_URL__'};
+ else if (endpoint === 'configuration') data = configuration;
  else if (message.action === 'api:post') {
   if (message.body?.nonce !== 'qa-nonce') {send({kind:'response',requestId:message.requestId,ok:false,error:'invalid nonce'});return;}
+  if (['save-configuration','save-parser-cookie','upload-configuration-asset'].includes(endpoint)) {
+   window.qaBodies.push({...message.body,endpoint});
+   if (window.qaFailNextSave) {window.qaFailNextSave=false;send({kind:'response',requestId:message.requestId,ok:false,error:'模拟保存失败，请重试'});return;}
+   if (endpoint === 'save-configuration') {
+    const scope=message.body.scope;
+    const values=scope === 'global' ? configuration.global_values : scope === 'wrapper' ? configuration.wrapper_values : configuration.parsers.find(item=>item.key===scope).values;
+    Object.assign(values,message.body.settings);
+   } else if (endpoint === 'save-parser-cookie') {
+    const target=configuration.parsers.find(item=>item.key===message.body.parser);
+    target.cookie_configured=!message.body.clear && Boolean(message.body.cookie);
+    if (state.music_parsers[target.key]) state.music_parsers[target.key].cookie_configured=target.cookie_configured;
+   } else {
+    configuration.global_values[message.body.field]=message.body.clear?[]:['uploaded-test.png'];
+   }
+   setTimeout(()=>send({kind:'response',requestId:message.requestId,ok:true,data:{message:'配置已保存并生效',configuration}}),200);
+   return;
+  }
   if (endpoint === 'save-group-settings') {
    const submitted = message.body.groups || [];
+   window.qaGroupBodies.push(submitted);
+   if (window.qaFailNextGroupSave) {window.qaFailNextGroupSave=false;send({kind:'response',requestId:message.requestId,ok:false,error:'模拟群聊配置保存失败，请重试'});return;}
+   if (groupState.groups.every(item=>window.qaFailedPlatforms.includes(item.platform_id))) {send({kind:'response',requestId:message.requestId,ok:false,error:'没有可用的机器人实例，未保存任何修改，请检查连接后重试'});return;}
+   const saved_groups=[],unsaved_groups=[],departed_groups=[];
    submitted.forEach(group => {
+    const identity={platform_id:group.platform_id,group_id:group.group_id};
+    if (window.qaFailedPlatforms.includes(group.platform_id)) {unsaved_groups.push({...identity,error:'模拟群列表查询超时'});return;}
     const target = groupState.groups.find(item => item.platform_id === group.platform_id && item.group_id === group.group_id);
-    if (target) {target.enabled = group.enabled;target.parsing_enabled = group.parsing_enabled;}
+    if (target) {
+     target.enabled = group.enabled;target.parsing_enabled = group.parsing_enabled;
+     if (Object.hasOwn(group,'remark')) target.remark=group.remark.trim();
+     saved_groups.push(identity);
+    }
+    else departed_groups.push(identity);
    });
-   data = {message:'群聊总开关及解析器设置已确认并保存',cleaned_group_count:0,cleaned_blacklist_group_count:0};
+   data = {message:'群聊保存结果',saved_groups,unsaved_groups,departed_groups,instance_errors:groupErrors(),cleaned_group_count:0,cleaned_blacklist_group_count:0};
    send({kind:'response',requestId:message.requestId,ok:true,data});
    return;
   }
@@ -134,6 +176,26 @@ window.addEventListener('message', event => {
 
 def run(output: Path):
     import astrbot
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from core.management_config import ASSET_LIMITS, GLOBAL_GROUPS, WRAPPER_FIELDS
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    globals_schema = {key: schema[key] for keys in GLOBAL_GROUPS.values() for key in keys}
+    for key, limit in ASSET_LIMITS.items():
+        globals_schema[key] = {**globals_schema[key], "max_bytes": limit}
+    apple = schema["parsers_template"]["templates"]["applemusic"]["items"]
+    config = {
+        "groups": GLOBAL_GROUPS, "global_fields": globals_schema,
+        "global_values": {key: field["default"] for key, field in globals_schema.items()},
+        "wrapper_fields": {key: field for key, field in apple.items() if key in WRAPPER_FIELDS},
+        "wrapper_values": {key: field["default"] for key, field in apple.items() if key in WRAPPER_FIELDS},
+        "wrapper_configured": True, "parsers": [],
+    }
+    config["wrapper_values"]["backend_enabled"] = True
+    for key, template in schema["parsers_template"]["templates"].items():
+        fields = {name: value for name, value in template["items"].items() if key != "applemusic" or name not in WRAPPER_FIELDS}
+        config["parsers"].append({"key": key, "label": template["name"], "configured": key != "pixiv", "fields": fields,
+                                "values": {name: field["default"] for name, field in fields.items() if name != "cookies"}, "cookie_configured": False})
     bridge = Path(astrbot.__file__).parent / "dashboard" / "plugin_page_bridge.js"
     if not bridge.is_file():
         raise RuntimeError("This QA needs an AstrBot install with Plugin Pages")
@@ -142,13 +204,13 @@ def run(output: Path):
         def do_GET(self):
             if self.path == "/":
                 logo_data = base64.b64encode((ROOT / "logo.png").read_bytes()).decode("ascii")
-                harness = HARNESS.replace("__LOGO_DATA_URL__", f"data:image/png;base64,{logo_data}")
+                harness = HARNESS.replace("__LOGO_DATA_URL__", f"data:image/png;base64,{logo_data}").replace("__CONFIGURATION__", json.dumps(config, ensure_ascii=False))
                 data, content_type = harness.encode(), "text/html; charset=utf-8"
             elif self.path == "/api/plugin/page/bridge-sdk.js":
                 data, content_type = bridge.read_bytes(), "application/javascript"
             elif self.path.startswith("/page/"):
                 name = self.path.removeprefix("/page/")
-                if name not in ("index.html", "style.css", "style-refined.css", "app.js"):
+                if name not in ("index.html", "style.css", "style-refined.css", "app.js", "settings.js", "settings.css"):
                     self.send_error(404)
                     return
                 data = (ROOT / "pages" / "parser_management" / name).read_bytes()
@@ -231,7 +293,7 @@ def run(output: Path):
             assert frame.locator(".primary-button").first.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(255, 199, 199)"
             frame.locator("[data-view-link='groups']").click()
             frame.locator("#group-list .group-card").first.wait_for()
-            assert frame.locator("#group-list .group-card").count() == 2
+            assert frame.locator("#group-list .group-card").count() == 3
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings').length") >= 1
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'group-settings-refresh').length") == 0
             frame.locator("#refresh-groups").click()
@@ -270,8 +332,9 @@ def run(output: Path):
             group_list.evaluate("el => el.scrollIntoView({block: 'end'})")
             frame.locator("body").evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(50)
-            scroll_before = frame.locator("body").evaluate("() => window.scrollY")
             parser_toggle.focus()
+            parser_toggle.scroll_into_view_if_needed()
+            scroll_before = frame.locator("body").evaluate("() => window.scrollY")
             focus_before = parser_toggle.evaluate("el => document.activeElement === el")
             parser_toggle.uncheck()
             assert parser_toggle.evaluate("el => document.activeElement === el") == focus_before
@@ -302,61 +365,265 @@ def run(output: Path):
             frame.locator("#group-list .group-empty").get_by_text("没有匹配的群聊").wait_for()
             frame.locator("#group-search").fill("")
             screenshot("desktop-groups.png")
+
+            # Fail one instance after edits have been drafted for all bots.
+            first_group.locator(".group-total-toggle input").check()
+            other_group.locator(".group-total-toggle input").check()
+            official_group = frame.locator(".group-card").filter(has_text="官方测试群")
+            official_group.locator(".group-total-toggle input").uncheck()
+            page.evaluate("qaFailedPlatforms=['Lagrange']")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("已保存 2 个群聊；1 个群聊未保存", exact=False).wait_for()
+            assert page.evaluate("qaGroupState.groups[0].parsing_enabled === true")
+            assert page.evaluate("qaGroupState.groups[1].parsing_enabled === false")
+            assert page.evaluate("qaGroupState.groups[2].parsing_enabled === false")
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            assert frame.locator("#group-instance-errors").is_visible()
+            assert "Lagrange" in frame.locator("#group-instance-error-list").inner_text()
+            assert other_group.locator(".group-total-toggle input").is_checked()
+            assert other_group.locator(".group-total-toggle input").is_disabled()
+            assert not first_group.locator(".group-total-toggle input").is_disabled()
+            assert page.evaluate("qaGroupBodies.at(-1).length") == 3
+            frame.locator("[data-view-link='overview']").click()
+            frame.locator("[data-view-link='groups']").click()
+            assert other_group.locator(".group-total-toggle input").is_checked()
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("已保存 0 个群聊；1 个群聊未保存", exact=False).wait_for()
+            assert page.evaluate("qaGroupBodies.at(-1).length") == 1
+            assert frame.locator("#group-dirty-indicator").is_visible()
+
+            # A transport error during retry must not discard the pending draft.
+            page.evaluate("qaFailNextGroupRead=true")
+            frame.locator("#retry-groups").click()
+            frame.locator("#group-settings-state").get_by_text("模拟群列表读取失败", exact=False).wait_for()
+            assert other_group.locator(".group-total-toggle input").is_checked()
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            page.set_viewport_size({"width": 375, "height": 812})
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            screenshot("mobile-group-instance-error-light.png")
+            frame.locator("#page-theme").select_option("dark", force=True)
+            screenshot("mobile-group-instance-error-dark.png")
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            page.emulate_media(reduced_motion="reduce")
+            page.set_viewport_size({"width": 812, "height": 375})
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            assert frame.locator("html").evaluate("() => matchMedia('(prefers-reduced-motion: reduce)').matches")
+            page.emulate_media(reduced_motion="no-preference")
+            frame.locator("#page-theme").select_option("auto", force=True)
+            page.set_viewport_size({"width": 1200, "height": 980})
+
+            # Recovery re-enables controls without silently applying the draft.
+            page.evaluate("qaFailedPlatforms=[]")
+            frame.locator("#retry-groups").click()
+            frame.locator("#group-instance-errors").wait_for(state="hidden")
+            assert other_group.locator(".group-total-toggle input").is_enabled()
+            assert other_group.locator(".group-total-toggle input").is_checked()
+            assert page.evaluate("qaGroupState.groups[1].parsing_enabled === false")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("群聊配置已保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").wait_for(state="hidden")
+            assert page.evaluate("qaGroupState.groups[1].parsing_enabled === true")
+            assert page.evaluate("qaGroupBodies.at(-1).length === 1 && qaGroupBodies.at(-1)[0].platform_id === 'Lagrange'")
+
+            # Whole-request save failure and all-instance query failure retain drafts.
+            official_group.locator(".group-total-toggle input").check()
+            page.evaluate("qaFailNextGroupSave=true")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("模拟群聊配置保存失败", exact=False).wait_for()
+            assert official_group.locator(".group-total-toggle input").is_checked()
+            assert page.evaluate("qaGroupState.groups[2].parsing_enabled === false")
+            page.evaluate("qaFailedPlatforms=['Napcat_V5','Lagrange','QQBot']")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("未保存任何修改", exact=False).wait_for()
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            assert official_group.locator(".group-total-toggle input").is_checked()
+            frame.locator("#discard-group-settings").click()
+            frame.locator("#refresh-groups").click()
+            frame.locator("#group-instance-error-list li").nth(2).wait_for()
+            assert frame.locator(".group-card").count() == 3
+            assert official_group.locator(".group-total-toggle input").is_disabled()
+            page.evaluate("qaFailedPlatforms=[]")
+            frame.locator("#retry-groups").click()
+            frame.locator("#group-instance-errors").wait_for(state="hidden")
+            assert not official_group.locator(".group-total-toggle input").is_checked()
+
+            # Local remarks work for both OneBot and QQ Official without renaming groups.
+            first_remark = first_group.locator(".group-remark-field input")
+            official_remark = official_group.locator(".group-remark-field input")
+            original_groups = page.evaluate("qaGroupState.groups.map(({enabled,parsing_enabled,name})=>({enabled,parsing_enabled,name}))")
+            first_remark.fill("先不保存的备注")
+            assert first_group.locator("h2").inner_text() == "先不保存的备注"
+            assert page.evaluate("!qaGroupState.groups[0].remark")
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            frame.locator("#discard-group-settings").click()
+            assert first_remark.input_value() == ""
+            assert first_group.locator("h2").inner_text() == "解析测试群"
+            first_remark.fill("  游戏交流群 🍰  ")
+            official_remark.fill("官方群备注 <img src=x onerror=alert(1)>")
+            official_remark.evaluate("el => el.setSelectionRange(3,5)")
+            assert official_remark.evaluate("el => document.activeElement === el && el.selectionStart === 3 && el.selectionEnd === 5")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("群聊配置已保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").wait_for(state="hidden")
+            assert page.evaluate("qaGroupBodies.at(-1).length === 2")
+            assert first_remark.input_value() == "游戏交流群 🍰"
+            assert first_group.locator("h2").inner_text() == "游戏交流群 🍰"
+            assert official_group.locator("h2").inner_text() == "官方群备注 <img src=x onerror=alert(1)>"
+            assert official_group.locator("h2 img").count() == 0
+            assert first_group.get_by_text("原始名称：解析测试群", exact=True).is_visible()
+            assert page.evaluate("qaGroupState.groups.map(({enabled,parsing_enabled,name})=>({enabled,parsing_enabled,name}))") == original_groups
+            assert page.evaluate("qaGroupState.groups[0].remark") == "游戏交流群 🍰"
+            # Reload only the plugin page, keeping the simulated server config.
+            page.evaluate("document.querySelector('iframe').contentWindow.location.reload()")
+            frame.locator("[data-view-link='groups']").click()
+            first_remark.wait_for(state="visible")
+            assert first_remark.input_value() == "游戏交流群 🍰"
+            assert official_remark.input_value() == "官方群备注 <img src=x onerror=alert(1)>"
+            frame.locator("#group-search").fill("游戏交流群")
+            assert frame.locator(".group-card").count() == 1
+            frame.locator("#group-search").fill("官方群备注")
+            assert frame.locator(".group-card").count() == 1
+            frame.locator("#group-search").fill("解析测试群")
+            assert frame.locator(".group-card").count() == 1
+            frame.locator("#group-search").fill("")
+            first_remark.fill("名" * 128)
+            first_remark.press("End")
+            first_remark.press("A")
+            assert first_remark.input_value() == "名" * 128
+            page.set_viewport_size({"width": 375, "height": 812})
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            screenshot("mobile-group-remarks-light.png")
+            frame.locator("#page-theme").select_option("dark", force=True)
+            assert frame.locator("body").evaluate("el => el.scrollWidth <= window.innerWidth")
+            screenshot("mobile-group-remarks-dark.png")
+            frame.locator("#page-theme").select_option("auto", force=True)
+            page.set_viewport_size({"width": 1200, "height": 980})
+            frame.locator("#discard-group-settings").click()
+            assert first_remark.input_value() == "游戏交流群 🍰"
+
+            # A save error keeps the remark draft; a retry persists it.
+            first_remark.fill("失败后重试备注")
+            page.evaluate("qaFailNextGroupSave=true")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("模拟群聊配置保存失败", exact=False).wait_for()
+            assert first_remark.input_value() == "失败后重试备注"
+            assert page.evaluate("qaGroupState.groups[0].remark") == "游戏交流群 🍰"
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("群聊配置已保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").wait_for(state="hidden")
+            assert page.evaluate("qaGroupState.groups[0].remark") == "失败后重试备注"
+
+            # Partial success must retain the failed QQ bot's remark draft.
+            first_remark.fill("OneBot备注已更新")
+            official_remark.fill("官机草稿待重试")
+            page.evaluate("qaFailedPlatforms=['QQBot']")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("已保存 1 个群聊；1 个群聊未保存", exact=False).wait_for()
+            official_remark.wait_for(state="visible")
+            assert official_remark.input_value() == "官机草稿待重试"
+            assert official_remark.is_disabled()
+            assert page.evaluate("qaGroupState.groups[0].remark") == "OneBot备注已更新"
+            assert page.evaluate("qaGroupState.groups[2].remark") == "官方群备注 <img src=x onerror=alert(1)>"
+            assert frame.locator("#group-dirty-indicator").is_visible()
+            page.evaluate("qaFailedPlatforms=[]")
+            frame.locator("#retry-groups").click()
+            frame.locator("#group-instance-errors").wait_for(state="hidden")
+            assert official_remark.input_value() == "官机草稿待重试"
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("群聊配置已保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").wait_for(state="hidden")
+            assert page.evaluate("qaGroupBodies.at(-1).length === 1 && qaGroupBodies.at(-1)[0].platform_id === 'QQBot'")
+            assert page.evaluate("qaGroupState.groups[2].remark") == "官机草稿待重试"
+            first_remark.fill("")
+            official_remark.fill("")
+            frame.locator("#save-group-settings").click()
+            frame.locator("#group-settings-state").get_by_text("群聊配置已保存", exact=False).wait_for()
+            frame.locator("#group-dirty-indicator").wait_for(state="hidden")
+            assert first_group.locator("h2").inner_text() == "解析测试群"
+            assert official_group.locator("h2").inner_text() == "官方测试群"
+            assert page.evaluate("qaGroupState.groups.map(({enabled,parsing_enabled,name})=>({enabled,parsing_enabled,name}))") == original_groups
+
             frame.locator("[data-view-link='music']").click()
             frame.locator("[data-view='music']").wait_for(state="visible")
             assert frame.locator("[data-view='overview']").is_hidden()
             assert frame.locator(".platform-status-bar").is_visible()
-            music_list = frame.locator("#music-parser-list")
-            assert music_list.locator("[data-music-parser]").count() == 3
-            qq_music = music_list.locator("[data-music-parser='qqmusic']")
-            netease_music = music_list.locator("[data-music-parser='netease']")
-            assert qq_music.locator("[data-music-setting='parse_lyrics']").count() == 1
-            assert netease_music.locator("[data-music-setting='parse_lyrics']").count() == 1
-            qq_music.locator("[data-music-setting='parse_lyrics']").check()
-            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
-            assert page.evaluate("qaState.music_parsers.qqmusic.settings.parse_lyrics === true")
-            qq_music.locator("[data-music-setting='audio_send_format']").select_option("file")
-            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
-            assert page.evaluate("qaState.music_parsers.qqmusic.settings.audio_send_format === 'file'")
-            qq_music.locator(".music-quality-editor .codec-row").first.locator("button[aria-label='下移']").click()
-            frame.locator("#music-settings-state").get_by_text("已同步到磁盘", exact=False).wait_for()
-            assert page.evaluate("qaState.music_parsers.qqmusic.settings.file_quality_priority.join(',') === 'high,lossless,standard'")
-            qq_music.locator("[data-music-cookie]").fill("uin=12345; qqmusic_key=example-key")
-            qq_music.locator(".music-cookie-save").click()
-            page.wait_for_function("window.qaState.music_parsers.qqmusic.cookie_configured === true")
-            qq_music.locator("[data-music-cookie]").wait_for(state="visible")
-            frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).wait_for()
-            assert qq_music.locator("[data-music-cookie]").input_value() == ""
-            assert frame.locator("#notice").get_by_text("Cookie 已保存", exact=False).is_visible()
+            config_list = frame.locator("#parser-configuration-list")
+            assert config_list.locator("[data-parser]").count() == 10
+            assert frame.locator("#plugin-configuration").evaluate("el => el.compareDocumentPosition(document.querySelector('#wrapper-configuration')) & Node.DOCUMENT_POSITION_FOLLOWING")
+            assert frame.locator("#verify").evaluate("el => el.compareDocumentPosition(document.querySelector('#parser-configuration')) & Node.DOCUMENT_POSITION_FOLLOWING")
+            assert frame.locator("[data-parser='pixiv'] input").first.is_disabled()
+            frame.locator("#config-global-require_at_in_group").uncheck()
+            page.wait_for_function("qaConfiguration.global_values.require_at_in_group === false")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()
+            frame.locator("#config-global-debounce_interval").fill("20")
+            frame.locator("#config-global-debounce_interval").blur()
+            page.wait_for_function("qaConfiguration.global_values.debounce_interval === 20")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()
+            # Edits arriving during an in-flight save must be submitted next.
+            frame.locator("#config-global-debounce_interval").evaluate("""el => {
+              el.value='30';el.dispatchEvent(new Event('change'));
+              setTimeout(()=>{el.value='40';el.dispatchEvent(new Event('change'));},350);
+            }""")
+            page.wait_for_function("qaConfiguration.global_values.debounce_interval === 40")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()
+            assert frame.locator("#config-global-debounce_interval").input_value() == "40"
+            page.evaluate("qaFailNextSave=true")
+            frame.locator("#config-global-forward_threshold").fill("3")
+            frame.locator("#config-global-forward_threshold").blur()
+            frame.locator("#retry-configuration").wait_for(state="visible")
+            frame.locator("#retry-configuration").click()
+            page.wait_for_function("qaConfiguration.global_values.forward_threshold === 3")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()
+            qq_music = config_list.locator("[data-parser='qqmusic']")
+            qq_music.locator("summary").click()
+            qq_music.locator("#config-qqmusic-parse_lyrics").check()
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='qqmusic').values.parse_lyrics === true")
+            qq_music.locator("#config-qqmusic-audio_send_format").select_option("file")
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='qqmusic').values.audio_send_format === 'file'")
+            qq_music.locator("[data-key='file_quality_priority'] button[aria-label='下移第 1 项']").click()
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='qqmusic').values.file_quality_priority.join(',') === 'high,lossless,standard'")
+            qq_music.locator("#config-qqmusic-cookies").fill("uin=12345; qqmusic_key=example-key")
+            before_cookie = page.evaluate("qaRequests.filter(item=>item==='save-parser-cookie').length")
+            assert page.evaluate("qaRequests.filter(item=>item==='save-parser-cookie').length") == before_cookie
+            qq_music.get_by_role("button", name="保存 Cookie", exact=True).click()
+            qq_music.locator("[data-key='cookies'] .config-field-status").get_by_text("Cookie 已保存", exact=False).wait_for()
+            assert qq_music.locator("#config-qqmusic-cookies").input_value() == ""
             qq_music.locator("[data-cookie-check='qqmusic']").click()
-            frame.locator("[data-music-parser='qqmusic'] .music-cookie-state").get_by_text("Cookie 有效").wait_for()
-            assert frame.locator("[data-music-parser='qqmusic'] .music-cookie-state").get_attribute("data-validity") == "valid"
-            assert frame.locator("[data-platform-status='qqmusic'] small").inner_text() == "Cookie 有效"
+            qq_music.locator("[data-key='cookies']").get_by_text("Cookie 有效", exact=True).wait_for()
             assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'check-music-cookie').length === 1")
-            music_list.screenshot(path=str(output / "music-cookie-status.png"))
-            screenshot("desktop-light.png")
-            assert frame.locator("#setting-backend").is_checked()
-            frame.locator("#setting-return-audio").check()
-            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            frame.locator("input[name='audio-format'][value='voice']").check()
-            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            frame.locator("#setting-cover").uncheck()
-            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            frame.locator("#setting-chinese-language").check()
-            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            frame.locator(".codec-row").first.locator("button[aria-label='下移']").click()
-            assert frame.locator(".codec-row select").first.input_value() == "aac-web"
-            # Settings are debounced and persisted automatically after the
-            # last control change; the old explicit save button is hidden.
-            frame.locator("#settings-state").get_by_text("磁盘配置同步", exact=False).wait_for()
-            assert page.evaluate("qaState.settings.return_audio && qaState.settings.audio_send_format === 'voice' && !qaState.settings.show_playlist_cover && qaState.settings.force_chinese_language && qaState.settings.file_codec_priority.join(',') === 'aac-web,alac'")
-            assert not frame.locator("#save-settings").is_visible()
-            assert page.evaluate("qaRequests.filter(endpoint => endpoint === 'save-settings').length >= 4")
+            assert frame.locator("#config-wrapper-backend_enabled").is_checked()
+            apple = config_list.locator("[data-parser='applemusic']")
+            apple.locator("summary").click()
+            apple.locator("#config-applemusic-return_audio").check()
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='applemusic').values.return_audio === true")
+            apple.locator("#config-applemusic-audio_send_format").select_option("voice")
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='applemusic').values.audio_send_format === 'voice'")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for()
+            # Actual file input, explicit upload, and restore default.
+            page.on("dialog", lambda dialog: dialog.accept())
+            frame.locator("#config-global-custom_logo").set_input_files(str(ROOT / "logo.png"))
+            logo_field = frame.locator("[data-scope='global'][data-key='custom_logo']")
+            logo_field.get_by_role("button", name="上传并应用").click()
+            logo_field.locator(".config-field-status").get_by_text("资源已保存", exact=False).wait_for()
+            assert page.evaluate("qaConfiguration.global_values.custom_logo.length === 1")
+            logo_field.get_by_role("button", name="恢复默认").click()
+            page.wait_for_function("qaConfiguration.global_values.custom_logo.length === 0")
+            qq_music.get_by_role("button", name="清除 Cookie", exact=True).click()
+            page.wait_for_function("qaConfiguration.parsers.find(p=>p.key==='qqmusic').cookie_configured === false")
+            screenshot("desktop-parser-settings.png")
+            frame.locator("[data-view-link='overview']").click()
+            assert frame.locator("#cache").is_visible()
+            assert frame.locator("#cache").evaluate("el=>el.closest('[data-view]').dataset.view") == "overview"
+            frame.locator("#config-global-clean_cron").fill("0 3 * * *")
+            frame.locator("#config-global-clean_cron").blur()
+            page.wait_for_function("qaConfiguration.global_values.clean_cron === '0 3 * * *'")
+            frame.locator("#configuration-state").get_by_text("所有更改已保存", exact=False).wait_for(state="attached")
             frame.locator("#clear-cache").click()
             frame.locator("#clear-cache").get_by_text("再次点击确认清理", exact=False).wait_for()
             frame.locator("#clear-cache").click()
-            frame.locator("#notice").get_by_text("已清理 9 个文件", exact=False).wait_for()
-            assert frame.locator("#cache-size").get_by_text("0 B", exact=True).is_visible()
+            frame.locator("#cache-size").get_by_text("0 B", exact=True).wait_for()
+            frame.locator("[data-view-link='music']").click()
             frame.locator("#username").fill("qa@example.invalid")
             frame.locator("#password").fill("not-a-real-password")
             frame.locator("#login").click()
@@ -403,7 +670,6 @@ def run(output: Path):
             page.evaluate("document.querySelector('iframe').contentWindow.postMessage({channel:'astrbot-plugin-page',kind:'context',context:{isDark:false}},location.origin)")
             frame.locator("html[data-theme='light']").wait_for()
             screenshot("mobile-light.png")
-            page.on("dialog", lambda dialog: dialog.accept())
             frame.locator("#clear-session").click()
             frame.locator("#auth-state").get_by_text("未登录").wait_for()
             assert frame.locator("[data-platform-status='applemusic']").get_attribute("data-available") == "false"
@@ -414,7 +680,7 @@ def run(output: Path):
             assert frame.locator("[data-platform-status='applemusic'] small").inner_text() == "账号后端未启用"
             assert frame.locator("#password").is_disabled()
             assert not errors, errors
-            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["overview-music-group-navigation", "group-settings-draft-discard-save", "group-unsaved-indicator-and-focus-scroll-stability", "group-search-empty-state", "classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
+            print(json.dumps({"screenshots": str(output), "browser_errors": errors, "flows": ["overview-music-group-navigation", "group-settings-draft-discard-save", "group-unsaved-indicator-and-focus-scroll-stability", "group-search-empty-state", "group-onebot-qq-partial-save", "group-failed-instance-draft-preservation", "group-retry-recovery-and-changed-only-submission", "group-all-instances-failed", "group-save-and-read-errors", "group-warning-light-dark-landscape-reduced-motion", "classic-soft-style-toggle", "platform-status", "apple-settings-autosave", "music-settings-autosave", "music-cookie", "music-cookie-validity-check", "clear-cache", "login", "2fa", "verify", "clear-session", "disabled-backend"], "viewports": ["1200x980", "390x844", "812x375"], "responsive_widths": responsive_widths, "saved_style": page.evaluate("document.querySelector('iframe').contentWindow.localStorage.getItem('apple-music-management-style')"), "real_apple_login": False}))
             browser.close()
     finally:
         server.shutdown()

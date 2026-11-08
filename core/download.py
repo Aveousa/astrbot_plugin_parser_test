@@ -155,7 +155,13 @@ class Downloader:
             headers = headers or self.default_headers
             request_url = self._request_url(url)
             proxy_kwargs = {} if proxy is ... else {"proxy": proxy}
+            timeout = getattr(self.cfg, "download_timeout", None)
+            if isinstance(timeout, (int, float)) and timeout > 0:
+                # Capture at the start of this download; future requests use a
+                # saved timeout immediately without closing this shared client.
+                proxy_kwargs["timeout"] = ClientTimeout(total=timeout)
             retries = self.cfg.download_retry_times
+            max_size = self.max_size
             semaphore = getattr(self, "_download_semaphore", None)
             if semaphore is None:
                 # Keep lightweight test doubles/backward-compatible constructions
@@ -198,7 +204,7 @@ class Downloader:
                                         f"HTTP {response.status} {response.reason}"
                                     )
                                 content_length = response.content_length
-                                max_bytes = self.max_size * 1024 * 1024
+                                max_bytes = max_size * 1024 * 1024
                                 response_headers = getattr(response, "headers", {}) or {}
                                 content_type = str(response_headers.get("Content-Type", ""))
 
@@ -207,7 +213,7 @@ class Downloader:
                                     raise ZeroSizeException
                                 if content_length and content_length > max_bytes:
                                     logger.warning(
-                                        f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                                        f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {max_size} MB, 取消下载"
                                     )
                                     raise SizeLimitException
 

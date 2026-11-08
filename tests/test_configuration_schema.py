@@ -312,7 +312,8 @@ def test_group_blacklist_cleanup_setting_is_independent_and_enabled_by_default()
     assert "确认并保存" in setting["hint"]
 
 
-def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
+@pytest.mark.parametrize("remark", [None, "本地备注"])
+def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module, remark):
     saves = []
     config_module.PluginConfig.save_config = lambda self: saves.append(True)
     raw = {
@@ -352,6 +353,8 @@ def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
     context = SimpleNamespace(
         get_config=lambda: {"timezone": "Asia/Shanghai", "admins_id": []}
     )
+    if remark is not None:
+        raw["group_parser_settings"]["v1:Napcat_V5:90001"]["remark"] = remark
     config = config_module.PluginConfig(raw, context)
 
     assert config.group_parser_settings == [
@@ -359,6 +362,7 @@ def test_legacy_group_parser_map_migrates_to_schema_stable_list(config_module):
             "platform_id": "Napcat_V5",
             "group_id": "90001",
             "disabled_parsers": ["bilibili"],
+            **({"remark": remark} if remark is not None else {}),
         }
     ]
     assert config.cleanup_blacklist_on_group_leave is True
@@ -410,7 +414,9 @@ def test_management_page_is_the_plugin_home_and_keeps_music_and_group_views_sepa
     assert 'data-view-link="overview"' in page
     assert 'data-view="music"' in page
     assert 'data-view="groups"' in page
-    assert "音乐管理" in page and "群聊配置" in page
+    assert "解析器管理" in page and "群聊配置" in page
+    assert page.index('id="plugin-configuration"') < page.index('id="wrapper-configuration"') < page.index('id="verify"') < page.index('id="parser-configuration"')
+    assert page.index('id="overview"') < page.index('id="cache"') < page.index('id="music"')
     assert 'id="save-group-settings"' in page
 
 

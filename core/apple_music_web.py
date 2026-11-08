@@ -19,6 +19,7 @@ class AppleMusicWeb:
         self.backend = backend
         self.plugin_name = plugin_name
         self.group_parser_config = None
+        self.config_service = None
         self._secret = secrets.token_bytes(32)
         self._task: asyncio.Task | None = None
         self._job: dict = {"state": "idle"}
@@ -179,6 +180,14 @@ class AppleMusicWeb:
                 return response(message="需要 AstrBot 后台登录", status_code=401)
             return response(self.operation(owner))
 
+        async def get_configuration():
+            if not authenticated_owner():
+                return response(message="需要 AstrBot 后台登录", status_code=401)
+            if self.closed or self.config_service is None:
+                return response(message="配置服务未就绪", status_code=503)
+            async with self.backend.config_write_lock:
+                return response(self.config_service.describe())
+
         async def get_group_settings():
             owner = authenticated_owner()
             if not owner:
@@ -192,7 +201,7 @@ class AppleMusicWeb:
             except AppleMusicBackendError as exc:
                 return response(message=exc.message, status_code=400)
             except Exception:
-                return response(message="当前无法读取 OneBot 群聊列表，请检查适配器连接", status_code=503)
+                return response(message="当前无法读取群聊列表，请检查机器人实例连接后重试", status_code=503)
 
         async def get_group_settings_force_refresh():
             owner = authenticated_owner()
@@ -209,7 +218,7 @@ class AppleMusicWeb:
             except AppleMusicBackendError as exc:
                 return response(message=exc.message, status_code=400)
             except Exception:
-                return response(message="当前无法读取 OneBot 群聊列表，请检查适配器连接", status_code=503)
+                return response(message="当前无法读取群聊列表，请检查机器人实例连接后重试", status_code=503)
 
         def post_handler(action: str) -> Callable:
             async def handler():
@@ -223,7 +232,11 @@ class AppleMusicWeb:
                 if not request.headers.get("content-type", "").lower().startswith("application/json"):
                     return response(message="需要 JSON 请求", status_code=415)
                 raw_body = await request.body()
-                max_body_size = 2 * 1024 * 1024 if action == "save-group-settings" else 8192
+                max_body_size = {
+                    "save-group-settings": 2 * 1024 * 1024,
+                    "save-configuration": 65536, "save-parser-cookie": 65536,
+                    "upload-configuration-asset": 28 * 1024 * 1024,
+                }.get(action, 8192)
                 if len(raw_body) > max_body_size:
                     return response(message="请求过大", status_code=413)
                 try:
@@ -239,6 +252,16 @@ class AppleMusicWeb:
                 ):
                     return response(message="管理会话已更新，请刷新页面后重试", status_code=403)
                 try:
+                    if action in {"save-configuration", "save-parser-cookie", "upload-configuration-asset"}:
+                        if self.config_service is None:
+                            return response(message="配置服务未就绪", status_code=503)
+                        if action == "save-configuration":
+                            result = await self.config_service.save(body.get("scope"), body.get("settings"), owner=owner)
+                        elif action == "save-parser-cookie":
+                            result = await self.config_service.save_cookie(owner, body.get("parser"), body.get("cookie"), clear=body.get("clear", False))
+                        else:
+                            result = await self.config_service.upload(owner, body.get("field"), body.get("name"), body.get("encoded"), clear=body.get("clear", False))
+                        return response(result)
                     if action == "save-group-settings":
                         if self.group_parser_config is None:
                             return response(message="群聊配置服务未就绪", status_code=503)
@@ -252,12 +275,14 @@ class AppleMusicWeb:
                 except Exception:
                     # Never expose internal errors, configuration contents,
                     # or traceback details to the browser.
-                    return response(message="群聊解析器设置保存失败，请刷新后重试", status_code=500)
+                    message = "群聊解析器设置保存失败，请刷新后重试" if action == "save-group-settings" else "设置保存失败，请检查配置后重试"
+                    return response(message=message, status_code=500)
             return handler
 
         routes = [
             ("status", get_status, ["GET"]),
             ("operation", get_operation, ["GET"]),
+            ("configuration", get_configuration, ["GET"]),
             ("group-settings", get_group_settings, ["GET"]),
             ("group-settings-refresh", get_group_settings_force_refresh, ["GET"]),
         ]
@@ -268,6 +293,7 @@ class AppleMusicWeb:
                 "save-settings", "save-music-settings", "save-music-cookie",
                 "check-music-cookie", "save-group-settings",
                 "verify",
+                "save-configuration", "save-parser-cookie", "upload-configuration-asset",
             )
         ]
         for endpoint, handler, methods in routes:
@@ -306,6 +332,11 @@ class AppleMusicWeb:
         if self._task and not self._task.done():
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
+        if self.config_service is not None:
+            # An authenticated direct configuration request may still be
+            # committing. Let it finish before plugin teardown closes parsers.
+            async with self.backend.lock:
+                pass
         # Remove only OUR handlers. Never remove a replacement from a newer load.
         registered = getattr(self._context, "registered_web_apis", None)
         if isinstance(registered, list):

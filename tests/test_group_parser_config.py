@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -78,6 +79,22 @@ def _service(cfg, groups=None, *, platform_id="Napcat_V5"):
     return GroupParserConfigService(cfg, context)
 
 
+def _multi_service(cfg, *adapters):
+    return GroupParserConfigService(cfg, SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=list(adapters))
+    ))
+
+
+def _failing_adapter(platform_id="Unavailable"):
+    adapter = _Adapter(platform_id)
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("private token must not reach the management page")
+
+    adapter.client.call_action = fail
+    return adapter
+
+
 def test_group_policy_is_isolated_by_instance_and_group_id():
     cfg, _ = _config()
     cfg._data[GROUP_PARSER_SETTINGS_KEY] = {
@@ -129,6 +146,342 @@ def test_group_list_reports_live_groups_and_effective_parser_status():
 
     asyncio.run(service.get_groups(force_refresh=True))
     assert adapter.calls[-1] == ("get_group_list", {"no_cache": True})
+
+
+@pytest.mark.parametrize("failure", ["exception", "invalid", "invalid_items", "no_client", "broken_client"])
+def test_group_query_failure_is_isolated_from_other_onebot_and_qq_instances(failure):
+    cfg, saves = _config()
+    cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = [{
+        "platform_id": "QQBot", "group_id": "openid-A", "name": "官方测试群",
+    }]
+    failed = _failing_adapter()
+    if failure in {"invalid", "invalid_items"}:
+        failed.client.call_action = failed.call_action
+        failed.groups = {} if failure == "invalid" else [{"bad": "response"}]
+    elif failure == "no_client":
+        failed.client = None
+    elif failure == "broken_client":
+        def broken_client():
+            raise RuntimeError("private token")
+        failed.get_client = broken_client
+    good = _Adapter("Working", [{"group_id": "90001", "group_name": "正常群"}])
+    official = _Adapter("QQBot", name="qq_official")
+    result = asyncio.run(_multi_service(cfg, failed, good, official).get_groups())
+    assert {group["platform_id"] for group in result["groups"]} == {"Working", "QQBot"}
+    assert len(result["instance_errors"]) == 1
+    assert result["instance_errors"][0]["platform_id"] == "Unavailable"
+    assert "private" not in result["instance_errors"][0]["error"]
+    assert official.calls == []
+    assert saves == []
+
+
+def test_onebot_query_timeout_cancels_request_and_preserves_other_instances(monkeypatch):
+    monkeypatch.setattr("core.group_parser_config.GROUP_QUERY_TIMEOUT", 0.02)
+    cfg, _ = _config()
+    slow = _Adapter("Slow")
+    cancelled = []
+
+    async def hang(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    slow.client.call_action = hang
+    good = _Adapter("Working", [{"group_id": "90001"}])
+
+    async def run():
+        return await asyncio.wait_for(_multi_service(cfg, slow, good).get_groups(), 1)
+
+    result = asyncio.run(run())
+    assert cancelled == [True]
+    assert [group["platform_id"] for group in result["groups"]] == ["Working"]
+    assert "超时" in result["instance_errors"][0]["error"]
+
+
+def test_cancelled_group_query_propagates_and_drains_all_instance_tasks():
+    cfg, saves = _config()
+
+    async def run():
+        started = asyncio.Event()
+        active = 0
+        finished = 0
+
+        async def hang(*_args, **_kwargs):
+            nonlocal active, finished
+            active += 1
+            if active == 2:
+                started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished += 1
+
+        adapters = [_Adapter("A"), _Adapter("B")]
+        for adapter in adapters:
+            adapter.client.call_action = hang
+        task = asyncio.create_task(_multi_service(cfg, *adapters).save_group_settings([]))
+        await asyncio.wait_for(started.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished == 2
+        assert not [item for item in asyncio.all_tasks() if item is not asyncio.current_task() and not item.done()]
+
+    asyncio.run(run())
+    assert cfg._data == {}
+    assert saves == []
+
+
+def test_group_query_concurrency_is_bounded(monkeypatch):
+    monkeypatch.setattr("core.group_parser_config.GROUP_QUERY_CONCURRENCY", 2)
+    cfg, _ = _config()
+    active = peak = 0
+
+    async def query(*_args, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(active, peak)
+        try:
+            await asyncio.sleep(0.005)
+            return []
+        finally:
+            active -= 1
+
+    adapters = [_Adapter(f"Bot{index}") for index in range(7)]
+    for adapter in adapters:
+        adapter.client.call_action = query
+    result = asyncio.run(_multi_service(cfg, *adapters).get_groups())
+    assert peak == 2
+    assert active == 0
+    assert result["instance_errors"] == []
+
+
+@pytest.mark.parametrize("disk_error", [False, True])
+def test_partial_save_preserves_failed_instance_and_qq_history_and_can_retry(disk_error):
+    cfg, saves = _config(save_error=OSError("disk full") if disk_error else None)
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [
+        {"platform_id": platform, "group_id": group, "disabled_parsers": ["pixiv"]}
+        for platform, group in [("Failed", "90001"), ("Failed", "90099"),
+                                ("Working", "90099"), ("QQBot", "historic-openid")]
+    ]
+    cfg._data["blacklist"] = [f"{platform}:GroupMessage:{group}" for platform, group in [
+        ("Failed", "90001"), ("Failed", "90099"), ("Working", "90099"), ("QQBot", "historic-openid")
+    ]]
+    cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] = [{
+        "platform_id": "QQBot", "group_id": "openid-A", "name": "官方测试群",
+    }]
+    original = copy.deepcopy(cfg._data)
+    failed = _failing_adapter("Failed")
+    good = _Adapter("Working", [{"group_id": "90001"}])
+    official = _Adapter("QQBot", name="qq_official")
+    service = _multi_service(cfg, failed, good, official)
+    drafts = [{"platform_id": platform, "group_id": group, "enabled": ["bilibili"], "parsing_enabled": False}
+              for platform, group in [("Failed", "90001"), ("Working", "90001"), ("QQBot", "openid-A")]]
+    if disk_error:
+        with pytest.raises(AppleMusicBackendError, match="保存失败"):
+            asyncio.run(service.save_group_settings(drafts))
+        assert cfg._data == original
+        return
+    result = asyncio.run(service.save_group_settings(drafts))
+    assert {item["platform_id"] for item in result["saved_groups"]} == {"Working", "QQBot"}
+    assert [item["platform_id"] for item in result["unsaved_groups"]] == ["Failed"]
+    assert result["cleaned_group_count"] == result["cleaned_blacklist_group_count"] == 1
+    assert group_enabled_parsers(cfg, "Working", "90001") == {"bilibili"}
+    assert group_enabled_parsers(cfg, "QQBot", "openid-A") == {"bilibili"}
+    failed_entries = [item for item in cfg._data[GROUP_PARSER_SETTINGS_KEY] if item["platform_id"] == "Failed"]
+    assert failed_entries == original[GROUP_PARSER_SETTINGS_KEY][:2]
+    assert "QQBot:GroupMessage:historic-openid" in cfg._data["blacklist"]
+    assert "Failed:GroupMessage:90099" in cfg._data["blacklist"]
+    assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY] == original[QQ_OFFICIAL_KNOWN_GROUPS_KEY]
+    assert saves == [True]
+    failed.client.call_action = failed.call_action
+    failed.groups = [{"group_id": "90001"}, {"group_id": "90099"}]
+    retried = asyncio.run(service.save_group_settings(drafts[:1]))
+    assert retried["unsaved_groups"] == []
+    assert group_enabled_parsers(cfg, "Failed", "90001") == {"bilibili"}
+    assert group_enabled_parsers(cfg, "Working", "90001") == {"bilibili"}
+    assert saves == [True, True]
+
+
+def test_all_failed_instances_report_errors_and_do_not_persist():
+    cfg, saves = _config()
+    cfg._data["blacklist"] = ["Failed:GroupMessage:90001"]
+    original = copy.deepcopy(cfg._data)
+    service = _multi_service(cfg, _failing_adapter("Failed"))
+    result = asyncio.run(service.get_groups())
+    assert result["groups"] == []
+    assert result["instance_errors"][0]["platform_id"] == "Failed"
+    with pytest.raises(AppleMusicBackendError, match="未保存任何修改"):
+        asyncio.run(service.save_group_settings([{
+            "platform_id": "Failed", "group_id": "90001", "enabled": [], "parsing_enabled": True,
+        }]))
+    assert cfg._data == original
+    assert saves == []
+
+
+@pytest.mark.parametrize("platform_id", ["Failed", "Removed", "QQBot"])
+def test_skipped_submission_does_not_persist_or_claim_success(platform_id):
+    cfg, saves = _config()
+    service = _multi_service(cfg, _failing_adapter("Failed"), _Adapter("QQBot", name="qq_official"))
+    result = asyncio.run(service.save_group_settings([{
+        "platform_id": platform_id, "group_id": "90001", "enabled": [], "parsing_enabled": True,
+    }]))
+    assert result["saved_groups"] == []
+    assert len(result["unsaved_groups"]) == 1
+    assert cfg._data == {}
+    assert saves == []
+
+
+def test_successfully_empty_roster_confirms_departure_but_failure_does_not():
+    cfg, _ = _config()
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [
+        {"platform_id": platform, "group_id": "90001", "disabled_parsers": ["pixiv"]}
+        for platform in ["Empty", "Failed"]
+    ]
+    cfg._data["blacklist"] = ["Empty:GroupMessage:90001", "Failed:GroupMessage:90001"]
+    service = _multi_service(cfg, _Adapter("Empty"), _failing_adapter("Failed"))
+    result = asyncio.run(service.save_group_settings([{
+        "platform_id": "Empty", "group_id": "90001", "enabled": [], "parsing_enabled": True,
+    }]))
+    assert result["departed_groups"] == [{"platform_id": "Empty", "group_id": "90001"}]
+    assert result["saved_groups"] == []
+    assert [item["platform_id"] for item in cfg._data[GROUP_PARSER_SETTINGS_KEY]] == ["Failed"]
+    assert cfg._data["blacklist"] == ["Failed:GroupMessage:90001"]
+
+
+@pytest.mark.parametrize("platform_name", ["aiocqhttp", "qq_official"])
+def test_group_remark_roundtrips_and_can_be_edited_or_cleared(platform_name):
+    cfg, saves = _config()
+    adapter = _Adapter("Bot", [{"group_id": "90001", "group_name": "真实群名"}], name=platform_name)
+    service = _multi_service(cfg, adapter)
+    if platform_name == "qq_official":
+        asyncio.run(service.remember_qq_official_group("Bot", "90001", "真实群名"))
+    draft = {
+        "platform_id": "Bot", "group_id": "90001",
+        "enabled": sorted(group_enabled_parsers(cfg, "Bot", "90001")),
+        "parsing_enabled": True, "remark": "  自定义备注🍰  ",
+    }
+    before = copy.deepcopy(asyncio.run(service.get_groups()))
+    result = asyncio.run(service.save_group_settings([draft]))
+    assert result["saved_groups"] == [{"platform_id": "Bot", "group_id": "90001"}]
+    assert cfg._data[GROUP_PARSER_SETTINGS_KEY] == [{
+        "platform_id": "Bot", "group_id": "90001", "disabled_parsers": [], "remark": "自定义备注🍰",
+    }]
+    # Emulate a restart using the serialized config, not page-local state.
+    cfg._data = json.loads(json.dumps(cfg._data, ensure_ascii=False))
+    service = _multi_service(cfg, adapter)
+    group = asyncio.run(service.get_groups())["groups"][0]
+    assert group["remark"] == "自定义备注🍰"
+    assert group["name"] == before["groups"][0]["name"] == "真实群名"
+    assert group["enabled"] == before["groups"][0]["enabled"]
+    assert group["parsing_enabled"] is True
+    if platform_name == "qq_official":
+        asyncio.run(service.remember_qq_official_group("Bot", "90001", "新真实群名"))
+        assert asyncio.run(service.get_groups())["groups"][0]["remark"] == "自定义备注🍰"
+        assert cfg._data[QQ_OFFICIAL_KNOWN_GROUPS_KEY][0]["name"] == "新真实群名"
+    draft["remark"] = "更新后的备注"
+    asyncio.run(service.save_group_settings([draft]))
+    assert asyncio.run(service.get_groups())["groups"][0]["remark"] == "更新后的备注"
+    draft["remark"] = "   "
+    asyncio.run(service.save_group_settings([draft]))
+    assert cfg._data[GROUP_PARSER_SETTINGS_KEY] == []
+    assert asyncio.run(service.get_groups())["groups"][0]["remark"] == ""
+    assert saves
+
+
+@pytest.mark.parametrize("platform_name", ["aiocqhttp", "qq_official"])
+def test_group_commands_and_legacy_requests_preserve_remarks(platform_name):
+    cfg, _ = _config()
+    adapter = _Adapter("Bot", [{"group_id": "90001"}], name=platform_name)
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [{
+        "platform_id": "Bot", "group_id": "90001", "disabled_parsers": [], "remark": "保留的备注",
+    }]
+    service = _multi_service(cfg, adapter)
+    if platform_name == "qq_official":
+        asyncio.run(service.remember_qq_official_group("Bot", "90001"))
+    for enabled in (False, True):
+        asyncio.run(service.set_group_parser("Bot", "90001", "bilibili", enabled))
+        stored = cfg._data[GROUP_PARSER_SETTINGS_KEY][0]
+        assert stored["remark"] == "保留的备注"
+        assert ("bilibili" in stored["disabled_parsers"]) is not enabled
+    asyncio.run(service.save_group_settings([{
+        "platform_id": "Bot", "group_id": "90001",
+        "enabled": ["bilibili"], "parsing_enabled": False,
+    }]))
+    assert cfg._data[GROUP_PARSER_SETTINGS_KEY][0]["remark"] == "保留的备注"
+    # Clearing a remark must keep the group policy and total switch intact.
+    asyncio.run(service.save_group_settings([{
+        "platform_id": "Bot", "group_id": "90001", "remark": "",
+        "enabled": ["bilibili"], "parsing_enabled": False,
+    }]))
+    assert "remark" not in cfg._data[GROUP_PARSER_SETTINGS_KEY][0]
+    group = asyncio.run(service.get_groups())["groups"][0]
+    assert group["remark"] == ""
+    assert group["enabled"] == ["bilibili"]
+    assert group["parsing_enabled"] is False
+
+
+@pytest.mark.parametrize("remark", [None, 10, [], {}, "长" * 129, "a\nb", "\ra", "a\t", "a\x00b", "a\x7fb"])
+def test_invalid_group_remark_is_rejected_without_writes(remark):
+    cfg, saves = _config()
+    service = _service(cfg)
+    with pytest.raises(AppleMusicBackendError, match="群聊备注名"):
+        asyncio.run(service.save_group_settings([{
+            "platform_id": "Napcat_V5", "group_id": "90001", "remark": remark,
+            "enabled": [], "parsing_enabled": True,
+        }]))
+    assert cfg._data == {}
+    assert saves == []
+    assert service._adapters()[0].calls == []
+
+
+def test_concurrent_remark_saves_are_isolated_by_instance_and_group():
+    cfg, saves = _config()
+    adapters = [_Adapter(platform, [{"group_id": "90001"}, {"group_id": "90002"}])
+                for platform in ["A", "B"]]
+    service = _multi_service(cfg, *adapters)
+
+    async def run():
+        await asyncio.gather(*(service.save_group_settings([{
+            "platform_id": platform, "group_id": group, "remark": remark,
+            "enabled": sorted(group_enabled_parsers(cfg, platform, group)), "parsing_enabled": True,
+        }]) for platform, group, remark in [("A", "90001", "A的备注"), ("B", "90001", "B的备注"),
+                                           ("A", "90002", "长" * 128)]))
+
+    asyncio.run(run())
+    remarks = {(group["platform_id"], group["group_id"]): group["remark"]
+               for group in asyncio.run(service.get_groups())["groups"]}
+    assert remarks == {("A", "90001"): "A的备注", ("B", "90001"): "B的备注",
+                       ("A", "90002"): "长" * 128, ("B", "90002"): ""}
+    assert len(saves) == 3
+
+
+def test_remark_partial_save_preserves_failed_drafts_and_rolls_back_disk_errors():
+    cfg, saves = _config()
+    cfg._data[GROUP_PARSER_SETTINGS_KEY] = [
+        {"platform_id": platform, "group_id": "90001", "disabled_parsers": [], "remark": "旧备注"}
+        for platform in ["Failed", "Working"]
+    ]
+    service = _multi_service(cfg, _failing_adapter("Failed"), _Adapter("Working", [{"group_id": "90001"}]))
+    drafts = [{"platform_id": platform, "group_id": "90001", "remark": "新备注",
+               "enabled": sorted(group_enabled_parsers(cfg, platform, "90001")), "parsing_enabled": True}
+              for platform in ["Failed", "Working"]]
+    result = asyncio.run(service.save_group_settings(drafts))
+    assert [item["platform_id"] for item in result["unsaved_groups"]] == ["Failed"]
+    assert [item["remark"] for item in cfg._data[GROUP_PARSER_SETTINGS_KEY]] == ["旧备注", "新备注"]
+    original = copy.deepcopy(cfg._data)
+
+    def fail_save():
+        raise OSError("disk full")
+
+    cfg.save_config = fail_save
+    drafts[1]["remark"] = "不应保存"
+    drafts[1]["parsing_enabled"] = False
+    with pytest.raises(AppleMusicBackendError, match="保存失败"):
+        asyncio.run(service.save_group_settings(drafts))
+    assert cfg._data == original
+    assert saves == [True]
 
 
 def test_qq_official_group_list_uses_observed_groups_without_roster_api():

@@ -256,6 +256,13 @@ class Renderer:
         self._browser: Any | None = None
         self._browser_context: Any | None = None
         self._browser_lock: asyncio.Lock | None = None
+        self.refresh_emoji_source()
+
+    def refresh_emoji_source(self) -> None:
+        """Refresh style-specific emoji state without restarting the browser."""
+        self._emoji_source = None
+        self._emoji_uri_cache.clear()
+        self._emoji_path_cache.clear()
         if _APILMOJI_AVAILABLE and EmojiCDNSource is not None:
             try:
                 emoji_style = self._normalized_emoji_style()

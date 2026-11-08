@@ -9,6 +9,25 @@ import core.clean as clean_module
 from core.clean import CacheCleaner
 
 
+def test_schedule_hot_update_reuses_job_and_recovers_missing_job(tmp_path):
+    async def run():
+        cfg = SimpleNamespace(timezone="Asia/Shanghai", clean_cron="30 2 * * *", cache_dir=tmp_path)
+        cleaner = CacheCleaner(cfg)
+        original = cleaner.scheduler.get_job(cleaner.JOBNAME)
+        try:
+            cfg.clean_cron = "0 3 * * *"
+            cleaner.update_schedule()
+            assert cleaner.scheduler.get_job(cleaner.JOBNAME) is original
+            assert len(cleaner.scheduler.get_jobs()) == 1
+            assert "hour='3'" in str(cleaner.trigger)
+            cleaner.scheduler.remove_job(cleaner.JOBNAME)
+            cleaner.update_schedule()
+            assert len(cleaner.scheduler.get_jobs()) == 1
+        finally:
+            await cleaner.stop()
+    asyncio.run(run())
+
+
 def test_cache_cleaner_keeps_the_existing_whole_cache_cleanup_policy(tmp_path):
     """Cards, downloaded media, emoji assets and temporary HTML share one cache.
 

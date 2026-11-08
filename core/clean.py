@@ -46,15 +46,29 @@ class CacheCleaner:
 
     def register_task(self):
         try:
-            self.trigger = CronTrigger.from_crontab(self.cfg.clean_cron)
+            self.trigger = CronTrigger.from_crontab(self.cfg.clean_cron, timezone=self.cfg.timezone)
             self.scheduler.add_job(
                 func=self._clean_plugin_cache,
                 trigger=self.trigger,
                 name=f"{self.JOBNAME}_scheduler",
+                id=self.JOBNAME,
+                replace_existing=True,
                 max_instances=1,
             )
         except Exception as e:
             logger.error(f"[{self.JOBNAME}] Cron 格式错误：{e}")
+
+    def update_schedule(self):
+        """Replace the schedule without cancelling an already running cleanup."""
+        trigger = CronTrigger.from_crontab(self.cfg.clean_cron, timezone=self.cfg.timezone)
+        if self.scheduler.get_job(self.JOBNAME) is None:
+            self.scheduler.add_job(
+                self._clean_plugin_cache, trigger=trigger, id=self.JOBNAME,
+                name=f"{self.JOBNAME}_scheduler", replace_existing=True, max_instances=1,
+            )
+        else:
+            self.scheduler.reschedule_job(self.JOBNAME, trigger=trigger)
+        self.trigger = trigger
 
     async def _clean_plugin_cache(self) -> None:
         """清理非活跃缓存内容并保留正在使用的目录。"""

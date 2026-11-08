@@ -27,6 +27,7 @@ from .core.group_parser_config import (
     GroupParserConfigService,
     group_enabled_parsers,
 )
+from .core.management_config import ManagementConfigService
 from .core.parsers import BaseParser, BilibiliParser, KugouMusicParser, QQMusicParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -98,6 +99,37 @@ class ParserPlugin(Star):
             config_lock=self.apple_music_backend.config_write_lock,
         )
         self.apple_music_web.group_parser_config = self.group_parser_config
+        self._parser_users = {}
+        self._retired_parsers = set()
+        self._parser_cleanup_tasks = set()
+        self.apple_music_web.config_service = ManagementConfigService(
+            self.cfg, self.apple_music_backend, apply_runtime=self._apply_management_config
+        )
+
+    async def _apply_management_config(self, global_fields, parser_keys):
+        self.cfg.max_size = self.cfg.source_max_size * 1024 * 1024
+        self.cfg.max_duration = self.cfg.source_max_minute * 60
+        self.debouncer.interval = self.cfg.debounce_interval
+        self.downloader.max_size = self.cfg.source_max_size
+        if "clean_cron" in global_fields:
+            self.cleaner.update_schedule()
+        if "emoji_style" in global_fields:
+            self.renderer.refresh_emoji_source()
+        if parser_keys or global_fields & {"proxy", "common_timeout"}:
+            keys = None if global_fields & {"proxy", "common_timeout"} else parser_keys
+            self._register_parser(replace_keys=keys)
+
+    def _close_retired_parser(self, parser):
+        tasks = getattr(self, "_parser_cleanup_tasks", None)
+        if tasks is None:
+            self._parser_cleanup_tasks = tasks = set()
+        task = asyncio.create_task(parser.close_session())
+        tasks.add(task)
+        def finished(done):
+            tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(finished)
 
     def _platform_account_statuses(self) -> list[dict]:
         """Describe local account cookies without exposing or validating secrets."""
@@ -265,56 +297,70 @@ class ParserPlugin(Star):
         # 关下载器里的会话
         await self.downloader.close()
         # 关所有解析器里的会话 (去重后的实例)
-        unique_parsers = set(self.parser_map.values())
+        unique_parsers = set(self.parser_map.values()) | getattr(self, "_retired_parsers", set())
         for parser in unique_parsers:
             await parser.close_session()
+        cleanup = tuple(getattr(self, "_parser_cleanup_tasks", ()))
+        if cleanup:
+            await asyncio.gather(*cleanup, return_exceptions=True)
         # 先释放浏览器页面和文件句柄，再停止清理任务；缓存 PNG 仍由既有
         # CacheCleaner 周期统一清理。
         await self.renderer.close()
         # 关缓存清理器
         await self.cleaner.stop()
 
-    def _register_parser(self):
+    def _register_parser(self, *, replace_keys=None):
         """注册解析器（以 parser.enable 为唯一启用来源）"""
         old_parsers = set(self.parser_map.values())
-        self.parser_map.clear()
+        existing = {parser.platform.name: parser for parser in old_parsers}
+        new_map = {}
         # 所有 Parser 子类
         all_subclass = BaseParser.get_all_subclass()
         enabled_platforms = set(self.cfg.parser.enabled_platforms())
 
         enabled_classes: list[type[BaseParser]] = []
         enabled_names: list[str] = []
-        for cls in all_subclass:
-            platform_name = cls.platform.name
+        try:
+            for cls in all_subclass:
+                platform_name = cls.platform.name
 
-            if platform_name not in enabled_platforms:
-                logger.debug(f"[parser] 平台未启用或未配置: {platform_name}")
-                continue
+                if platform_name not in enabled_platforms:
+                    logger.debug(f"[parser] 平台未启用或未配置: {platform_name}")
+                    continue
 
-            enabled_classes.append(cls)
-            enabled_names.append(platform_name)
+                enabled_classes.append(cls)
+                enabled_names.append(platform_name)
 
-            # 一个平台一个 parser 实例
-            parser = cls(self.cfg, self.downloader)
-            if platform_name == "applemusic":
-                parser.apple_music_backend = getattr(self, "apple_music_backend", None)
+                # 一个平台一个 parser 实例
+                parser = (
+                    existing[platform_name]
+                    if replace_keys is not None and platform_name not in replace_keys and platform_name in existing
+                    else cls(self.cfg, self.downloader)
+                )
+                if platform_name == "applemusic":
+                    parser.apple_music_backend = getattr(self, "apple_music_backend", None)
 
-            # 关键词 → parser
-            for keyword, _ in cls._key_patterns:
-                self.parser_map[keyword] = parser
+                # 关键词 → parser
+                for keyword, _ in cls._key_patterns:
+                    new_map[keyword] = parser
 
-        logger.debug(f"启用平台: {'、'.join(enabled_names) if enabled_names else '无'}")
+            logger.debug(f"启用平台: {'、'.join(enabled_names) if enabled_names else '无'}")
 
-        # -------- 关键词-正则表（统一生成） --------
-        patterns: list[tuple[str, re.Pattern[str]]] = []
+            # -------- 关键词-正则表（统一生成） --------
+            patterns: list[tuple[str, re.Pattern[str]]] = []
 
-        for cls in enabled_classes:
-            for kw, pat in cls._key_patterns:
-                patterns.append((kw, re.compile(pat) if isinstance(pat, str) else pat))
+            for cls in enabled_classes:
+                for kw, pat in cls._key_patterns:
+                    patterns.append((kw, re.compile(pat) if isinstance(pat, str) else pat))
 
-        # 长关键词优先，避免短词抢匹配
-        patterns.sort(key=lambda x: -len(x[0]))
+            # 长关键词优先，避免短词抢匹配
+            patterns.sort(key=lambda x: -len(x[0]))
+        except BaseException:
+            for parser in set(new_map.values()) - old_parsers:
+                self._close_retired_parser(parser)
+            raise
 
+        self.parser_map = new_map
         self.key_pattern_list = patterns
         self._parser_config_signature = self._current_parser_config_signature()
         # Management API may inspect currently instantiated cookie jars without
@@ -328,11 +374,15 @@ class ParserPlugin(Star):
         # enabling/disabling a parser takes effect without a plugin reload.
         current_parsers = set(self.parser_map.values())
         for parser in old_parsers - current_parsers:
-            try:
-                task = asyncio.create_task(parser.close_session())
-                task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
-            except RuntimeError:
-                pass
+            for credentials in (getattr(parser, "cookiejar", None), getattr(parser, "login", None)):
+                if credentials is not None:
+                    credentials.persistence_enabled = False
+            if getattr(self, "_parser_users", {}).get(parser):
+                if not hasattr(self, "_retired_parsers"):
+                    self._retired_parsers = set()
+                self._retired_parsers.add(parser)
+            else:
+                self._close_retired_parser(parser)
 
     def _current_parser_config_signature(self) -> tuple[tuple[str, bool], ...]:
         parser_config = getattr(self.cfg, "parser", None)
@@ -471,8 +521,30 @@ class ParserPlugin(Star):
             return
         logger.debug(f"匹配结果: {keyword}, {searched}")
 
+        parser = (
+            group_parser_map.get(keyword)
+            if group_parser_map is not None
+            else self.parser_map.get(keyword)
+        )
+        if parser is None:
+            return
+        users = getattr(self, "_parser_users", None)
+        if users is None:
+            self._parser_users = users = {}
+        users[parser] = users.get(parser, 0) + 1
+        try:
+            await self._parse_and_send(event, parser, keyword, searched, umo)
+        finally:
+            users[parser] -= 1
+            if not users[parser]:
+                users.pop(parser)
+                if parser in getattr(self, "_retired_parsers", set()):
+                    self._retired_parsers.discard(parser)
+                    self._close_retired_parser(parser)
+
+    async def _parse_and_send(self, event, parser, keyword, searched, umo):
         # 仲裁机制
-        if isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
+        if getattr(self.cfg, "arbiter", True) and isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
             raw = event.message_obj.raw_message
             if not isinstance(raw, dict):
                 logger.warning(f"Unexpected raw_message type: {type(raw)}")
@@ -511,13 +583,6 @@ class ParserPlugin(Star):
             # 不让一次缓存故障阻断平台解析本身。
             logger.warning(f"[缓存] 无法创建解析目录，回退到默认缓存目录: {exc}")
             parse_cache_dir = None
-        parser = (
-            group_parser_map.get(keyword)
-            if group_parser_map is not None
-            else self.parser_map.get(keyword)
-        )
-        if parser is None:
-            return
         # Keep the directory active for the complete parse-to-send lifetime.
         # Individual download tasks also hold their own activity lease so an
         # unused/background media task remains protected after an early return.
