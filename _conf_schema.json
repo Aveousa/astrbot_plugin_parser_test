@@ -412,6 +412,13 @@
             "options": ["voice", "file"],
             "default": "voice"
           },
+          "file_quality_priority": {
+            "description": "酷狗文件音质优先级",
+            "hint": "文件模式按顺序尝试网页登录态 H5 取链：高音质 320 kbps、无损 FLAC、标准 128 kbps；不可用时回退当前取链。语音模式保持原行为。",
+            "type": "list",
+            "labels": ["高音质 320 kbps", "无损 FLAC", "标准 128 kbps"],
+            "default": ["high", "lossless", "standard"]
+          },
           "cookies": {
             "description": "酷狗音乐 Cookie（可选）",
             "hint": "尝试将登录 Cookie 用于酷狗播放信息请求及同域音频下载；会员歌曲能否播放仍由酷狗接口权限决定。",

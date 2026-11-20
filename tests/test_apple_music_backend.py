@@ -158,7 +158,8 @@ def test_music_parser_settings_are_persisted_and_returned_without_cookie_values(
 @pytest.mark.parametrize("priority", [
     [], ["high", "high"], ["hires"], ["lossless", "high", "standard", "lossless"],
 ])
-def test_music_settings_reject_invalid_qq_file_quality_priority(tmp_path, priority):
+@pytest.mark.parametrize("parser_key", ["qqmusic", "kugou"])
+def test_music_settings_reject_invalid_file_quality_priority(tmp_path, priority, parser_key):
     async def run():
         cfg = config(tmp_path)
         cfg.parser.qqmusic = SimpleNamespace(
@@ -172,8 +173,27 @@ def test_music_settings_reject_invalid_qq_file_quality_priority(tmp_path, priori
         try:
             with pytest.raises(AppleMusicBackendError, match="音质优先级无效"):
                 await backend.update_music_parser_settings(
-                    "admin", {"qqmusic": {"file_quality_priority": priority}}
+                    "admin", {parser_key: {"file_quality_priority": priority}}
                 )
+        finally:
+            await backend.close()
+
+    asyncio.run(run())
+
+
+def test_kugou_quality_save_preserves_qq_defaults(tmp_path):
+    async def run():
+        cfg = config(tmp_path)
+        cfg.parser.qqmusic = SimpleNamespace(enable=True, cookies="")
+        cfg.parser.kugou = SimpleNamespace(enable=True, cookies="")
+        cfg.save_config = lambda: None
+        backend = AppleMusicBackend(cfg, BackendSettings(enabled=False))
+        try:
+            response = await backend.update_music_parser_settings(
+                "admin", {"kugou": {"file_quality_priority": ["lossless", "high"], "audio_send_format": "file"}}
+            )
+            assert response["parsers"]["kugou"]["settings"]["file_quality_priority"] == ["lossless", "high"]
+            assert backend._parser_config_entries()["qqmusic"]["settings"]["file_quality_priority"] == ["lossless", "high", "standard"]
         finally:
             await backend.close()
 

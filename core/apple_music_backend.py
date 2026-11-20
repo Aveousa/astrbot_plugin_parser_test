@@ -35,6 +35,7 @@ from .music_quality import (
     is_valid_qq_file_quality_priority,
     normalize_qq_file_quality_priority,
 )
+from .parsers.kugou_quality import quality_priority as normalize_kugou_quality_priority
 
 WRAPPER_VERSION = "0.0.2"
 GAMDL_VERSION = "3.9.1"
@@ -44,11 +45,21 @@ GAMDL_VERSION = "3.9.1"
 # through the user-configured gamdl codec order.
 VOICE_CODEC_PRIORITY = ("aac-web",)
 FILE_CODEC_PRIORITY = ("alac", "aac-web")
-SUPPORTED_FILE_CODECS = frozenset({
-    "alac", "aac-web", "aac-he-web", "aac", "aac-he",
-    "aac-binaural", "aac-downmix", "aac-he-binaural", "aac-he-downmix",
-    "atmos", "ac3",
-})
+SUPPORTED_FILE_CODECS = frozenset(
+    {
+        "alac",
+        "aac-web",
+        "aac-he-web",
+        "aac",
+        "aac-he",
+        "aac-binaural",
+        "aac-downmix",
+        "aac-he-binaural",
+        "aac-he-downmix",
+        "atmos",
+        "ac3",
+    }
+)
 MANAGED_BOOLEAN_SETTINGS = (
     "backend_enabled",
     "return_audio",
@@ -56,17 +67,50 @@ MANAGED_BOOLEAN_SETTINGS = (
     "show_playlist_url",
     "force_chinese_language",
 )
-MANAGED_SETTINGS = frozenset({
-    *MANAGED_BOOLEAN_SETTINGS,
-    "audio_send_format",
-    "file_codec_priority",
-})
+MANAGED_SETTINGS = frozenset(
+    {
+        *MANAGED_BOOLEAN_SETTINGS,
+        "audio_send_format",
+        "file_codec_priority",
+    }
+)
 MUSIC_SETTINGS = {
-    "netease": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
-    "qqmusic": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"}),
-    "kugou": frozenset({"enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"}),
+    "netease": frozenset(
+        {
+            "enable",
+            "return_audio",
+            "parse_lyrics",
+            "audio_send_format",
+            "show_playlist_cover",
+            "show_playlist_url",
+        }
+    ),
+    "qqmusic": frozenset(
+        {
+            "enable",
+            "return_audio",
+            "parse_lyrics",
+            "audio_send_format",
+            "file_quality_priority",
+            "show_playlist_cover",
+            "show_playlist_url",
+        }
+    ),
+    "kugou": frozenset(
+        {
+            "enable",
+            "return_audio",
+            "parse_lyrics",
+            "audio_send_format",
+            "file_quality_priority",
+            "show_playlist_cover",
+            "show_playlist_url",
+        }
+    ),
 }
-MUSIC_BOOLEAN_SETTINGS = frozenset({"return_audio", "parse_lyrics", "show_playlist_cover", "show_playlist_url"})
+MUSIC_BOOLEAN_SETTINGS = frozenset(
+    {"return_audio", "parse_lyrics", "show_playlist_cover", "show_playlist_url"}
+)
 PARSER_LABELS = {
     "netease": "网易云音乐",
     "qqmusic": "QQ 音乐",
@@ -118,8 +162,12 @@ def normalize_track_url(value: str) -> tuple[str, str]:
         valid_host = False
     if not valid_host:
         raise AppleMusicBackendError("只接受 https://music.apple.com 的单曲链接")
-    match = re.fullmatch(r"/([a-z]{2})/(song|album)/(?:[^/]+/)?([1-9]\d{0,19})/?", parsed.path)
-    if not match or any(unquote(part) in (".", "..") for part in parsed.path.split("/")):
+    match = re.fullmatch(
+        r"/([a-z]{2})/(song|album)/(?:[^/]+/)?([1-9]\d{0,19})/?", parsed.path
+    )
+    if not match or any(
+        unquote(part) in (".", "..") for part in parsed.path.split("/")
+    ):
         raise AppleMusicBackendError("链接不是可识别的 Apple Music 单曲")
     country, kind, identifier = match.groups()
     if kind == "album":
@@ -158,13 +206,22 @@ class BackendSettings:
 
         return cls(
             enabled=getattr(item, "backend_enabled", False) is True,
-            wrapper_url=str(getattr(item, "wrapper_url", None) or cls.wrapper_url).strip(),
-            decrypt_host=str(getattr(item, "wrapper_decrypt_host", None) or cls.decrypt_host).strip(),
+            wrapper_url=str(
+                getattr(item, "wrapper_url", None) or cls.wrapper_url
+            ).strip(),
+            decrypt_host=str(
+                getattr(item, "wrapper_decrypt_host", None) or cls.decrypt_host
+            ).strip(),
             # Bad optional config must not break card parsing/plugin loading.
             # An invalid port stays invalid, so status reports a useful error.
-            decrypt_port=integer(getattr(item, "wrapper_decrypt_port", None), cls.decrypt_port, 0),
+            decrypt_port=integer(
+                getattr(item, "wrapper_decrypt_port", None), cls.decrypt_port, 0
+            ),
             python=str(getattr(item, "gamdl_python", None) or "").strip(),
-            timeout=max(30, min(integer(getattr(config, "download_timeout", None), 300, 300), 1800)),
+            timeout=max(
+                30,
+                min(integer(getattr(config, "download_timeout", None), 300, 300), 1800),
+            ),
         )
 
     def validate(self) -> str:
@@ -183,7 +240,9 @@ class BackendSettings:
         except ValueError:
             valid = False
         if not valid:
-            raise AppleMusicBackendError("wrapper 地址须为无账号、参数或路径的 HTTP(S) 地址")
+            raise AppleMusicBackendError(
+                "wrapper 地址须为无账号、参数或路径的 HTTP(S) 地址"
+            )
         if not self.decrypt_host or any(c in self.decrypt_host for c in "/\\\r\n "):
             raise AppleMusicBackendError("wrapper 解密主机配置不正确")
         if not 1 <= self.decrypt_port <= 65535:
@@ -246,10 +305,12 @@ class AppleMusicBackend:
         item = self._parser_item("applemusic")
         if item is None:
             return {
-                "backend_enabled": False, "return_audio": False,
+                "backend_enabled": False,
+                "return_audio": False,
                 "audio_send_format": "file",
                 "file_codec_priority": list(FILE_CODEC_PRIORITY),
-                "show_playlist_cover": True, "show_playlist_url": True,
+                "show_playlist_cover": True,
+                "show_playlist_url": True,
                 "force_chinese_language": False,
             }
         return {
@@ -265,7 +326,8 @@ class AppleMusicBackend:
                     getattr(item, "file_codec_priority", None)
                 )
             ),
-            "show_playlist_cover": getattr(item, "show_playlist_cover", True) is not False,
+            "show_playlist_cover": getattr(item, "show_playlist_cover", True)
+            is not False,
             "show_playlist_url": getattr(item, "show_playlist_url", True) is not False,
             "force_chinese_language": (
                 getattr(item, "force_chinese_language", False) is True
@@ -470,8 +532,10 @@ class AppleMusicBackend:
                         provided_statuses[status["key"]] = {
                             "available": status.get("available") is True,
                             "cookie_configured": status.get("cookie_configured") is True
-                                or status.get("available") is True,
-                            "cookie_status": text.strip()[:64] if isinstance(text, str) else "Cookie 状态未确认",
+                            or status.get("available") is True,
+                            "cookie_status": text.strip()[:64]
+                            if isinstance(text, str)
+                            else "Cookie 状态未确认",
                         }
         for key, fields in MUSIC_SETTINGS.items():
             item = self._parser_item(key)
@@ -481,7 +545,9 @@ class AppleMusicBackend:
                 default = defaults.get(key)
                 prior = history_entry
                 previous_settings = prior.get("settings")
-                previous_settings = previous_settings if isinstance(previous_settings, dict) else {}
+                previous_settings = (
+                    previous_settings if isinstance(previous_settings, dict) else {}
+                )
                 has_configuration = key in self._known_parser_keys() or bool(prior)
                 known = has_configuration or default is not None
                 configured = has_configuration
@@ -494,27 +560,44 @@ class AppleMusicBackend:
                         fallback = default.get(field) if default else None
                         value = previous_settings.get(field, fallback)
                         if field == "audio_send_format":
-                            value = "file" if str(value or "voice").lower() == "file" else "voice"
+                            value = (
+                                "file"
+                                if str(value or "voice").lower() == "file"
+                                else "voice"
+                            )
                         elif field == "file_quality_priority":
-                            value = list(normalize_qq_file_quality_priority(value))
+                            normalizer = (
+                                normalize_qq_file_quality_priority
+                                if key == "qqmusic"
+                                else normalize_kugou_quality_priority
+                            )
+                            value = list(normalizer(value))
                         elif field == "parse_lyrics":
                             value = False if value is None else bool(value)
                         elif field in MUSIC_BOOLEAN_SETTINGS | {"enable"}:
                             value = True if value is None else bool(value)
                         settings[field] = value
                 entries[key] = {
-                    "configured": False, "known": known,
+                    "configured": False,
+                    "known": known,
                     "enabled": False,
                     "available": False,
                     "cookie_configured": cookie_configured,
                     "cookie_status": (
-                        "Cookie 待检查" if cookie_configured and key in {"qqmusic", "kugou"} else
-                        "Cookie 已配置（解析器未启用）" if cookie_configured else
-                        "解析器未启用" if known else "未配置"
+                        "Cookie 待检查"
+                        if cookie_configured and key in {"qqmusic", "kugou"}
+                        else "Cookie 已配置（解析器未启用）"
+                        if cookie_configured
+                        else "解析器未启用"
+                        if known
+                        else "未配置"
                     ),
                     "cookie_validity": (
-                        "unknown" if cookie_configured and key in {"qqmusic", "kugou"} else
-                        "unconfigured" if not cookie_configured else "unknown"
+                        "unknown"
+                        if cookie_configured and key in {"qqmusic", "kugou"}
+                        else "unconfigured"
+                        if not cookie_configured
+                        else "unknown"
                     ),
                     "settings": settings,
                 }
@@ -536,10 +619,15 @@ class AppleMusicBackend:
             )
             cookie_configured = bool(cookie_value)
             provided = provided_statuses.get(key)
-            parser = next((
-                candidate for candidate in runtime_parsers
-                if getattr(getattr(candidate, "platform", None), "name", None) == key
-            ), None)
+            parser = next(
+                (
+                    candidate
+                    for candidate in runtime_parsers
+                    if getattr(getattr(candidate, "platform", None), "name", None)
+                    == key
+                ),
+                None,
+            )
             if key in {"qqmusic", "kugou"}:
                 checked = self._music_cookie_check_status(key, cookie_value)
                 if not cookie_configured:
@@ -547,13 +635,17 @@ class AppleMusicBackend:
                 if checked is None:
                     try:
                         has_credentials = (
-                            parser.has_auth_credentials() if parser is not None else None
+                            parser.has_auth_credentials()
+                            if parser is not None
+                            else None
                         )
                     except (AttributeError, TypeError, ValueError):
                         has_credentials = None
                     if cookie_configured:
                         cookie_status = (
-                            "Cookie 待检查" if has_credentials is not False else "Cookie 已配置但失效"
+                            "Cookie 待检查"
+                            if has_credentials is not False
+                            else "Cookie 已配置但失效"
                         )
                     available = False
                 elif checked:
@@ -568,7 +660,9 @@ class AppleMusicBackend:
                 available = provided["available"]
                 cookie_configured = cookie_configured or provided["cookie_configured"]
             elif key == "netease":
-                cookie_status = "Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）"
+                cookie_status = (
+                    "Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）"
+                )
                 available = cookie_configured
             elif key in {"qqmusic", "kugou"}:
                 if not cookie_configured:
@@ -580,19 +674,31 @@ class AppleMusicBackend:
                         available = parser.has_auth_credentials()
                     except (AttributeError, TypeError, ValueError):
                         available = False
-                    cookie_status = "账号 Cookie 已配置" if available else "账号 Cookie 不完整"
+                    cookie_status = (
+                        "账号 Cookie 已配置" if available else "账号 Cookie 不完整"
+                    )
             else:
                 cookie_status, available = (
-                    ("Cookie 已配置", True) if cookie_configured
+                    ("Cookie 已配置", True)
+                    if cookie_configured
                     else ("Cookie 未配置", False)
                 )
             settings = {}
             for field in fields:
                 value = getattr(item, field, None)
                 if field == "audio_send_format":
-                    value = "file" if str(value or "voice").strip().lower() == "file" else "voice"
+                    value = (
+                        "file"
+                        if str(value or "voice").strip().lower() == "file"
+                        else "voice"
+                    )
                 elif field == "file_quality_priority":
-                    value = list(normalize_qq_file_quality_priority(value))
+                    normalizer = (
+                        normalize_qq_file_quality_priority
+                        if key == "qqmusic"
+                        else normalize_kugou_quality_priority
+                    )
+                    value = list(normalizer(value))
                 elif field == "parse_lyrics":
                     value = False if value is None else bool(value)
                 elif field in MUSIC_BOOLEAN_SETTINGS:
@@ -606,9 +712,13 @@ class AppleMusicBackend:
                 "cookie_configured": cookie_configured,
                 "cookie_status": cookie_status,
                 "cookie_validity": (
-                    "valid" if cookie_status == "Cookie 有效" else
-                    "invalid" if cookie_status == "Cookie 已配置但失效" else
-                    "unconfigured" if not cookie_configured else "unknown"
+                    "valid"
+                    if cookie_status == "Cookie 有效"
+                    else "invalid"
+                    if cookie_status == "Cookie 已配置但失效"
+                    else "unconfigured"
+                    if not cookie_configured
+                    else "unknown"
                 ),
                 "settings": settings,
             }
@@ -633,7 +743,11 @@ class AppleMusicBackend:
         if isinstance(value, dict):
             return value
         raw_data = getattr(self.cfg, "_data", None)
-        value = raw_data.get("__parser_management_history_v1") if isinstance(raw_data, dict) else None
+        value = (
+            raw_data.get("__parser_management_history_v1")
+            if isinstance(raw_data, dict)
+            else None
+        )
         return value if isinstance(value, dict) else {}
 
     @staticmethod
@@ -664,10 +778,15 @@ class AppleMusicBackend:
         """Return non-secret enablement and Cookie status for all known parsers."""
 
         labels = {
-            "bilibili": "Bilibili", "douyin": "抖音", "xhs": "小红书",
-            "pixiv": "Pixiv", "qqmusic": "QQ 音乐",
-            "netease": "网易云音乐", "kugou": "酷狗音乐",
-            "qishui": "汽水音乐", "kuwo": "酷我音乐",
+            "bilibili": "Bilibili",
+            "douyin": "抖音",
+            "xhs": "小红书",
+            "pixiv": "Pixiv",
+            "qqmusic": "QQ 音乐",
+            "netease": "网易云音乐",
+            "kugou": "酷狗音乐",
+            "qishui": "汽水音乐",
+            "kuwo": "酷我音乐",
             "applemusic": "Apple Music",
         }
         default_templates = self._default_parser_templates()
@@ -684,8 +803,10 @@ class AppleMusicBackend:
                         rows[status["key"]] = {
                             "available": status.get("available") is True,
                             "cookie_configured": status.get("cookie_configured") is True
-                                or status.get("available") is True,
-                            "cookie_status": text.strip()[:64] if isinstance(text, str) else "状态未确认",
+                            or status.get("available") is True,
+                            "cookie_status": text.strip()[:64]
+                            if isinstance(text, str)
+                            else "状态未确认",
                         }
         runtime = {
             getattr(getattr(parser, "platform", None), "name", ""): parser
@@ -704,21 +825,32 @@ class AppleMusicBackend:
             if item is None:
                 configured = False
                 enabled = False
-                cookie_configured = bool(self._parser_management_history().get(key, {}).get("cookie_configured"))
+                cookie_configured = bool(
+                    self._parser_management_history()
+                    .get(key, {})
+                    .get("cookie_configured")
+                )
                 cookie_status = (
-                    "Cookie 已配置（解析器未启用）" if cookie_configured else
-                    "解析器未启用" if known else "未配置"
+                    "Cookie 已配置（解析器未启用）"
+                    if cookie_configured
+                    else "解析器未启用"
+                    if known
+                    else "未配置"
                 )
             elif key == "applemusic":
                 configured = item is not None
                 enabled = configured and getattr(item, "enable", True) is True
                 cookie_configured = False
                 cookie_status = (
-                    "账号后端未启用" if not self.settings.enabled else
-                    "已登录" if self._last_auth_state == "authenticated" else
-                    "未登录"
+                    "账号后端未启用"
+                    if not self.settings.enabled
+                    else "已登录"
+                    if self._last_auth_state == "authenticated"
+                    else "未登录"
                 )
-                available = self.settings.enabled and self._last_auth_state == "authenticated"
+                available = (
+                    self.settings.enabled and self._last_auth_state == "authenticated"
+                )
             else:
                 configured = True
                 enabled = getattr(item, "enable", True) is True
@@ -728,17 +860,26 @@ class AppleMusicBackend:
                         getattr(cookiejar, "cookies_str", None)
                         or getattr(item, "cookies", None)
                     )
-                    cookie_status = ("Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）")
+                    cookie_status = (
+                        "Cookie 已配置"
+                        if cookie_configured
+                        else "Cookie 未配置（可选）"
+                    )
                     available = cookie_configured
                 if key in {"qishui", "kuwo"}:
                     cookie_status = "无需 Cookie"
                     available = True
-            entries.append({
-                "key": key, "label": label, "known": known,
-                "configured": configured, "enabled": enabled,
-                "cookie_configured": cookie_configured,
-                "cookie_status": cookie_status,
-            })
+            entries.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "known": known,
+                    "configured": configured,
+                    "enabled": enabled,
+                    "cookie_configured": cookie_configured,
+                    "cookie_status": cookie_status,
+                }
+            )
             if entries[-1]["known"]:
                 if key == "applemusic":
                     entries[-1]["cookie_status"] = cookie_status
@@ -780,24 +921,38 @@ class AppleMusicBackend:
                         or getattr(item, "cookies", None)
                     )
                     entries[-1]["cookie_configured"] = cookie_configured
-                    entries[-1]["cookie_status"] = "Cookie 已配置" if cookie_configured else "Cookie 未配置（可选）"
+                    entries[-1]["cookie_status"] = (
+                        "Cookie 已配置"
+                        if cookie_configured
+                        else "Cookie 未配置（可选）"
+                    )
                     entries[-1]["available"] = cookie_configured
                 elif key == "douyin" and item is not None and parser is not None:
                     cookie_configured = bool(parser.has_login_cookie())
                     entries[-1]["cookie_configured"] = cookie_configured
-                    entries[-1]["cookie_status"] = "登录 Cookie 已配置" if cookie_configured else "登录 Cookie 未配置"
+                    entries[-1]["cookie_status"] = (
+                        "登录 Cookie 已配置"
+                        if cookie_configured
+                        else "登录 Cookie 未配置"
+                    )
                     entries[-1]["available"] = cookie_configured
                 elif key == "bilibili" and item is not None and parser is not None:
                     cookie_configured = bool(parser.login.has_cookie())
                     entries[-1]["cookie_configured"] = cookie_configured
-                    entries[-1]["cookie_status"] = "登录 Cookie 已配置" if cookie_configured else "登录 Cookie 未配置"
+                    entries[-1]["cookie_status"] = (
+                        "登录 Cookie 已配置"
+                        if cookie_configured
+                        else "登录 Cookie 未配置"
+                    )
                     entries[-1]["available"] = cookie_configured
                 if not enabled and item is not None:
                     entries[-1]["cookie_status"] = "解析器未启用"
                     entries[-1]["available"] = False
         return entries
 
-    def _status_platform_accounts(self, apple_auth_state: str = "unknown") -> list[dict]:
+    def _status_platform_accounts(
+        self, apple_auth_state: str = "unknown"
+    ) -> list[dict]:
         """Build fixed platform badges, with configured vs missing distinction."""
 
         provider_statuses: dict[str, dict] = {}
@@ -808,37 +963,65 @@ class AppleMusicBackend:
                 raw_statuses = ()
             if isinstance(raw_statuses, (list, tuple)):
                 for status in raw_statuses:
-                    if isinstance(status, dict) and status.get("key") in {"douyin", "bilibili", *MUSIC_SETTINGS.keys()}:
+                    if isinstance(status, dict) and status.get("key") in {
+                        "douyin",
+                        "bilibili",
+                        *MUSIC_SETTINGS.keys(),
+                    }:
                         text = status.get("text")
                         provider_statuses[status["key"]] = {
                             "available": status.get("available") is True,
-                            "text": text.strip()[:64] if isinstance(text, str) else "状态未确认",
+                            "text": text.strip()[:64]
+                            if isinstance(text, str)
+                            else "状态未确认",
                         }
 
         accounts = []
-        for key, label in (("douyin", "抖音"), ("bilibili", "Bilibili"), ("qqmusic", "QQ 音乐"), ("kugou", "酷狗音乐"), ("applemusic", "Apple Music")):
+        for key, label in (
+            ("douyin", "抖音"),
+            ("bilibili", "Bilibili"),
+            ("qqmusic", "QQ 音乐"),
+            ("kugou", "酷狗音乐"),
+            ("applemusic", "Apple Music"),
+        ):
             if key in {"qqmusic", "kugou"}:
                 parser_status = provider_statuses.get(key)
                 entry = self._parser_item(key)
                 if entry is None:
-                    known = key in self._known_parser_keys() or key in self._default_parser_templates()
+                    known = (
+                        key in self._known_parser_keys()
+                        or key in self._default_parser_templates()
+                    )
                     if parser_status is not None:
-                        available, text = parser_status["available"], parser_status["text"]
+                        available, text = (
+                            parser_status["available"],
+                            parser_status["text"],
+                        )
                     else:
                         available, text = False, "解析器未启用" if known else "未配置"
                 elif getattr(entry, "enable", True) is not True:
                     available, text = False, "解析器未启用"
                 elif parser_status is None:
                     has_cookie = bool(getattr(entry, "cookies", None))
-                    available, text = has_cookie, "状态未就绪" if has_cookie else "Cookie 未配置"
+                    available, text = (
+                        has_cookie,
+                        "状态未就绪" if has_cookie else "Cookie 未配置",
+                    )
                 elif entry is not None and parser_status is not None:
                     available, text = parser_status["available"], parser_status["text"]
                 else:
                     has_cookie = bool(getattr(entry, "cookies", None))
-                    available, text = has_cookie, "Cookie 已配置，状态未就绪" if has_cookie else "Cookie 未配置"
+                    available, text = (
+                        has_cookie,
+                        "Cookie 已配置，状态未就绪" if has_cookie else "Cookie 未配置",
+                    )
             elif key in {"douyin", "bilibili"}:
                 parser_status = provider_statuses.get(key)
-                available, text = (parser_status["available"], parser_status["text"]) if parser_status else (False, "状态未就绪")
+                available, text = (
+                    (parser_status["available"], parser_status["text"])
+                    if parser_status
+                    else (False, "状态未就绪")
+                )
             else:
                 if not self.settings.enabled:
                     available, text = False, "账号后端未启用"
@@ -847,11 +1030,15 @@ class AppleMusicBackend:
                 else:
                     available = apple_auth_state == "authenticated"
                     text = {
-                        "authenticated": "已登录", "logged_out": "未登录",
-                        "awaiting_2fa": "等待验证码", "in_progress": "正在登录",
+                        "authenticated": "已登录",
+                        "logged_out": "未登录",
+                        "awaiting_2fa": "等待验证码",
+                        "in_progress": "正在登录",
                         "failed": "登录失败",
                     }.get(apple_auth_state, "状态未确认")
-            accounts.append({"key": key, "label": label, "available": available, "text": text})
+            accounts.append(
+                {"key": key, "label": label, "available": available, "text": text}
+            )
         return accounts
 
     async def update_music_parser_settings(self, owner: str, values: object) -> dict:
@@ -866,25 +1053,63 @@ class AppleMusicBackend:
                 raise AppleMusicBackendError("音乐解析器设置无效")
             allowed = MUSIC_SETTINGS[parser_key]
             if set(settings) - allowed:
-                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}设置中包含不支持的字段")
+                raise AppleMusicBackendError(
+                    f"{PARSER_LABELS[parser_key]}设置中包含不支持的字段"
+                )
             for field, value in settings.items():
-                if field in MUSIC_BOOLEAN_SETTINGS | {"enable"} and not isinstance(value, bool):
-                    raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}开关设置无效")
+                if field in MUSIC_BOOLEAN_SETTINGS | {"enable"} and not isinstance(
+                    value, bool
+                ):
+                    raise AppleMusicBackendError(
+                        f"{PARSER_LABELS[parser_key]}开关设置无效"
+                    )
                 if field == "audio_send_format" and value not in {"voice", "file"}:
-                    raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}音频发送模式无效")
-                if field == "file_quality_priority" and not is_valid_qq_file_quality_priority(value):
+                    raise AppleMusicBackendError(
+                        f"{PARSER_LABELS[parser_key]}音频发送模式无效"
+                    )
+                if (
+                    field == "file_quality_priority"
+                    and parser_key == "qqmusic"
+                    and not is_valid_qq_file_quality_priority(value)
+                ):
                     raise AppleMusicBackendError("QQ 音乐文件音质优先级无效")
+                if field == "file_quality_priority" and parser_key == "kugou":
+                    if (
+                        not isinstance(value, list)
+                        or not value
+                        or any(
+                            not isinstance(item, str)
+                            or item not in {"standard", "high", "lossless"}
+                            for item in value
+                        )
+                        or len(value) != len(set(value))
+                    ):
+                        raise AppleMusicBackendError("酷狗音乐文件音质优先级无效")
             item = self._parser_item(parser_key)
             if item is None:
-                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
+                raise AppleMusicBackendError(
+                    f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置"
+                )
             for field, value in settings.items():
-                updates.append((item, field, list(value) if field == "file_quality_priority" else value))
+                updates.append(
+                    (
+                        item,
+                        field,
+                        list(value) if field == "file_quality_priority" else value,
+                    )
+                )
 
         async with self.lock, self.config_write_lock:
             self.check_owner(owner)
-            previous = [(item, field, getattr(item, field, None)) for item, field, _ in updates]
+            previous = [
+                (item, field, getattr(item, field, None)) for item, field, _ in updates
+            ]
             raw_data = getattr(self.cfg, "_data", None)
-            history_store = raw_data.get("__parser_management_history_v1") if isinstance(raw_data, dict) else None
+            history_store = (
+                raw_data.get("__parser_management_history_v1")
+                if isinstance(raw_data, dict)
+                else None
+            )
             history_was_present = (
                 isinstance(raw_data, dict)
                 and "__parser_management_history_v1" in raw_data
@@ -906,9 +1131,16 @@ class AppleMusicBackend:
                         saved = history_store.get(parser_key)
                         saved = dict(saved) if isinstance(saved, dict) else {}
                         saved_settings = saved.get("settings")
-                        saved_settings = dict(saved_settings) if isinstance(saved_settings, dict) else {}
+                        saved_settings = (
+                            dict(saved_settings)
+                            if isinstance(saved_settings, dict)
+                            else {}
+                        )
                         saved_settings.update(settings)
-                        saved.update(settings=saved_settings, cookie_configured=bool(saved.get("cookie_configured")))
+                        saved.update(
+                            settings=saved_settings,
+                            cookie_configured=bool(saved.get("cookie_configured")),
+                        )
                         history_store[parser_key] = saved
                 outcome = await save_config_to_completion(self.cfg)
                 if outcome.error is not None:
@@ -924,12 +1156,16 @@ class AppleMusicBackend:
                             history_store.clear()
                             history_store.update(history_snapshot)
                         else:
-                            raw_data["__parser_management_history_v1"] = history_snapshot
+                            raw_data["__parser_management_history_v1"] = (
+                                history_snapshot
+                            )
                     else:
                         raw_data.pop("__parser_management_history_v1", None)
                 if outcome is not None and outcome.cancellation is not None:
                     raise outcome.cancellation
-                raise AppleMusicBackendError("音乐解析设置保存失败，请稍后重试") from None
+                raise AppleMusicBackendError(
+                    "音乐解析设置保存失败，请稍后重试"
+                ) from None
             if outcome.cancellation is not None:
                 raise outcome.cancellation
             all_entries = self._parser_config_entries()
@@ -937,7 +1173,9 @@ class AppleMusicBackend:
                 responses[key] = all_entries[key]
             return {"message": "音乐解析设置已保存并立即生效", "parsers": responses}
 
-    async def update_music_cookie(self, owner: str, parser_key: object, cookie: object, *, clear: bool = False) -> dict:
+    async def update_music_cookie(
+        self, owner: str, parser_key: object, cookie: object, *, clear: bool = False
+    ) -> dict:
         if parser_key not in MUSIC_SETTINGS:
             raise AppleMusicBackendError("未知的音乐解析器")
         if not isinstance(clear, bool):
@@ -951,16 +1189,23 @@ class AppleMusicBackend:
         cookie = CookieJar.clean_cookies_str(cookie)
         item = self._parser_item(parser_key)
         if item is None:
-            raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置")
+            raise AppleMusicBackendError(
+                f"{PARSER_LABELS[parser_key]}解析器未配置，请先在插件配置页恢复该解析器配置"
+            )
         async with self.lock, self.config_write_lock:
             self.check_owner(owner)
             old_cookie = getattr(item, "cookies", None)
             cookiejars = [
-                getattr(parser, "cookiejar", None) for parser in self._runtime_parsers()
-                if getattr(getattr(parser, "platform", None), "name", None) == parser_key
+                getattr(parser, "cookiejar", None)
+                for parser in self._runtime_parsers()
+                if getattr(getattr(parser, "platform", None), "name", None)
+                == parser_key
                 and getattr(parser, "cookiejar", None) is not None
             ]
-            cookie_states = [(jar, jar.raw_cookies, list(jar.cookies), jar.cookies_str) for jar in cookiejars]
+            cookie_states = [
+                (jar, jar.raw_cookies, list(jar.cookies), jar.cookies_str)
+                for jar in cookiejars
+            ]
             raw_data = getattr(self.cfg, "_data", None)
             history_store = None
             history_was_present = False
@@ -1000,25 +1245,33 @@ class AppleMusicBackend:
                             history_store.clear()
                             history_store.update(history_snapshot)
                         else:
-                            raw_data["__parser_management_history_v1"] = history_snapshot
+                            raw_data["__parser_management_history_v1"] = (
+                                history_snapshot
+                            )
                     else:
                         raw_data.pop("__parser_management_history_v1", None)
                 if previous_check is not None:
                     self._music_cookie_checks[parser_key] = previous_check
                 for jar, raw, cookies, cookies_str in cookie_states:
-                    jar.raw_cookies, jar.cookies, jar.cookies_str = raw, cookies, cookies_str
+                    jar.raw_cookies, jar.cookies, jar.cookies_str = (
+                        raw,
+                        cookies,
+                        cookies_str,
+                    )
                     try:
                         jar.save_to_file()
                     except Exception:
                         pass
                 if outcome is not None and outcome.cancellation is not None:
                     raise outcome.cancellation
-                raise AppleMusicBackendError(f"{PARSER_LABELS[parser_key]} Cookie 保存失败") from None
+                raise AppleMusicBackendError(
+                    f"{PARSER_LABELS[parser_key]} Cookie 保存失败"
+                ) from None
             if outcome.cancellation is not None:
                 raise outcome.cancellation
             entry = self._parser_config_entries()[parser_key]
             return {
-                "message": f"{PARSER_LABELS[parser_key]} Cookie 已{ '清除' if clear or not cookie else '保存' }",
+                "message": f"{PARSER_LABELS[parser_key]} Cookie 已{'清除' if clear or not cookie else '保存'}",
                 "parser_key": parser_key,
                 "parser": entry,
             }
@@ -1035,7 +1288,8 @@ class AppleMusicBackend:
             if field in values and not isinstance(values[field], bool):
                 raise AppleMusicBackendError("Apple Music 开关设置无效")
         if "audio_send_format" in values and values["audio_send_format"] not in {
-            "file", "voice"
+            "file",
+            "voice",
         }:
             raise AppleMusicBackendError("Apple Music 音频发送格式无效")
         if "file_codec_priority" in values:
@@ -1053,12 +1307,18 @@ class AppleMusicBackend:
             self.check_owner(owner)
             item = self._parser_item("applemusic")
             if item is None:
-                raise AppleMusicBackendError("Apple Music 解析器未配置，请先在插件配置页恢复该解析器配置")
+                raise AppleMusicBackendError(
+                    "Apple Music 解析器未配置，请先在插件配置页恢复该解析器配置"
+                )
             previous = {key: getattr(item, key, None) for key in values}
             outcome = None
             try:
                 for key, value in values.items():
-                    setattr(item, key, list(value) if key == "file_codec_priority" else value)
+                    setattr(
+                        item,
+                        key,
+                        list(value) if key == "file_codec_priority" else value,
+                    )
                 outcome = await save_config_to_completion(self.cfg)
                 if outcome.error is not None:
                     raise outcome.error
@@ -1067,7 +1327,9 @@ class AppleMusicBackend:
                     setattr(item, key, value)
                 if outcome is not None and outcome.cancellation is not None:
                     raise outcome.cancellation
-                raise AppleMusicBackendError("Apple Music 设置保存失败，请稍后重试") from None
+                raise AppleMusicBackendError(
+                    "Apple Music 设置保存失败，请稍后重试"
+                ) from None
             # BackendSettings is immutable and normally created at plugin load.
             # Refresh it so backend_enabled takes effect without a plugin reload.
             self.settings = BackendSettings.from_config(self.cfg)
@@ -1093,15 +1355,21 @@ class AppleMusicBackend:
             raise ValueError("response is not an object")
         return payload
 
-    async def _http(self, method: str, path: str, *, body=None, timeout=12) -> tuple[int, dict]:
+    async def _http(
+        self, method: str, path: str, *, body=None, timeout=12
+    ) -> tuple[int, dict]:
         base = self._require_enabled()
         if self._session is None:
             self._session = aiohttp.ClientSession(
-                cookie_jar=aiohttp.DummyCookieJar(), trust_env=False,
+                cookie_jar=aiohttp.DummyCookieJar(),
+                trust_env=False,
             )
         try:
             async with self._session.request(
-                method, base + path, json=body, allow_redirects=False,
+                method,
+                base + path,
+                json=body,
+                allow_redirects=False,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
                 # Ignore error bodies: wrapper/Apple errors can contain tokens.
@@ -1109,7 +1377,9 @@ class AppleMusicBackend:
                     return response.status, {}
                 return response.status, await self._read_json(response)
         except (aiohttp.ClientError, TimeoutError):
-            raise AppleMusicBackendError("无法连接 wrapper，或请求超时；请检查独立服务地址") from None
+            raise AppleMusicBackendError(
+                "无法连接 wrapper，或请求超时；请检查独立服务地址"
+            ) from None
         except (ValueError, UnicodeError):
             raise AppleMusicBackendError("wrapper 返回了无效响应") from None
 
@@ -1118,7 +1388,9 @@ class AppleMusicBackend:
         if status != 200:
             raise AppleMusicBackendError(f"wrapper 状态检查失败（HTTP {status}）")
         if payload.get("version") != WRAPPER_VERSION:
-            raise AppleMusicBackendError(f"需要 wrapper-v2 API {WRAPPER_VERSION}，当前版本不兼容")
+            raise AppleMusicBackendError(
+                f"需要 wrapper-v2 API {WRAPPER_VERSION}，当前版本不兼容"
+            )
         if not isinstance(payload.get("auth"), dict):
             raise AppleMusicBackendError("wrapper 未提供可识别的登录状态")
         if not isinstance(payload.get("runtime", {}), dict):
@@ -1129,7 +1401,8 @@ class AppleMusicBackend:
         auth = me["auth"]
         token, user_token = auth.get("dev_token"), auth.get("music_user_token")
         if not all(
-            isinstance(value, str) and 0 < len(value) <= 32768
+            isinstance(value, str)
+            and 0 < len(value) <= 32768
             and all(33 <= ord(character) <= 126 for character in value)
             and ";" not in value
             for value in (token, user_token)
@@ -1145,31 +1418,54 @@ class AppleMusicBackend:
                     "Origin": "https://music.apple.com",
                     "Cookie": f"media-user-token={user_token}",
                 },
-                allow_redirects=False, timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
-                    return None, None, f"Apple 订阅检查失败（HTTP {response.status}），不代表没有订阅"
+                    return (
+                        None,
+                        None,
+                        f"Apple 订阅检查失败（HTTP {response.status}），不代表没有订阅",
+                    )
                 payload = await self._read_json(response)
             subscription = payload.get("meta", {}).get("subscription", {})
             active = subscription.get("active")
             storefront = subscription.get("storefront")
             return (
                 active if isinstance(active, bool) else None,
-                storefront if isinstance(storefront, str) and re.fullmatch(r"[a-z]{2}", storefront) else None,
+                storefront
+                if isinstance(storefront, str) and re.fullmatch(r"[a-z]{2}", storefront)
+                else None,
                 "订阅已核验" if isinstance(active, bool) else "Apple 未返回订阅状态",
             )
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError):
+        except (
+            aiohttp.ClientError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ):
             return None, None, "暂时无法核验订阅，请稍后刷新"
 
     async def probe_gamdl(self) -> dict:
         if self._probe_cache and time.monotonic() - self._probe_cache[0] < 60:
             return dict(self._probe_cache[1])
-        result = {"available": False, "version": None, "ffmpeg": bool(shutil.which("ffmpeg")), "ffprobe": bool(shutil.which("ffprobe"))}
+        result = {
+            "available": False,
+            "version": None,
+            "ffmpeg": bool(shutil.which("ffmpeg")),
+            "ffprobe": bool(shutil.which("ffprobe")),
+        }
         if self.settings.python:
             try:
                 data = await self._run(
-                    [self.settings.python, "-c", "from gamdl.cli.cli import main; from importlib.metadata import version; print(version('gamdl'))"],
-                    timeout=15, capture=True,
+                    [
+                        self.settings.python,
+                        "-c",
+                        "from gamdl.cli.cli import main; from importlib.metadata import version; print(version('gamdl'))",
+                    ],
+                    timeout=15,
+                    capture=True,
                 )
                 version = data.decode().strip()
                 if re.fullmatch(r"\d+\.\d+\.\d+", version):
@@ -1195,7 +1491,12 @@ class AppleMusicBackend:
             "can_submit_2fa": False,
             "message": "请在插件配置中启用可选后端并配置 wrapper / gamdl Python",
             "subscription_message": "尚未核验订阅",
-            "gamdl": {"available": False, "version": None, "ffmpeg": False, "ffprobe": False},
+            "gamdl": {
+                "available": False,
+                "version": None,
+                "ffmpeg": False,
+                "ffprobe": False,
+            },
             "cache": {"bytes": cache_bytes, "files": cache_files},
             "settings": self.management_settings(),
             "platform_accounts": self.platform_accounts(),
@@ -1205,7 +1506,9 @@ class AppleMusicBackend:
         if not self.settings.enabled or self.closed:
             return result
         try:
-            me, probe = await asyncio.gather(self._me(), self.probe_gamdl(), return_exceptions=True)
+            me, probe = await asyncio.gather(
+                self._me(), self.probe_gamdl(), return_exceptions=True
+            )
             if isinstance(probe, dict):
                 result["gamdl"] = probe
             if isinstance(me, Exception):
@@ -1213,15 +1516,30 @@ class AppleMusicBackend:
             auth = me["auth"]
             state = auth.get("state")
             result.update(
-                connected=True, version=WRAPPER_VERSION,
-                auth_state=state if state in ("authenticated", "logged_out", "awaiting_2fa", "in_progress", "failed") else "unknown",
+                connected=True,
+                version=WRAPPER_VERSION,
+                auth_state=state
+                if state
+                in (
+                    "authenticated",
+                    "logged_out",
+                    "awaiting_2fa",
+                    "in_progress",
+                    "failed",
+                )
+                else "unknown",
                 playback_ready=me.get("runtime", {}).get("playback_ready") is True,
-                can_submit_2fa=self.pending_owner == owner and time.monotonic() < self.pending_until,
+                can_submit_2fa=self.pending_owner == owner
+                and time.monotonic() < self.pending_until,
                 message="wrapper 已连接",
             )
             if state == "authenticated":
                 active, storefront, message = await self._subscription(me)
-                result.update(subscription_active=active, storefront=storefront, subscription_message=message)
+                result.update(
+                    subscription_active=active,
+                    storefront=storefront,
+                    subscription_message=message,
+                )
         except AppleMusicBackendError as exc:
             result["message"] = exc.message
         self._last_auth_state = result["auth_state"]
@@ -1256,25 +1574,48 @@ class AppleMusicBackend:
         async with self.lock:
             self.check_owner(owner)
             await self._me()  # Verify protocol BEFORE sending credentials.
-            status, _ = await self._http("POST", "/login", body={"username": username, "password": password}, timeout=90)
+            status, _ = await self._http(
+                "POST",
+                "/login",
+                body={"username": username, "password": password},
+                timeout=90,
+            )
             if status == 202:
                 self.pending_owner, self.pending_until = owner, time.monotonic() + 600
-                return {"needs_2fa": True, "message": "请输入受信任设备收到的六位验证码（10 分钟内）"}
+                return {
+                    "needs_2fa": True,
+                    "message": "请输入受信任设备收到的六位验证码（10 分钟内）",
+                }
             if status != 200:
-                raise AppleMusicBackendError(f"Apple 登录失败（HTTP {status}）；请检查账号或稍后重试")
+                raise AppleMusicBackendError(
+                    f"Apple 登录失败（HTTP {status}）；请检查账号或稍后重试"
+                )
             self.pending_owner = None
-            return {"needs_2fa": False, "message": "登录请求已完成，请刷新核验登录和订阅状态"}
+            return {
+                "needs_2fa": False,
+                "message": "登录请求已完成，请刷新核验登录和订阅状态",
+            }
 
     async def two_factor(self, owner: str, code: str) -> dict:
         async with self.lock:
             self.check_owner(owner, require_pending=True)
-            status, _ = await self._http("POST", "/login/2fa", body={"code": code}, timeout=90)
+            status, _ = await self._http(
+                "POST", "/login/2fa", body={"code": code}, timeout=90
+            )
             if status not in (200, 202):
-                raise AppleMusicBackendError(f"验证码提交失败（HTTP {status}），请重试或重新登录")
+                raise AppleMusicBackendError(
+                    f"验证码提交失败（HTTP {status}），请重试或重新登录"
+                )
             if status == 202:
-                return {"needs_2fa": True, "message": "仍需双重认证，请检查验证码后重试"}
+                return {
+                    "needs_2fa": True,
+                    "message": "仍需双重认证，请检查验证码后重试",
+                }
             self.pending_owner = None
-            return {"needs_2fa": False, "message": "验证码已提交，请刷新核验登录和订阅状态"}
+            return {
+                "needs_2fa": False,
+                "message": "验证码已提交，请刷新核验登录和订阅状态",
+            }
 
     async def clear_session(self, owner: str) -> dict:
         async with self.lock:
@@ -1284,28 +1625,48 @@ class AppleMusicBackend:
             if status != 200:
                 raise AppleMusicBackendError(f"清除内存会话失败（HTTP {status}）")
             self.pending_owner = None
-            return {"needs_2fa": False, "message": "已清除内存会话；wrapper 磁盘登录缓存仍在，重启可能恢复登录"}
+            return {
+                "needs_2fa": False,
+                "message": "已清除内存会话；wrapper 磁盘登录缓存仍在，重启可能恢复登录",
+            }
 
-    async def _run(self, argv: list[str], *, timeout: int, capture=False, cwd=None) -> bytes:
+    async def _run(
+        self, argv: list[str], *, timeout: int, capture=False, cwd=None
+    ) -> bytes:
         if self.closed:
             raise AppleMusicBackendError("Apple Music 后端已停止")
-        kwargs = {"start_new_session": True} if os.name != "nt" else {"creationflags": 0x08000000}
+        kwargs = (
+            {"start_new_session": True}
+            if os.name != "nt"
+            else {"creationflags": 0x08000000}
+        )
         try:
             process = await asyncio.create_subprocess_exec(
-                *argv, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE if capture else asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL, **kwargs,
+                *argv,
+                cwd=cwd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE
+                if capture
+                else asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                **kwargs,
             )
         except (OSError, ValueError):
-            raise AppleMusicBackendError("无法启动可选工具，请检查 gamdl Python / FFmpeg 配置") from None
+            raise AppleMusicBackendError(
+                "无法启动可选工具，请检查 gamdl Python / FFmpeg 配置"
+            ) from None
         self._processes.add(process)
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout)
             if process.returncode:
-                raise AppleMusicBackendError("可选工具执行失败；请确认 gamdl 版本、登录状态和运行依赖")
+                raise AppleMusicBackendError(
+                    "可选工具执行失败；请确认 gamdl 版本、登录状态和运行依赖"
+                )
             return (stdout or b"")[:65536]
         except TimeoutError:
-            raise AppleMusicBackendError("Apple Music 操作超时，已终止任务；可稍后重试") from None
+            raise AppleMusicBackendError(
+                "Apple Music 操作超时，已终止任务；可稍后重试"
+            ) from None
         finally:
             await self._stop_process(process)
             self._processes.discard(process)
@@ -1318,8 +1679,13 @@ class AppleMusicBackend:
             if os.name == "nt":
                 # gamdl can launch FFmpeg. Terminate the bounded process tree.
                 child = await asyncio.create_subprocess_exec(
-                    "taskkill", "/PID", str(process.pid), "/T", "/F",
-                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                     creationflags=0x08000000,
                 )
                 await asyncio.wait_for(child.wait(), 10)
@@ -1333,7 +1699,11 @@ class AppleMusicBackend:
         await process.wait()
 
     def download_task(
-        self, url: str, duration: float, *, codec_priority: tuple[str, ...] | None = None
+        self,
+        url: str,
+        duration: float,
+        *,
+        codec_priority: tuple[str, ...] | None = None,
     ) -> asyncio.Task[Path]:
         task = asyncio.create_task(
             self.download(url, duration=duration, codec_priority=codec_priority)
@@ -1455,13 +1825,20 @@ class AppleMusicBackend:
             try:
                 output_root = output.resolve()
                 for path in output.rglob("*"):
-                    if path.is_symlink() or not path.is_file() or path.suffix.lower() != ".lrc":
+                    if (
+                        path.is_symlink()
+                        or not path.is_file()
+                        or path.suffix.lower() != ".lrc"
+                    ):
                         continue
                     try:
                         resolved = path.resolve()
                         if not resolved.is_relative_to(output_root):
                             continue
-                        if path.stat().st_size <= 0 or path.stat().st_size > self._MAX_LYRICS_SIZE:
+                        if (
+                            path.stat().st_size <= 0
+                            or path.stat().st_size > self._MAX_LYRICS_SIZE
+                        ):
                             continue
                         text = path.read_text(encoding="utf-8-sig")
                     except (OSError, UnicodeError):
@@ -1499,19 +1876,27 @@ class AppleMusicBackend:
         async with self.lock:
             self._require_enabled()
             if self.pending_owner and time.monotonic() < self.pending_until:
-                raise AppleMusicBackendError("请先在虚质解离器管理页的音乐管理中完成双重认证")
+                raise AppleMusicBackendError(
+                    "请先在虚质解离器管理页的音乐管理中完成双重认证"
+                )
             me = await self._me()
             if me["auth"].get("state") != "authenticated":
                 raise AppleMusicBackendError("请先在虚质解离器管理页的音乐管理中登录")
             active, _, _ = await self._subscription(me)
             if active is not True:
-                raise AppleMusicBackendError("未能确认有效 Apple Music 订阅，请先在管理页检查")
+                raise AppleMusicBackendError(
+                    "未能确认有效 Apple Music 订阅，请先在管理页检查"
+                )
             probe = await self.probe_gamdl()
             if not probe["available"] or not probe["ffmpeg"] or not probe["ffprobe"]:
-                raise AppleMusicBackendError(f"请配置独立环境中的 gamdl {GAMDL_VERSION}，并安装 FFmpeg / FFprobe")
+                raise AppleMusicBackendError(
+                    f"请配置独立环境中的 gamdl {GAMDL_VERSION}，并安装 FFmpeg / FFprobe"
+                )
             if codec_priority is None:
                 try:
-                    send_format = getattr(self.cfg.parser.applemusic, "audio_send_format", "file")
+                    send_format = getattr(
+                        self.cfg.parser.applemusic, "audio_send_format", "file"
+                    )
                 except (AttributeError, TypeError):
                     send_format = "file"
                 if str(send_format or "").strip().lower() == "voice":
@@ -1533,53 +1918,115 @@ class AppleMusicBackend:
             ):
                 raise AppleMusicBackendError("Apple Music 音质配置无效")
             codec_arg = ",".join(codec_priority)
-            directory = create_parse_cache_dir(get_active_cache_dir(self.cfg.cache_dir), "applemusic")
+            directory = create_parse_cache_dir(
+                get_active_cache_dir(self.cfg.cache_dir), "applemusic"
+            )
             with cache_dir_activity(directory):
                 output, temporary = directory / "output", directory / "temporary"
                 output.mkdir()
                 temporary.mkdir()
-                await self._run([
-                    self.settings.python, "-m", "gamdl", "--no-config-file", "--no-exceptions",
-                    "--log-level", "ERROR", "--use-wrapper", "--wrapper-url", self.settings.validate(),
-                    "--wrapper-decrypt-host", self.settings.decrypt_host,
-                    "--wrapper-decrypt-port", str(self.settings.decrypt_port),
-                    "--song-codec-priority", codec_arg, "--no-synced-lyrics",
-                    "--output-path", str(output), "--temp-path", str(temporary),
-                    "--album-folder-template", "album", "--compilation-folder-template", "album",
-                    "--no-album-folder-template", "album",
-                    "--single-disc-file-template", identifier,
-                    "--multi-disc-file-template", identifier,
-                    "--no-album-file-template", identifier, canonical,
-                ], timeout=self.settings.timeout, cwd=str(directory))
+                await self._run(
+                    [
+                        self.settings.python,
+                        "-m",
+                        "gamdl",
+                        "--no-config-file",
+                        "--no-exceptions",
+                        "--log-level",
+                        "ERROR",
+                        "--use-wrapper",
+                        "--wrapper-url",
+                        self.settings.validate(),
+                        "--wrapper-decrypt-host",
+                        self.settings.decrypt_host,
+                        "--wrapper-decrypt-port",
+                        str(self.settings.decrypt_port),
+                        "--song-codec-priority",
+                        codec_arg,
+                        "--no-synced-lyrics",
+                        "--output-path",
+                        str(output),
+                        "--temp-path",
+                        str(temporary),
+                        "--album-folder-template",
+                        "album",
+                        "--compilation-folder-template",
+                        "album",
+                        "--no-album-folder-template",
+                        "album",
+                        "--single-disc-file-template",
+                        identifier,
+                        "--multi-disc-file-template",
+                        identifier,
+                        "--no-album-file-template",
+                        identifier,
+                        canonical,
+                    ],
+                    timeout=self.settings.timeout,
+                    cwd=str(directory),
+                )
                 # gamdl can exit zero after a track error, so exit code is not proof.
-                files = [p for p in output.rglob("*.m4a") if p.is_file() and not p.is_symlink()]
-                if len(files) != 1 or not files[0].resolve().is_relative_to(output.resolve()):
-                    raise AppleMusicBackendError("gamdl 未生成唯一的歌曲音频；登录不代表下载可用")
+                files = [
+                    p
+                    for p in output.rglob("*.m4a")
+                    if p.is_file() and not p.is_symlink()
+                ]
+                if len(files) != 1 or not files[0].resolve().is_relative_to(
+                    output.resolve()
+                ):
+                    raise AppleMusicBackendError(
+                        "gamdl 未生成唯一的歌曲音频；登录不代表下载可用"
+                    )
                 path = files[0]
                 if not 0 < path.stat().st_size <= self.cfg.max_size:
                     raise AppleMusicBackendError("生成的音频为空或超过插件大小限制")
-                raw = await self._run([
-                    shutil.which("ffprobe") or "ffprobe", "-v", "error", "-show_entries",
-                    "format=duration:stream=codec_type,codec_name,codec_tag_string", "-of", "json", str(path),
-                ], timeout=20, capture=True)
+                raw = await self._run(
+                    [
+                        shutil.which("ffprobe") or "ffprobe",
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration:stream=codec_type,codec_name,codec_tag_string",
+                        "-of",
+                        "json",
+                        str(path),
+                    ],
+                    timeout=20,
+                    capture=True,
+                )
                 try:
                     info = json.loads(raw)
                     actual = float(info["format"]["duration"])
                     playable = any(
-                        isinstance(s, dict) and s.get("codec_type") == "audio"
-                        and s.get("codec_name") in {
-                            "aac", "alac", "ac3", "eac3", "ec-3",
+                        isinstance(s, dict)
+                        and s.get("codec_type") == "audio"
+                        and s.get("codec_name")
+                        in {
+                            "aac",
+                            "alac",
+                            "ac3",
+                            "eac3",
+                            "ec-3",
                         }
                         and s.get("codec_tag_string") != "enca"
                         for s in info["streams"]
                     )
                     # Check the decoded file, not a preview URL or a mere file name.
-                    if not playable or not math.isfinite(actual) or actual <= 0 or actual > self.cfg.max_duration:
+                    if (
+                        not playable
+                        or not math.isfinite(actual)
+                        or actual <= 0
+                        or actual > self.cfg.max_duration
+                    ):
                         raise ValueError
                     if duration and abs(actual - duration) > max(5, duration * 0.05):
-                        raise AppleMusicBackendError("音频时长与歌曲不一致，可能只有试听，已拒绝发送")
+                        raise AppleMusicBackendError(
+                            "音频时长与歌曲不一致，可能只有试听，已拒绝发送"
+                        )
                 except (KeyError, TypeError, ValueError):
-                    raise AppleMusicBackendError("输出文件未通过音频格式/时长检查") from None
+                    raise AppleMusicBackendError(
+                        "输出文件未通过音频格式/时长检查"
+                    ) from None
                 return path
 
     async def close(self) -> None:

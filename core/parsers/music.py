@@ -46,6 +46,10 @@ from ..music_quality import (
 )
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
+from .kugou_quality import (
+    KugouQualityClient,
+    quality_priority as kugou_quality_priority,
+)
 from .qqmusic_cookie import QQMusicCookieJar
 from .qqmusic_login import QQMusicLogin
 from .qqmusic_session import QQMusicSession
@@ -143,7 +147,9 @@ class _NuxtValueParser:
             if name in {"null", "undefined"}:
                 return None
             return _JavaScriptReference(name)
-        raise ValueError(f"unsupported JavaScript value near {self.source[self.position:self.position + 40]!r}")
+        raise ValueError(
+            f"unsupported JavaScript value near {self.source[self.position : self.position + 40]!r}"
+        )
 
     def _parse_string(self) -> str:
         quote = self.source[self.position]
@@ -173,19 +179,23 @@ class _NuxtValueParser:
             if escaped in simple_escapes:
                 result.append(simple_escapes[escaped])
             elif escaped == "u":
-                code = self.source[self.position:self.position + 4]
+                code = self.source[self.position : self.position + 4]
                 if len(code) != 4:
                     raise ValueError("invalid Unicode escape in JavaScript string")
                 self.position += 4
                 result.append(chr(int(code, 16)))
             elif escaped == "x":
-                code = self.source[self.position:self.position + 2]
+                code = self.source[self.position : self.position + 2]
                 if len(code) != 2:
                     raise ValueError("invalid hex escape in JavaScript string")
                 self.position += 2
                 result.append(chr(int(code, 16)))
             elif escaped in "\r\n":
-                if escaped == "\r" and self.position < len(self.source) and self.source[self.position] == "\n":
+                if (
+                    escaped == "\r"
+                    and self.position < len(self.source)
+                    and self.source[self.position] == "\n"
+                ):
                     self.position += 1
             else:
                 result.append(escaped)
@@ -402,8 +412,7 @@ def _cover_url(value: object, *, size: int = 400) -> str | None:
             uri = uri.lstrip("/")
             if prefix:
                 return (
-                    f"{host.rstrip('/')}/{uri}~{prefix}-crop-center:"
-                    f"{size}:{size}.jpg"
+                    f"{host.rstrip('/')}/{uri}~{prefix}-crop-center:{size}:{size}.jpg"
                 )
             return f"{host.rstrip('/')}/{uri}"
         value = uri
@@ -777,7 +786,9 @@ class PlaylistParserBase(BaseParser):
         duration_value = _duration_seconds(duration)
 
         contents = (
-            self.create_image_contents([cover], headers=self.headers) if cover and download_cover else []
+            self.create_image_contents([cover], headers=self.headers)
+            if cover and download_cover
+            else []
         )
         if audio_url and audio_url.startswith(("http://", "https://")):
             contents.append(
@@ -812,9 +823,7 @@ class PlaylistParserBase(BaseParser):
             url=url,
             contents=contents,
             comment_count=stat_value("comments", "comment_count", "count_comment"),
-            favorite_count=stat_value(
-                "favorites", "favorite_count", "count_collected"
-            ),
+            favorite_count=stat_value("favorites", "favorite_count", "count_collected"),
             share_count=stat_value("shares", "share_count", "count_shared"),
             extra={
                 "info": "\n".join(info_lines),
@@ -869,7 +878,9 @@ class KuwoMusicParser(PlaylistParserBase):
         except (ValueError, TypeError, OverflowError) as exc:
             raise ParseException("酷我音乐页面数据格式无法识别") from exc
 
-        resolved = _resolve_nuxt_references(serialized, dict(zip(parameters, arguments)))
+        resolved = _resolve_nuxt_references(
+            serialized, dict(zip(parameters, arguments))
+        )
         if not isinstance(resolved, Mapping):
             raise ParseException("酷我音乐页面没有返回可识别的歌单数据")
         return resolved
@@ -933,7 +944,6 @@ class KuwoMusicParser(PlaylistParserBase):
             tracks=[item for item in tracks if isinstance(item, Mapping)],
             stats={"visits": playlist.get("listencnt")},
         )
-
 
     @handle(
         "m.kuwo.cn/yinyue",
@@ -1053,9 +1063,8 @@ class AppleMusicParser(PlaylistParserBase):
     @staticmethod
     def _is_apple_host(host: str) -> bool:
         host = host.lower().rstrip(".")
-        return (
-            host in {"music.apple.com", "itunes.apple.com"}
-            or host.endswith((".music.apple.com", ".itunes.apple.com", ".mzstatic.com"))
+        return host in {"music.apple.com", "itunes.apple.com"} or host.endswith(
+            (".music.apple.com", ".itunes.apple.com", ".mzstatic.com")
         )
 
     @classmethod
@@ -1223,23 +1232,27 @@ class AppleMusicParser(PlaylistParserBase):
                 result.append(candidate)
             for key, child in value.items():
                 key_text = str(key).lower()
-                if key_text in {
-                    "artistlinks",
-                    "subtitlelinks",
-                    "artists",
-                    "artist",
-                    "byartist",
-                    "artistdata",
-                    "contentdescriptor",
-                    "identifiers",
-                    # Apple wraps subtitle/artist links in
-                    # ``segue.destination.contentDescriptor``.  The old
-                    # walker stopped at ``segue``, leaving the first artist
-                    # as name-only while a later JSON-LD artist supplied the
-                    # first usable ID.
-                    "segue",
-                    "destination",
-                } or "artist" in key_text:
+                if (
+                    key_text
+                    in {
+                        "artistlinks",
+                        "subtitlelinks",
+                        "artists",
+                        "artist",
+                        "byartist",
+                        "artistdata",
+                        "contentdescriptor",
+                        "identifiers",
+                        # Apple wraps subtitle/artist links in
+                        # ``segue.destination.contentDescriptor``.  The old
+                        # walker stopped at ``segue``, leaving the first artist
+                        # as name-only while a later JSON-LD artist supplied the
+                        # first usable ID.
+                        "segue",
+                        "destination",
+                    }
+                    or "artist" in key_text
+                ):
                     child_candidates = cls._collect_artist_candidates(
                         child,
                         allow_generic_id=allow_generic_id
@@ -1261,8 +1274,7 @@ class AppleMusicParser(PlaylistParserBase):
                     if candidate and candidate.get("name"):
                         for child_candidate in child_candidates:
                             if not child_candidate.get("name") and (
-                                child_candidate.get("id")
-                                or child_candidate.get("url")
+                                child_candidate.get("id") or child_candidate.get("url")
                             ):
                                 child_candidate["name"] = candidate["name"]
                     result.extend(child_candidates)
@@ -1371,18 +1383,15 @@ class AppleMusicParser(PlaylistParserBase):
         if len(parts) != 1 or not isinstance(primary, str):
             return primary
 
-        for piece in re.split(
-            r"\s*(?:&|＆|・|,|，)\s*", primary
-        ):
+        for piece in re.split(r"\s*(?:&|＆|・|,|，)\s*", primary):
             piece = piece.strip()
-            if not piece or cls._normalize_artist_name(piece) == cls._normalize_artist_name(
-                primary
-            ):
+            if not piece or cls._normalize_artist_name(
+                piece
+            ) == cls._normalize_artist_name(primary):
                 continue
             piece_key = cls._normalize_artist_name(piece)
             if any(
-                piece_key
-                and cls._normalize_artist_name(item.get("name")) == piece_key
+                piece_key and cls._normalize_artist_name(item.get("name")) == piece_key
                 for item in candidates
             ):
                 return piece
@@ -1402,7 +1411,9 @@ class AppleMusicParser(PlaylistParserBase):
         # the seven-day/two-hour TTL can actually span songs and messages;
         # lightweight test/config objects without ``data_dir`` still fall back
         # to their supplied cache directory.
-        root = getattr(self.cfg, "data_dir", None) or getattr(self.cfg, "cache_dir", None)
+        root = getattr(self.cfg, "data_dir", None) or getattr(
+            self.cfg, "cache_dir", None
+        )
         if root is None:
             return None
         try:
@@ -1431,7 +1442,9 @@ class AppleMusicParser(PlaylistParserBase):
             cache: dict[str, dict[str, Any]] = {}
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-                raw_entries = payload.get("entries") if isinstance(payload, Mapping) else payload
+                raw_entries = (
+                    payload.get("entries") if isinstance(payload, Mapping) else payload
+                )
                 if isinstance(raw_entries, Mapping):
                     cache = {
                         str(key): dict(value)
@@ -1521,7 +1534,15 @@ class AppleMusicParser(PlaylistParserBase):
             "artist_id": artist_id,
             "artist_url": artist_url,
             "expires_at": time.time()
-            + (ttl if ttl is not None else (self._ARTIST_CACHE_SUCCESS_TTL if found else self._ARTIST_CACHE_MISS_TTL)),
+            + (
+                ttl
+                if ttl is not None
+                else (
+                    self._ARTIST_CACHE_SUCCESS_TTL
+                    if found
+                    else self._ARTIST_CACHE_MISS_TTL
+                )
+            ),
         }
         with self._artist_cache_lock:
             cache[key] = entry
@@ -1704,10 +1725,7 @@ class AppleMusicParser(PlaylistParserBase):
             parsed = urlparse(url)
         except ValueError:
             return None
-        if (
-            parsed.scheme != "https"
-            or not parsed.netloc
-        ):
+        if parsed.scheme != "https" or not parsed.netloc:
             return None
         lowered = f"{parsed.path}?{parsed.query}".lower()
         if any(
@@ -1772,7 +1790,8 @@ class AppleMusicParser(PlaylistParserBase):
             types = raw_type if isinstance(raw_type, list) else [raw_type]
             type_names = {str(item).replace(" ", "").lower() for item in types}
             if not any(
-                item in {"person", "musicgroup", "musicartist", "artist", "organization"}
+                item
+                in {"person", "musicgroup", "musicartist", "artist", "organization"}
                 or "musicartist" in item
                 for item in type_names
             ):
@@ -1796,8 +1815,7 @@ class AppleMusicParser(PlaylistParserBase):
                 ):
                     continue
             elif target_name and (
-                not node_name
-                or cls._normalize_artist_name(node_name) != target_name
+                not node_name or cls._normalize_artist_name(node_name) != target_name
             ):
                 continue
             for image in cls._image_urls_from_value(node.get("image")):
@@ -1844,7 +1862,9 @@ class AppleMusicParser(PlaylistParserBase):
                     if key in value:
                         result.extend(cls._image_urls_from_value(value[key]))
             for key, child in value.items():
-                child_context = artist_context or str(key).lower() in artist_context_keys
+                child_context = (
+                    artist_context or str(key).lower() in artist_context_keys
+                )
                 result.extend(structured_images(child, child_context))
             return result
 
@@ -1865,8 +1885,10 @@ class AppleMusicParser(PlaylistParserBase):
                 )
             }
             property_name = (
-                attributes.get("property", "") or attributes.get("name", "")
-            ).strip().lower()
+                (attributes.get("property", "") or attributes.get("name", ""))
+                .strip()
+                .lower()
+            )
             if property_name not in {"og:image", "og:image:url", "twitter:image"}:
                 continue
             if valid := cls._valid_artist_image_url(
@@ -1882,15 +1904,15 @@ class AppleMusicParser(PlaylistParserBase):
     _extract_artist_image_from_html = _artist_image_from_html
 
     @classmethod
-    def _artist_page_url(
-        cls, candidate: Mapping[str, str], region: str
-    ) -> str | None:
+    def _artist_page_url(cls, candidate: Mapping[str, str], region: str) -> str | None:
         artist_id = str(candidate.get("id") or "").strip()
         direct_url = candidate.get("url")
         if direct_url:
             if (
                 cls._is_apple_artist_url(direct_url)
-                and (urlparse(direct_url).hostname or "").lower().endswith("music.apple.com")
+                and (urlparse(direct_url).hostname or "")
+                .lower()
+                .endswith("music.apple.com")
                 and cls._artist_url_region(direct_url) in {None, region}
             ):
                 return direct_url
@@ -1966,9 +1988,13 @@ class AppleMusicParser(PlaylistParserBase):
             artist_id = str(found.get("id") or "")
             candidate = {**candidate, **found}
 
-        cache_id = artist_id or "url:" + hashlib.sha1(
-            str(candidate.get("url") or artist_name).encode("utf-8")
-        ).hexdigest()
+        cache_id = (
+            artist_id
+            or "url:"
+            + hashlib.sha1(
+                str(candidate.get("url") or artist_name).encode("utf-8")
+            ).hexdigest()
+        )
         requested_region = regions[0]
         for index, region in enumerate(regions):
             if self._artist_rate_limited():
@@ -2228,7 +2254,9 @@ class AppleMusicParser(PlaylistParserBase):
                     _, searched = cls.search_url(node_url)
                 except (ParseException, ValueError):
                     continue
-                if (searched.group("song_id") or searched.group("track_id")) != track_id:
+                if (
+                    searched.group("song_id") or searched.group("track_id")
+                ) != track_id:
                     continue
                 recording = node.get("audio")
                 recording = (
@@ -2260,20 +2288,20 @@ class AppleMusicParser(PlaylistParserBase):
                     elif isinstance(artist_value, str) and artist_value.strip():
                         artist_objects.append({"name": artist_value.strip()})
                 return {
-                    "title": _first_text(recording, "name") or _first_text(node, "name"),
-                    "artist": " / ".join(
-                        _track_artist_names(
-                            {"artists": raw_artists}
-                        )
-                    ),
+                    "title": _first_text(recording, "name")
+                    or _first_text(node, "name"),
+                    "artist": " / ".join(_track_artist_names({"artists": raw_artists})),
                     "artists": artist_objects,
                     "album": _first_text(album, "name"),
                     "cover": _cover_url(
-                        album.get("image") or recording.get("image") or node.get("image"),
+                        album.get("image")
+                        or recording.get("image")
+                        or node.get("image"),
                         size=500,
                     ),
                     "duration": recording.get("duration") or node.get("timeRequired"),
-                    "release_date": recording.get("datePublished") or node.get("datePublished"),
+                    "release_date": recording.get("datePublished")
+                    or node.get("datePublished"),
                 }
         return {}
 
@@ -2415,9 +2443,13 @@ class AppleMusicParser(PlaylistParserBase):
                 if hasattr(native, "__await__"):
                     native = await native
                 if self._valid_synced_lyrics(native):
-                    _log_apple_lyrics("info", "[Apple Music] 使用 Apple Music 原生同步歌词")
+                    _log_apple_lyrics(
+                        "info", "[Apple Music] 使用 Apple Music 原生同步歌词"
+                    )
                     return str(native).strip(), self._APPLE_LYRICS_SOURCE_LABEL
-                _log_apple_lyrics("debug", "[Apple Music] gamdl 返回的同步歌词无效，回退 LRCLIB")
+                _log_apple_lyrics(
+                    "debug", "[Apple Music] gamdl 返回的同步歌词无效，回退 LRCLIB"
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - lyric enrichment is optional
@@ -2486,7 +2518,9 @@ class AppleMusicParser(PlaylistParserBase):
                 headers={**self.headers, "Referer": "https://music.apple.com/"},
             ) as response:
                 if getattr(response, "status", 200) >= 400:
-                    raise ParseException(f"Apple Music 歌曲请求失败: HTTP {response.status}")
+                    raise ParseException(
+                        f"Apple Music 歌曲请求失败: HTTP {response.status}"
+                    )
                 html = await response.text()
         except (ClientError, TimeoutError) as exc:
             raise ParseException(f"Apple Music 歌曲请求失败: {exc}") from exc
@@ -2638,10 +2672,14 @@ class AppleMusicParser(PlaylistParserBase):
             # component serialization path as well as avoiding WAV conversion
             # for voice delivery.
             result.extra["audio_send_via_url"] = True
-            result.contents.append(AudioContent(
-                backend.download_task(url, _duration_seconds(duration or fallback.get("duration"))),
-                duration=_duration_seconds(duration or fallback.get("duration")),
-            ))
+            result.contents.append(
+                AudioContent(
+                    backend.download_task(
+                        url, _duration_seconds(duration or fallback.get("duration"))
+                    ),
+                    duration=_duration_seconds(duration or fallback.get("duration")),
+                )
+            )
         return result
 
     async def _handle_playlist(self, searched):
@@ -2654,7 +2692,9 @@ class AppleMusicParser(PlaylistParserBase):
             headers={**self.headers, "Referer": "https://music.apple.com/"},
         ) as response:
             if getattr(response, "status", 200) >= 400:
-                raise ParseException(f"Apple Music 歌单请求失败: HTTP {response.status}")
+                raise ParseException(
+                    f"Apple Music 歌单请求失败: HTTP {response.status}"
+                )
             html = await response.text()
 
         page = self._page_data(self._decode_server_data(html))
@@ -2678,7 +2718,10 @@ class AppleMusicParser(PlaylistParserBase):
                     if not isinstance(item, Mapping):
                         continue
                     descriptor = item.get("contentDescriptor")
-                    if isinstance(descriptor, Mapping) and descriptor.get("kind") == "song":
+                    if (
+                        isinstance(descriptor, Mapping)
+                        and descriptor.get("kind") == "song"
+                    ):
                         track_items.append(item)
 
         if not header:
@@ -2692,7 +2735,9 @@ class AppleMusicParser(PlaylistParserBase):
                     "artist": _first_text(item, "artistName")
                     or AppleMusicParser._first_link_title(item.get("subtitleLinks")),
                     "album": album or _first_text(item, "albumName", "album"),
-                    "cover": AppleMusicParser._artwork_url(item.get("artwork"), size=300),
+                    "cover": AppleMusicParser._artwork_url(
+                        item.get("artwork"), size=300
+                    ),
                 }
             )
 
@@ -2774,9 +2819,7 @@ class QQMusicParser(PlaylistParserBase):
     def _qq_account_credentials(cookies: Mapping[str, str]) -> tuple[str, str]:
         """Return QQ's account identity and auth key across cookie aliases."""
 
-        identity = str(
-            cookies.get("uin") or cookies.get("qqmusic_uin") or ""
-        ).strip()
+        identity = str(cookies.get("uin") or cookies.get("qqmusic_uin") or "").strip()
         auth_key = str(
             cookies.get("qqmusic_key") or cookies.get("qm_keyst") or ""
         ).strip()
@@ -2848,7 +2891,9 @@ class QQMusicParser(PlaylistParserBase):
         if cookie := self._qq_cookie_header(self._QQ_VKEY_URL):
             headers["Cookie"] = cookie
         try:
-            body = await self._json_request(f"{self._QQ_VKEY_URL}?{query}", headers=headers)
+            body = await self._json_request(
+                f"{self._QQ_VKEY_URL}?{query}", headers=headers
+            )
         except (ParseException, ClientError, TimeoutError):
             return None
         request = body.get("req_1") if isinstance(body, Mapping) else None
@@ -2875,9 +2920,7 @@ class QQMusicParser(PlaylistParserBase):
         for key in ("media_mid", "songmid", "song_mid", "mid", "songid"):
             values = query.get(key)
             if values and values[0].strip():
-                identifier = values[0].strip().rstrip(
-                    ".,!?;:)]}，。！？；："
-                )
+                identifier = values[0].strip().rstrip(".,!?;:)]}，。！？；：")
                 if not identifier:
                     continue
                 if identifier not in identifiers:
@@ -2922,9 +2965,14 @@ class QQMusicParser(PlaylistParserBase):
         )
         auth_key = cookies.get("qqmusic_key") or cookies.get("qm_keyst") or ""
         filename_mid = media_mid or song_mid
-        qualities = tuple(
-            quality for quality in quality_priority if quality in QQ_QUALITY_FILENAMES
-        ) or QQ_VOICE_QUALITY_PRIORITY
+        qualities = (
+            tuple(
+                quality
+                for quality in quality_priority
+                if quality in QQ_QUALITY_FILENAMES
+            )
+            or QQ_VOICE_QUALITY_PRIORITY
+        )
         filenames = [
             f"{QQ_QUALITY_FILENAMES[quality][0]}{filename_mid}"
             f"{QQ_QUALITY_FILENAMES[quality][1]}"
@@ -2992,7 +3040,9 @@ class QQMusicParser(PlaylistParserBase):
                 candidate = rows[index]
                 # Some QQ responses omit filename on individual rows; in that
                 # shape the API preserves the request order.
-                if isinstance(candidate, Mapping) and not _first_text(candidate, "filename"):
+                if isinstance(candidate, Mapping) and not _first_text(
+                    candidate, "filename"
+                ):
                     row = candidate
             if not isinstance(row, Mapping):
                 continue
@@ -3110,14 +3160,11 @@ class QQMusicParser(PlaylistParserBase):
                     "param": identifier,
                 },
             }
-            api_url = (
-                "https://u.y.qq.com/cgi-bin/musicu.fcg?"
-                + urlencode(
-                    {
-                        "format": "json",
-                        "data": json.dumps(payload, separators=(",", ":")),
-                    }
-                )
+            api_url = "https://u.y.qq.com/cgi-bin/musicu.fcg?" + urlencode(
+                {
+                    "format": "json",
+                    "data": json.dumps(payload, separators=(",", ":")),
+                }
             )
             try:
                 detail_headers = {"Referer": "https://y.qq.com/"}
@@ -3233,7 +3280,7 @@ class QQMusicParser(PlaylistParserBase):
                     "title": _track_title(track) or "未知歌曲",
                     "artists": " / ".join(artist_names),
                     "album": _track_album_name(track),
-                "duration_seconds": _duration_seconds(track.get("interval")),
+                    "duration_seconds": _duration_seconds(track.get("interval")),
                     "release_text": _first_text(track, "time_public"),
                 }
         return result
@@ -3483,9 +3530,8 @@ class NetEaseMusicParser(PlaylistParserBase):
         url = searched.group(0)
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        detail_url = (
-            "https://music.163.com/api/song/detail?ids="
-            + json.dumps([int(searched.group("song_id"))])
+        detail_url = "https://music.163.com/api/song/detail?ids=" + json.dumps(
+            [int(searched.group("song_id"))]
         )
         detail_headers = {"Referer": "https://music.163.com/"}
         if cookie := self._netease_cookie_header(detail_url):
@@ -3513,8 +3559,10 @@ class NetEaseMusicParser(PlaylistParserBase):
         audio_url = None
         if self._return_audio_enabled():
             audio_url = await self._resolve_netease_audio_url(song_id)
-            audio_url = audio_url or _first_text(track, "mp3Url") or (
-                f"https://music.163.com/song/media/outer/url?id={song_id}"
+            audio_url = (
+                audio_url
+                or _first_text(track, "mp3Url")
+                or (f"https://music.163.com/song/media/outer/url?id={song_id}")
             )
         audio_headers = dict(self.headers)
         audio_headers["Referer"] = "https://music.163.com/"
@@ -3723,7 +3771,9 @@ class KugouMusicParser(PlaylistParserBase):
         return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
     @classmethod
-    def _signed_params(cls, extra: Mapping[str, object] | None = None) -> dict[str, str]:
+    def _signed_params(
+        cls, extra: Mapping[str, object] | None = None
+    ) -> dict[str, str]:
         now = str(int(time.time() * 1000))
         params: dict[str, str] = {
             "srcappid": "2919",
@@ -3758,7 +3808,7 @@ class KugouMusicParser(PlaylistParserBase):
     def _mixsong_album_name(html: str) -> str | None:
         match = re.search(
             r'<p[^>]+class=["\'][^"\']*albumName[^"\']*["\'][^>]*>.*?'
-            r'<a[^>]*>(.*?)</a>',
+            r"<a[^>]*>(.*?)</a>",
             html,
             flags=re.DOTALL | re.IGNORECASE,
         )
@@ -3768,6 +3818,36 @@ class KugouMusicParser(PlaylistParserBase):
         return _clean_text(text)
 
     async def _fetch_kugou_song_info(
+        self, song_hash: str, *, encode_album_audio_id: str | None = None,
+        album_id: str | None = None, album_audio_id: str | None = None,
+        referer: str | None = None, use_web: bool = True,
+    ) -> Mapping[str, Any]:
+        metadata = await self._fetch_kugou_legacy_song_info(
+            song_hash, encode_album_audio_id=encode_album_audio_id,
+            album_id=album_id, album_audio_id=album_audio_id,
+            referer=referer, use_web=use_web,
+        )
+        if not use_web or self._audio_send_format() != "file":
+            return metadata
+        client = KugouQualityClient(self)
+        preferred = kugou_quality_priority(
+            getattr(self._music_parser_config(), "file_quality_priority", None)
+        )
+        candidate = await client.resolve(
+            self._kugou_cookie_header("https://gateway.kugou.com/v5/url"),
+            song_hash, preferred, album_id, album_audio_id,
+        )
+        if not candidate:
+            return metadata
+        try:
+            local_path = await client.download(candidate["url"])
+        except DownloadException:
+            return metadata
+        # Keep title, artist, cover and duration from the established metadata
+        # path; accept new playback only after a real audio download succeeds.
+        return {**metadata, **candidate, "_local_audio_path": local_path}
+
+    async def _fetch_kugou_legacy_song_info(
         self,
         song_hash: str,
         *,
@@ -4019,22 +4099,16 @@ class KugouMusicParser(PlaylistParserBase):
             return None
 
         if not isinstance(body, Mapping):
-            _log_kugou_lyrics(
-                "info", "[酷狗音乐] 歌词接口返回格式无效：响应不是对象"
-            )
+            _log_kugou_lyrics("info", "[酷狗音乐] 歌词接口返回格式无效：响应不是对象")
             return None
         data = body.get("data")
         if not isinstance(data, Mapping):
-            _log_kugou_lyrics(
-                "info", "[酷狗音乐] 歌词接口未返回有效数据字段"
-            )
+            _log_kugou_lyrics("info", "[酷狗音乐] 歌词接口未返回有效数据字段")
             return None
         lyrics = _first_text(data, "lrc")
         lyrics = lyrics.strip() if lyrics and lyrics.strip() else None
         if not lyrics:
-            _log_kugou_lyrics(
-                "info", "[酷狗音乐] 歌词接口响应正常，但没有返回可用 LRC"
-            )
+            _log_kugou_lyrics("info", "[酷狗音乐] 歌词接口响应正常，但没有返回可用 LRC")
             return None
 
         line_count = sum(1 for line in lyrics.splitlines() if line.strip())
@@ -4066,9 +4140,7 @@ class KugouMusicParser(PlaylistParserBase):
                     size=165,
                 ):
                     return avatar
-        return _cover_url(
-            value.get("imgUrl") or value.get("singerHead"), size=165
-        )
+        return _cover_url(value.get("imgUrl") or value.get("singerHead"), size=165)
 
     async def _fetch_kugou_artist_avatar(
         self,
@@ -4079,8 +4151,7 @@ class KugouMusicParser(PlaylistParserBase):
         """Fetch Kugou's lightweight song metadata for the primary portrait."""
 
         request_url = (
-            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash="
-            + song_hash
+            "https://m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=" + song_hash
         )
         headers = {"Referer": self._MOBILE_REFERER}
         if cookie := self._kugou_cookie_header(request_url):
@@ -4108,9 +4179,7 @@ class KugouMusicParser(PlaylistParserBase):
         return_audio = self._return_audio_enabled()
         lyrics_enabled = self._lyrics_enabled()
         if lyrics_enabled:
-            _log_kugou_lyrics(
-                "info", "[酷狗音乐] 歌词解析已开启，开始为单曲补充歌词"
-            )
+            _log_kugou_lyrics("info", "[酷狗音乐] 歌词解析已开启，开始为单曲补充歌词")
         info = (
             await self._fetch_kugou_song_info(
                 song_hash,
@@ -4154,10 +4223,9 @@ class KugouMusicParser(PlaylistParserBase):
         audio_headers = dict(self.headers)
         if audio_url and (cookie := self._kugou_cookie_header(audio_url)):
             audio_headers["Cookie"] = cookie
-        author_avatar = (
-            self._kugou_artist_avatar_url(info)
-            or self._kugou_artist_avatar_url(fallback)
-        )
+        author_avatar = self._kugou_artist_avatar_url(
+            info
+        ) or self._kugou_artist_avatar_url(fallback)
         if not author_avatar:
             author_avatar = lambda: self._fetch_kugou_artist_avatar(
                 song_hash, fallback=fallback
@@ -4175,12 +4243,16 @@ class KugouMusicParser(PlaylistParserBase):
                 or song_hash
             ),
             author_avatar=author_avatar,
-            audio_url=audio_url,
+            audio_url=None if info.get("_local_audio_path") else audio_url,
             audio_headers=audio_headers,
             stats={},
         )
+        if local_path := info.get("_local_audio_path"):
+            result.contents.append(AudioContent(local_path, _duration_seconds(duration)))
         if audio_url and audio_url.startswith(("http://", "https://")):
             self._set_audio_delivery(result, audio_url)
+            if quality := _first_text(info, "requested_audio_quality"):
+                result.extra["requested_audio_quality"] = quality
         if lyrics_enabled:
             lyrics_keyword = (
                 _first_text(info, "fileName", "filename")
@@ -4200,9 +4272,7 @@ class KugouMusicParser(PlaylistParserBase):
                     "album": album_name or _first_text(info, "album_name"),
                     "duration_seconds": _duration_seconds(duration),
                 }
-                line_count = sum(
-                    1 for line in lyrics.splitlines() if line.strip()
-                )
+                line_count = sum(1 for line in lyrics.splitlines() if line.strip())
                 _log_kugou_lyrics(
                     "info",
                     "[酷狗音乐] 歌词已附加到解析结果（chars=%s lines=%s）",
@@ -4215,9 +4285,7 @@ class KugouMusicParser(PlaylistParserBase):
                     "[酷狗音乐] 未取得歌词，解析结果不包含歌词卡片数据",
                 )
         else:
-            _log_kugou_lyrics(
-                "debug", "[酷狗音乐] 歌词解析开关未开启，跳过歌词请求"
-            )
+            _log_kugou_lyrics("debug", "[酷狗音乐] 歌词解析开关未开启，跳过歌词请求")
         return result
 
     @staticmethod
@@ -4281,9 +4349,8 @@ class KugouMusicParser(PlaylistParserBase):
                 "global_collection_id": channel_id,
             }
         )
-        api_url = (
-            "https://gateway.kugou.com/v1/get_song_detail?"
-            + urlencode(request_params)
+        api_url = "https://gateway.kugou.com/v1/get_song_detail?" + urlencode(
+            request_params
         )
         body = await self._json_request(
             api_url,
@@ -4314,9 +4381,7 @@ class KugouMusicParser(PlaylistParserBase):
                     data, "ori_audio_name", "song_name", "audio_name"
                 ),
                 "album_name": _first_text(album_info, "album_name", "name"),
-                "album_img": _first_text(
-                    album_info, "sizable_cover", "cover", "picUrl"
-                )
+                "album_img": _first_text(album_info, "sizable_cover", "cover", "picUrl")
                 or _first_text(data, "cover_pic", "pic"),
                 "timelength": _first_text(
                     audio_info, "timelength", "timelength_128", "timelength_320"
@@ -4477,8 +4542,7 @@ class KugouMusicParser(PlaylistParserBase):
             timestamp=_timestamp(list_info.get("create_time")),
             url=url,
             identifier=(
-                _first_text(payload, "global_collection_id", "encode_src_gid")
-                or url
+                _first_text(payload, "global_collection_id", "encode_src_gid") or url
             ),
             tracks=[item for item in songs if isinstance(item, Mapping)],
             stats={
@@ -4505,7 +4569,9 @@ class KugouMusicParser(PlaylistParserBase):
             },
             data=list_body,
         )
-        listed = list_response.get("data") if isinstance(list_response, Mapping) else None
+        listed = (
+            list_response.get("data") if isinstance(list_response, Mapping) else None
+        )
         list_info = listed[0] if isinstance(listed, list) and listed else {}
         if not isinstance(list_info, Mapping) or not list_info:
             raise ParseException("酷狗歌单不存在或暂时无法访问")
@@ -4585,13 +4651,21 @@ class QishuiMusicParser(PlaylistParserBase):
         if not video_url or not video_url.startswith(("http://", "https://")):
             raise ParseException("汽水音乐用户视频没有可用的视频地址")
         title = (
-            _clean_text(_first_text(video, "videoName", "title", "name"))
-            or "汽水音乐视频"
-        ).replace("\ufeff", "").strip()
+            (
+                _clean_text(_first_text(video, "videoName", "title", "name"))
+                or "汽水音乐视频"
+            )
+            .replace("\ufeff", "")
+            .strip()
+        )
         artist_name = (
-            _clean_text(_first_text(video, "artistName", "authorName", "nickname"))
-            or "未知用户"
-        ).replace("\ufeff", "").strip()
+            (
+                _clean_text(_first_text(video, "artistName", "authorName", "nickname"))
+                or "未知用户"
+            )
+            .replace("\ufeff", "")
+            .strip()
+        )
         cover = _cover_url(
             video.get("coverURL") or video.get("metaURL") or video.get("firstFrameURL"),
             size=540,
@@ -4746,7 +4820,9 @@ class QishuiMusicParser(PlaylistParserBase):
             # Some deployments serve the short-link redirect over HTTP while
             # keeping the advertised URL on HTTPS.
             if url.startswith("http://"):
-                return await self._redirect_and_parse(url.replace("http://", "https://", 1))
+                return await self._redirect_and_parse(
+                    url.replace("http://", "https://", 1)
+                )
             raise
 
     @handle(

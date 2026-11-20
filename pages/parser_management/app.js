@@ -46,7 +46,13 @@
     ["ac3", "Dolby Digital"],
   ];
   const qqQualityOptions = [
-    ["lossless", "FLAC 无损"], ["high", "高音质 · 320 kbps"],
+    ["lossless", "FLAC 无损"],
+    ["high", "高音质 · 320 kbps"],
+    ["standard", "标准音质 · 128 kbps"],
+  ];
+  const kugouQualityOptions = [
+    ["high", "高音质 · 320 kbps"],
+    ["lossless", "FLAC 无损"],
     ["standard", "标准音质 · 128 kbps"],
   ];
 
@@ -728,7 +734,8 @@
     formatLabel.append(format);
     fieldset.append(formatLabel);
 
-    if (key === "qqmusic") {
+    if (key === "qqmusic" || key === "kugou") {
+      const qualityOptions = key === "qqmusic" ? qqQualityOptions : kugouQualityOptions;
       const qualityEditor = document.createElement("div");
       qualityEditor.className = "music-quality-editor";
       const qualityTitle = document.createElement("div");
@@ -737,7 +744,9 @@
       const strong = document.createElement("strong");
       strong.textContent = "文件音质优先级";
       const help = document.createElement("small");
-      help.textContent = "仅文件模式使用；语音固定高音质优先并回退标准。QQ 接口暂无独立 Hi-Res 档。";
+      help.textContent = key === "qqmusic"
+        ? "仅文件模式使用；语音固定高音质优先并回退标准。QQ 接口暂无独立 Hi-Res 档。"
+        : "仅文件模式尝试 H5 取链；依次尝试所选音质，失败回退原取链。";
       title.append(strong, help);
       const add = document.createElement("button");
       add.type = "button";
@@ -747,12 +756,14 @@
       const list = document.createElement("div");
       list.className = "codec-list";
       list.dataset.fileQualityPriority = key;
-      const qualities = pending?.file_quality_priority ?? settings.file_quality_priority
-        ?? ["lossless", "high", "standard"];
+      const defaults = key === "qqmusic"
+        ? ["lossless", "high", "standard"]
+        : ["high", "lossless", "standard"];
+      const qualities = pending?.file_quality_priority ?? settings.file_quality_priority ?? defaults;
       list.replaceChildren(...qualities.map((quality) => musicQualityRow(key, quality)));
       add.addEventListener("click", () => {
         const selected = readMusicSettings()[key]?.file_quality_priority || [];
-        const next = qqQualityOptions.find(([value]) => !selected.includes(value));
+        const next = qualityOptions.find(([value]) => !selected.includes(value));
         if (next) list.append(musicQualityRow(key, next[0]));
         updateMusicQualityControls(key);
         scheduleMusicSave();
@@ -860,8 +871,9 @@
     handle.setAttribute("aria-hidden", "true");
     handle.textContent = "≡";
     const select = document.createElement("select");
-    select.setAttribute("aria-label", "QQ 音乐文件音质");
-    qqQualityOptions.forEach(([optionValue, label]) => {
+    select.setAttribute("aria-label", `${parserKey === "qqmusic" ? "QQ 音乐" : "酷狗音乐"}文件音质`);
+    const options = parserKey === "qqmusic" ? qqQualityOptions : kugouQualityOptions;
+    options.forEach(([optionValue, label]) => {
       const option = document.createElement("option");
       option.value = optionValue;
       option.textContent = label;
@@ -907,14 +919,16 @@
     });
     const values = rows.map((row) => row.querySelector("select").value);
     const add = document.querySelector(`[data-file-quality-add='${parserKey}']`);
-    if (add) add.disabled = values.length >= qqQualityOptions.length;
+    const options = parserKey === "qqmusic" ? qqQualityOptions : kugouQualityOptions;
+    if (add) add.disabled = values.length >= options.length;
   }
 
   function invalidMusicQualityPriority(settings) {
     return Object.values(settings).some((parserSettings) => {
       const values = parserSettings?.file_quality_priority;
       return Array.isArray(values)
-        && (!values.length || values.length !== new Set(values).size);
+        && (!values.length || values.length !== new Set(values).size
+          || values.some((value) => ![...qqQualityOptions, ...kugouQualityOptions].some(([option]) => option === value)));
     });
   }
 

@@ -392,11 +392,13 @@ class PluginConfig(ConfigNode):
                         and isinstance(group_id, str)
                         and isinstance(disabled, list)
                     ):
-                        migrated_group_settings.append({
-                            "platform_id": platform_id,
-                            "group_id": group_id,
-                            "disabled_parsers": disabled,
-                        })
+                        migrated_group_settings.append(
+                            {
+                                "platform_id": platform_id,
+                                "group_id": group_id,
+                                "disabled_parsers": disabled,
+                            }
+                        )
                         if isinstance(entry.get("remark"), str):
                             migrated_group_settings[-1]["remark"] = entry["remark"]
             config["group_parser_settings"] = migrated_group_settings
@@ -555,15 +557,15 @@ class PluginConfig(ConfigNode):
         """将旧三开关压缩为一个，并保留其历史上的实际生效结果。"""
         legacy_keys = ("card_render_enabled", "card_send_enabled")
         legacy_values = [
-            bool(config[key])
-            for key in legacy_keys
-            if config.get(key) is not None
+            bool(config[key]) for key in legacy_keys if config.get(key) is not None
         ]
         configured_value = config.get("card_enabled")
         effective_value = (
             bool(configured_value)
             if configured_value is not None
-            else all(legacy_values) if legacy_values else True
+            else all(legacy_values)
+            if legacy_values
+            else True
         )
         if legacy_values:
             effective_value = effective_value and all(legacy_values)
@@ -644,19 +646,64 @@ class PluginConfig(ConfigNode):
                 "image_file_threshold_mb",
                 "max_page",
             ),
-            "qqmusic": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "file_quality_priority", "show_playlist_cover", "show_playlist_url"),
-            "netease": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "kugou": ("enable", "return_audio", "parse_lyrics", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "qishui": ("enable", "return_audio", "audio_send_format", "show_playlist_cover", "show_playlist_url"),
-            "applemusic": ("enable", "backend_enabled", "return_audio", "parse_lyrics", "force_chinese_language", "audio_send_format", "file_codec_priority", "show_playlist_cover", "show_playlist_url"),
+            "qqmusic": (
+                "enable",
+                "return_audio",
+                "parse_lyrics",
+                "audio_send_format",
+                "file_quality_priority",
+                "show_playlist_cover",
+                "show_playlist_url",
+            ),
+            "netease": (
+                "enable",
+                "return_audio",
+                "parse_lyrics",
+                "audio_send_format",
+                "show_playlist_cover",
+                "show_playlist_url",
+            ),
+            "kugou": (
+                "enable",
+                "return_audio",
+                "parse_lyrics",
+                "audio_send_format",
+                "file_quality_priority",
+                "show_playlist_cover",
+                "show_playlist_url",
+            ),
+            "qishui": (
+                "enable",
+                "return_audio",
+                "audio_send_format",
+                "show_playlist_cover",
+                "show_playlist_url",
+            ),
+            "applemusic": (
+                "enable",
+                "backend_enabled",
+                "return_audio",
+                "parse_lyrics",
+                "force_chinese_language",
+                "audio_send_format",
+                "file_codec_priority",
+                "show_playlist_cover",
+                "show_playlist_url",
+            ),
         }
         for key, old in existing.items():
             saved = history.get(key)
             saved = dict(saved) if isinstance(saved, Mapping) else {}
             saved_settings = saved.get("settings")
-            saved_settings = dict(saved_settings) if isinstance(saved_settings, Mapping) else {}
+            saved_settings = (
+                dict(saved_settings) if isinstance(saved_settings, Mapping) else {}
+            )
             saved_settings.update(
-                {field: old[field] for field in history_fields.get(key, ()) if field in old}
+                {
+                    field: old[field]
+                    for field in history_fields.get(key, ())
+                    if field in old
+                }
             )
             if key == "qishui":
                 saved_settings.pop("video_send_mode", None)
@@ -782,10 +829,7 @@ class PluginConfig(ConfigNode):
         normalized = [
             value
             for value in self.blacklist
-            if not (
-                isinstance(value, str)
-                and normalize_session_scope(value) == scope
-            )
+            if not (isinstance(value, str) and normalize_session_scope(value) == scope)
         ]
         if normalized != list(self.blacklist):
             self.blacklist[:] = normalized
