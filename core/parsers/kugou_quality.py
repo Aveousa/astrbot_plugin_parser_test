@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp.abc import AbstractResolver
+from astrbot.api import logger
 
 from ..cache import cache_dir_activity, get_active_cache_dir
 from ..exception import DownloadException, SizeLimitException
@@ -184,11 +185,54 @@ class _PublicResolver(AbstractResolver):
         await self._resolver.close()
 
 
+def _number(value):
+    """Only numeric upstream diagnostics may enter logs, never arbitrary text."""
+    if isinstance(value, bool):
+        return None
+    text = str(value)
+    return int(text) if re.fullmatch(r"-?[0-9]{1,12}", text) else None
+
+
+def _url_diagnostic(data):
+    for field in ("play_url", "playUrl", "url"):
+        value = data.get(field)
+        entries = value if isinstance(value, list) else [value]
+        for entry in entries:
+            if isinstance(entry, str) and entry.strip():
+                try:
+                    parsed = urlsplit(entry.split(",", 1)[0].strip())
+                    if parsed.scheme != "https":
+                        return "non_https"
+                    return "url_policy_rejected"
+                except ValueError:
+                    return "malformed_url"
+    return "empty_url"
+
+
+class KugouMediaError(DownloadException):
+    def __init__(self, reason):
+        super().__init__("酷狗高音质下载未完成")
+        self.reason = reason
+
+
 class KugouQualityClient:
     """Resolve URLs using the browser-session H5 contract from Mineradio."""
 
     def __init__(self, parser):
         self.parser = parser
+        self.trace = uuid.uuid4().hex[:8]
+
+    def report(self, event, **details):
+        # Call sites pass fixed enums, validated numbers and booleans only.
+        try:
+            logger.info(
+                "[酷狗音质] "
+                + json.dumps(
+                    {"trace": self.trace, "event": event, **details}, ensure_ascii=False
+                )
+            )
+        except Exception:  # noqa: BLE001 - optional diagnostics must not break playback
+            return
 
     async def _request(self, session, params):
         headers = {
@@ -207,6 +251,7 @@ class KugouQualityClient:
         async with session.get(
             _URL, params=params, headers=headers, allow_redirects=False
         ) as response:
+            self.report("api_http", status=_number(response.status))
             if response.status != 200:
                 raise ValueError("upstream unavailable")
             body = bytearray()
@@ -222,16 +267,28 @@ class KugouQualityClient:
         semaphore = getattr(downloader, "_download_semaphore", None)
         if semaphore is None:
             semaphore = asyncio.Semaphore(1)
-        async with semaphore:
-            return await self._download(url)
+        try:
+            async with semaphore:
+                path = await self._download(url)
+            self.report("download_ok", format=path.suffix.lstrip("."))
+            return path
+        except KugouMediaError as exc:
+            self.report("download_failed", reason=exc.reason)
+            raise
+        except SizeLimitException:
+            self.report("download_failed", reason="size_limit")
+            raise
+        except DownloadException:
+            self.report("download_failed", reason="download_error")
+            raise
 
     async def _download(self, url: str) -> Path:
         """Download the selected CDN audio without credentials or redirects."""
         if audio_url({"url": url}) != url:
-            raise DownloadException("酷狗音频地址不可用")
+            raise KugouMediaError("url_policy_rejected")
         suffix = Path(urlsplit(url).path).suffix.lower()
         if suffix not in {".mp3", ".flac"}:
-            raise DownloadException("酷狗音频格式无法确认")
+            raise KugouMediaError("unsupported_extension")
         cfg = self.parser.cfg
         directory = get_active_cache_dir(cfg.cache_dir)
         maximum = int(getattr(cfg, "source_max_size", 100)) * 1024 * 1024
@@ -256,8 +313,15 @@ class KugouQualityClient:
                         proxy=getattr(self.parser, "proxy", None),
                     ) as response,
                 ):
+                    self.report(
+                        "media_http",
+                        status=_number(response.status),
+                        bytes=_number(response.content_length),
+                    )
                     if response.status != 200:
-                        raise DownloadException("酷狗音频下载未完成")
+                        raise KugouMediaError(
+                            "redirect" if 300 <= response.status < 400 else "http_error"
+                        )
                     if response.content_length and response.content_length > maximum:
                         raise SizeLimitException
                     count = 0
@@ -273,7 +337,7 @@ class KugouQualityClient:
                     if not count or (
                         response.content_length and count != response.content_length
                     ):
-                        raise DownloadException("酷狗音频下载不完整")
+                        raise KugouMediaError("incomplete_audio")
                     media = bytes(prefix)
                     valid = (
                         media.startswith(b"fLaC")
@@ -287,11 +351,13 @@ class KugouQualityClient:
                         )
                     )
                     if not valid:
-                        raise DownloadException("酷狗音频内容无法确认")
+                        raise KugouMediaError("invalid_audio_header")
                 os.replace(temporary, target)
                 return target
-        except (aiohttp.ClientError, OSError, TimeoutError, ValueError):
-            raise DownloadException("酷狗音频下载未完成") from None
+        except TimeoutError:
+            raise KugouMediaError("download_timeout") from None
+        except (aiohttp.ClientError, OSError, ValueError):
+            raise KugouMediaError("network_or_io") from None
         finally:
             try:
                 if temporary is not None:
@@ -310,8 +376,18 @@ class KugouQualityClient:
         album_audio_id=None,
     ) -> dict:
         fields = session_fields(cookie)
-        if fields is None or not re.fullmatch(r"[a-fA-F0-9]{32}", song_hash):
+        if fields is None:
+            self.report("skip", reason="incomplete_or_invalid_session")
             return {}
+        if not re.fullmatch(r"[a-fA-F0-9]{32}", song_hash):
+            self.report("skip", reason="invalid_song_hash")
+            return {}
+        priorities = quality_priority(priorities)
+        self.report(
+            "resolve_start",
+            priority=list(priorities),
+            proxy=bool(getattr(self.parser, "proxy", None)),
+        )
         try:
             # One budget for the whole quality chain, so fallback is never
             # delayed by a timeout for every quality. No shared cookie mutation.
@@ -327,9 +403,19 @@ class KugouQualityClient:
                     params = build_params(
                         fields, song_hash, quality, album_id, album_audio_id
                     )
+                    self.report("request", quality=quality)
                     response = await self._request(session, params)
                     if not isinstance(response, Mapping):
+                        self.report("api_rejected", reason="invalid_response")
                         return {}
+                    self.report(
+                        "api_result",
+                        quality=quality,
+                        status=_number(response.get("status")),
+                        code=_number(
+                            response.get("error_code", response.get("errcode", 0))
+                        ),
+                    )
                     if str(response.get("status")) != "1":
                         return {}
                     code = str(response.get("error_code", response.get("errcode", 0)))
@@ -354,12 +440,33 @@ class KugouQualityClient:
                             "trial",
                         )
                     ):
+                        self.report(
+                            "quality_skipped", quality=quality, reason="preview"
+                        )
                         continue
                     url = audio_url(data)
                     if url:
+                        extension = Path(urlsplit(url).path).suffix.lower()
+                        self.report(
+                            "url_selected",
+                            quality=quality,
+                            format=extension
+                            if extension in {".mp3", ".flac"}
+                            else "other",
+                            reported_bitrate=_number(data.get("bitrate")),
+                            reported_size=_number(data.get("filesize")),
+                        )
                         result = {"url": url, "requested_audio_quality": quality}
                         return result
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
-            # Exceptions may contain signed URLs and account tokens; don't log them.
+                    self.report(
+                        "quality_skipped", quality=quality, reason=_url_diagnostic(data)
+                    )
+        except TimeoutError:
+            self.report("resolve_failed", reason="timeout")
             return {}
+        except (aiohttp.ClientError, ValueError, TypeError):
+            # Exceptions may contain signed URLs and account tokens; don't log them.
+            self.report("resolve_failed", reason="network_or_response")
+            return {}
+        self.report("resolve_failed", reason="no_usable_url")
         return {}

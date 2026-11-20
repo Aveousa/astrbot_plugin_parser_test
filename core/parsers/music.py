@@ -3827,22 +3827,27 @@ class KugouMusicParser(PlaylistParserBase):
             album_id=album_id, album_audio_id=album_audio_id,
             referer=referer, use_web=use_web,
         )
-        if not use_web or self._audio_send_format() != "file":
-            return metadata
         client = KugouQualityClient(self)
+        if not use_web or self._audio_send_format() != "file":
+            client.report("legacy_selected", reason="not_file_mode_or_audio_disabled")
+            return metadata
         preferred = kugou_quality_priority(
             getattr(self._music_parser_config(), "file_quality_priority", None)
         )
+        client.report("file_mode", priority=list(preferred))
         candidate = await client.resolve(
             self._kugou_cookie_header("https://gateway.kugou.com/v5/url"),
             song_hash, preferred, album_id, album_audio_id,
         )
         if not candidate:
+            client.report("legacy_selected", reason="resolve_failed")
             return metadata
         try:
             local_path = await client.download(candidate["url"])
         except DownloadException:
+            client.report("legacy_selected", reason="download_failed")
             return metadata
+        client.report("h5_selected")
         # Keep title, artist, cover and duration from the established metadata
         # path; accept new playback only after a real audio download succeeds.
         return {**metadata, **candidate, "_local_audio_path": local_path}

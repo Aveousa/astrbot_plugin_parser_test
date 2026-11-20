@@ -137,6 +137,53 @@ def test_h5_does_not_use_redirects_or_accept_injected_cookie_fields():
     assert audio_url({"url": "https://webfs.tx.kugou.com/song.mp3"})
 
 
+@pytest.mark.parametrize("outcome", ["selected", "filtered", "rejected", "timeout"])
+def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, outcome):
+    import json
+
+    messages = []
+    monkeypatch.setattr("core.parsers.kugou_quality.logger.info", messages.append)
+    client = KugouQualityClient(SimpleNamespace(proxy=None))
+    sensitive_url = "https://webfs.tx.kugou.com/private-name.flac?token=secret-query"
+
+    async def request(*_args):
+        if outcome == "timeout":
+            raise TimeoutError(sensitive_url)
+        if outcome == "rejected":
+            return {"status": "secret-response", "error_code": "secret-error"}
+        return {
+            "status": 1,
+            "data": {
+                "url": sensitive_url
+                if outcome == "selected"
+                else sensitive_url.replace("https:", "http:"),
+                "bitrate": "secret-bitrate",
+                "filesize": 123,
+            },
+        }
+
+    client._request = request
+    asyncio.run(client.resolve(COOKIE, HASH, ("lossless",)))
+    text = "\n".join(messages)
+    assert messages
+    for secret in (
+        "test-token",
+        "secret-query",
+        "private-name",
+        "secret-response",
+        "secret-error",
+        "secret-bitrate",
+        HASH,
+    ):
+        assert secret not in text
+    rows = [json.loads(message.removeprefix("[酷狗音质] ")) for message in messages]
+    assert len({row["trace"] for row in rows}) == 1
+    if outcome == "filtered":
+        assert any(row.get("reason") == "non_https" for row in rows)
+    if outcome == "timeout":
+        assert any(row.get("reason") == "timeout" for row in rows)
+
+
 def test_quality_chain_skips_explicit_preview_and_empty_results():
     client = KugouQualityClient(SimpleNamespace(proxy=None))
     calls = []
