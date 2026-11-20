@@ -141,34 +141,59 @@ def build_params(
     return params
 
 
-def audio_url(payload: Mapping) -> str | None:
+def _url_candidates(payload):
     for field in ("play_url", "playUrl", "url"):
         value = payload.get(field)
         entries = value if isinstance(value, list) else [value]
         for entry in entries:
-            if not isinstance(entry, str):
-                continue
-            for candidate in re.split(r",(?=https?://)", entry):
-                candidate = candidate.strip()
-                try:
-                    parsed = urlsplit(candidate)
-                    if (
-                        parsed.scheme in {"http", "https"}
-                        and parsed.hostname
-                        and parsed.hostname.lower().startswith("webfs.")
-                        and parsed.hostname.lower().endswith(".kugou.com")
-                        and parsed.port in (None, 443)
-                        and not any(c.isspace() for c in candidate)
-                        and not parsed.username
-                        and not parsed.password
-                    ):
-                        # The H5 API also returns HTTP CDN URLs. Try the same
-                        # trusted resource over TLS without rewriting signed bytes.
-                        if parsed.scheme == "http":
-                            return "https" + candidate[candidate.index(":"):]
-                        return candidate
-                except ValueError:
-                    continue
+            if isinstance(entry, str):
+                for candidate in re.split(r",(?=https?://)", entry):
+                    if candidate.strip():
+                        yield candidate.strip()
+
+
+def _inspect_audio_url(candidate):
+    """Use identical rules for selection and diagnostics; never expose signed paths."""
+    details = {"reason": "malformed_url"}
+    if any(c.isspace() or ord(c) < 32 for c in candidate) or "\\" in candidate:
+        return None, {"reason": "invalid_url_characters"}
+    try:
+        parsed = urlsplit(candidate)
+        if parsed.username is not None or parsed.password is not None:
+            return None, {"reason": "url_credentials_rejected"}
+        host = parsed.hostname or ""
+        port = parsed.port
+        # DNS hostname only, never netloc, URL path, query, userinfo or fragment.
+        if re.fullmatch(r"[a-zA-Z0-9.-]{1,253}", host):
+            details["cdn_host"] = host.lower()
+        details["scheme"] = parsed.scheme if parsed.scheme in {"http", "https"} else "other"
+        details["port"] = port
+        if parsed.scheme not in {"http", "https"}:
+            details["reason"] = "unsupported_scheme"
+        elif not (host.lower().startswith("webfs.") and host.lower().endswith(".kugou.com")):
+            details["reason"] = "cdn_host_not_allowed"
+        elif port not in ((None, 80, 443) if parsed.scheme == "http" else (None, 443)):
+            details["reason"] = "cdn_port_not_allowed"
+        else:
+            if parsed.scheme == "http":
+                # Remove HTTP's explicit default port while preserving all signed
+                # path/query bytes (urlunsplit/requoting could change them).
+                suffix = candidate[len(parsed.scheme) + 3 + len(parsed.netloc):]
+                authority = parsed.netloc
+                if port == 80:
+                    authority = authority.rsplit(":", 1)[0]
+                return "https://" + authority + suffix, {**details, "reason": "http_upgraded"}
+            return candidate, {**details, "reason": "accepted"}
+    except ValueError:
+        return None, {"reason": "malformed_url"}
+    return None, details
+
+
+def audio_url(payload: Mapping) -> str | None:
+    for candidate in _url_candidates(payload):
+        url, _ = _inspect_audio_url(candidate)
+        if url:
+            return url
     return None
 
 
@@ -199,19 +224,10 @@ def _number(value):
 
 
 def _url_diagnostic(data):
-    for field in ("play_url", "playUrl", "url"):
-        value = data.get(field)
-        entries = value if isinstance(value, list) else [value]
-        for entry in entries:
-            if isinstance(entry, str) and entry.strip():
-                try:
-                    parsed = urlsplit(entry.split(",", 1)[0].strip())
-                    if parsed.scheme not in {"http", "https"}:
-                        return "unsupported_scheme"
-                    return "url_policy_rejected"
-                except ValueError:
-                    return "malformed_url"
-    return "empty_url"
+    for candidate in _url_candidates(data):
+        _, details = _inspect_audio_url(candidate)
+        return details
+    return {"reason": "empty_url"}
 
 
 class KugouMediaError(DownloadException):
@@ -230,7 +246,7 @@ class KugouQualityClient:
     def report(self, event, **details):
         # Call sites pass fixed enums, validated numbers and booleans only.
         try:
-            logger.info(
+            logger.debug(
                 "[酷狗音质] "
                 + json.dumps(
                     {"trace": self.trace, "event": event, **details}, ensure_ascii=False
@@ -464,7 +480,7 @@ class KugouQualityClient:
                         result = {"url": url, "requested_audio_quality": quality}
                         return result
                     self.report(
-                        "quality_skipped", quality=quality, reason=_url_diagnostic(data)
+                        "quality_skipped", quality=quality, **_url_diagnostic(data)
                     )
         except TimeoutError:
             self.report("resolve_failed", reason="timeout")

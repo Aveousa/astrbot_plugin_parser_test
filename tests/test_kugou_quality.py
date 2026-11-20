@@ -142,7 +142,7 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
     import json
 
     messages = []
-    monkeypatch.setattr("core.parsers.kugou_quality.logger.info", messages.append)
+    monkeypatch.setattr("core.parsers.kugou_quality.logger.debug", messages.append)
     client = KugouQualityClient(SimpleNamespace(proxy=None))
     sensitive_url = "https://webfs.tx.kugou.com/private-name.flac?token=secret-query"
 
@@ -179,7 +179,7 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
     rows = [json.loads(message.removeprefix("[酷狗音质] ")) for message in messages]
     assert len({row["trace"] for row in rows}) == 1
     if outcome == "filtered":
-        assert any(row.get("reason") == "url_policy_rejected" for row in rows)
+        assert any(row.get("reason") == "cdn_host_not_allowed" and row.get("cdn_host") == "untrusted.example" for row in rows)
     if outcome == "timeout":
         assert any(row.get("reason") == "timeout" for row in rows)
 
@@ -206,11 +206,30 @@ def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order():
     "http://untrusted.example/a.flac",
     "http://webfs.tx.kugou.com.evil.example/a.flac",
     "http://webfs.tx.kugou.com:8080/a.flac",
-    "http://webfs.tx.kugou.com:80/a.flac",
+    "https://webfs.tx.kugou.com:80/a.flac",
     "ftp://webfs.tx.kugou.com/a.flac",
 ])
 def test_upgrade_does_not_expand_cdn_or_port_allowlist(url):
     assert audio_url({"url": url}) is None
+
+
+def test_http_default_port_upgrade_and_precise_rejections():
+    from core.parsers.kugou_quality import _url_diagnostic
+
+    suffix = "/p%2Fsong.flac?sig=test%2b%2F&x=1&x=2"
+    source = "http://webfs.tx.kugou.com:80" + suffix
+    assert audio_url({"url": source}) == "https://webfs.tx.kugou.com" + suffix
+    assert _url_diagnostic({"url": source})["reason"] == "http_upgraded"
+    for url, reason in (
+        ("http://other.kugou.com/song.flac?sig=private", "cdn_host_not_allowed"),
+        ("https://webfs.tx.kugou.com:80/song.flac", "cdn_port_not_allowed"),
+        ("http://webfs.tx.kugou.com:bad/song.flac", "malformed_url"),
+        ("file:///secret", "unsupported_scheme"),
+    ):
+        assert audio_url({"url": url}) is None
+        details = _url_diagnostic({"url": url})
+        assert details["reason"] == reason
+        assert "private" not in str(details) and "song.flac" not in str(details)
 
 
 def test_quality_chain_skips_explicit_preview_and_empty_results():
