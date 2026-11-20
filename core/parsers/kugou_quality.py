@@ -170,7 +170,12 @@ def _inspect_audio_url(candidate):
         details["port"] = port
         if parsed.scheme not in {"http", "https"}:
             details["reason"] = "unsupported_scheme"
-        elif not (host.lower().startswith("webfs.") and host.lower().endswith(".kugou.com")):
+        elif not (
+            (host.lower().startswith("webfs.") and host.lower().endswith(".kugou.com"))
+            # Observed in authenticated H5 /v5/url responses; not a wildcard
+            # for arbitrary Android endpoints or third-party CDN domains.
+            or host.lower() == "fsandroid.tx.kugou.com"
+        ):
             details["reason"] = "cdn_host_not_allowed"
         elif port not in ((None, 80, 443) if parsed.scheme == "http" else (None, 443)):
             details["reason"] = "cdn_port_not_allowed"

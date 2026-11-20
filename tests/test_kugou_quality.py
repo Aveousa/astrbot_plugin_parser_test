@@ -184,8 +184,9 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
         assert any(row.get("reason") == "timeout" for row in rows)
 
 
-def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order():
-    source = "http://webfs.tx.kugou.com/path%2fsong.flac?sig=a%2Bb%2fC&x=1&x=2"
+@pytest.mark.parametrize("host", ["webfs.tx.kugou.com", "fsandroid.tx.kugou.com"])
+def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order(host):
+    source = f"http://{host}/path%2fsong.flac?sig=a%2Bb%2fC&x=1&x=2"
     expected = "https" + source[4:]
     assert audio_url({"url": source}) == expected
     client = KugouQualityClient(SimpleNamespace(proxy=None))
@@ -208,6 +209,10 @@ def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order():
     "http://webfs.tx.kugou.com:8080/a.flac",
     "https://webfs.tx.kugou.com:80/a.flac",
     "ftp://webfs.tx.kugou.com/a.flac",
+    "http://fsandroid.tx.kugou.com.evil.example/a.flac",
+    "http://fsandroid.other.kugou.com/a.flac",
+    "https://fsandroid.tx.kugou.com:8080/a.flac",
+    "https://user:password@fsandroid.tx.kugou.com/a.flac",
 ])
 def test_upgrade_does_not_expand_cdn_or_port_allowlist(url):
     assert audio_url({"url": url}) is None

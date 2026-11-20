@@ -10,8 +10,9 @@ from core.parsers.music import KugouMusicParser
 HASH = "1F7E7659B9FFF4FB6F71562A61BBC25F"
 
 
+@pytest.mark.parametrize("host", ["webfs.tx.kugou.com", "fsandroid.tx.kugou.com"])
 @pytest.mark.parametrize("kind", ["flac", "mp3", "html", "redirect", "oversize", "cancel"])
-def test_isolated_download_validates_audio_and_cleans_failures(tmp_path, monkeypatch, kind):
+def test_isolated_download_validates_audio_and_cleans_failures(tmp_path, monkeypatch, kind, host):
     from core.parsers import kugou_quality as module
 
     body = b"fLaC" + b"metadata" * 100 if kind == "flac" else b"ID3" + b"audio" * 100
@@ -49,6 +50,7 @@ def test_isolated_download_validates_audio_and_cleans_failures(tmp_path, monkeyp
             pass
 
         def get(self, url, **kwargs):
+            captured["url"] = str(url)
             captured["request"] = kwargs
             return Response()
 
@@ -61,14 +63,15 @@ def test_isolated_download_validates_audio_and_cleans_failures(tmp_path, monkeyp
     async def run():
         client = KugouQualityClient(parser)
         if kind in {"flac", "mp3"}:
-            path = await client.download("https://webfs.tx.kugou.com/song" + suffix)
+            path = await client.download(f"https://{host}/song" + suffix)
             assert path.read_bytes() == body
             assert path.suffix == suffix
         else:
             error = asyncio.CancelledError if kind == "cancel" else DownloadException
             with pytest.raises(error):
-                await client.download("https://webfs.tx.kugou.com/song" + suffix)
+                await client.download(f"https://{host}/song" + suffix)
             assert not list(tmp_path.iterdir())
+        assert captured["url"] == f"https://{host}/song" + suffix
         assert captured["request"]["allow_redirects"] is False
         assert "Cookie" not in captured["request"]["headers"]
         assert "cookies" not in captured["request"]
