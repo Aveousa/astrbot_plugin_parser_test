@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from http.cookies import SimpleCookie
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -51,11 +52,11 @@ class _Session:
         self.get_calls: list[tuple[str, dict, dict]] = []
         self.post_calls: list[tuple[str, dict, dict]] = []
 
-    def get(self, url: str, *, params=None, headers=None):
+    def get(self, url: str, *, params=None, headers=None, allow_redirects=False):
         self.get_calls.append((url, params or {}, headers or {}))
         return self.get_responses.pop(0)
 
-    def post(self, url: str, *, params=None, headers=None, data=None):
+    def post(self, url: str, *, params=None, headers=None, data=None, allow_redirects=False):
         self.post_calls.append((url, params or {}, headers or {}))
         return self.post_response
 
@@ -222,6 +223,107 @@ def test_kugou_qr_login_reports_cookie_check_failure_as_unknown(monkeypatch):
     ]
     assert validity_checks == ["checked"]
     assert "KuGoo=KugooID%3D12345" in parser.cookiejar.cookies_str
+
+
+def test_retired_login_cannot_recreate_http_or_poll():
+    from types import SimpleNamespace
+    import pytest
+
+    login = KugouMusicLogin(SimpleNamespace(kugou_session=SimpleNamespace(stop=lambda: None)))
+    login.stop()
+    with pytest.raises(RuntimeError, match="已关闭"):
+        _ = login.session
+
+    async def messages():
+        return [m async for m in login.check_qr_state()]
+
+    assert asyncio.run(messages()) == ["酷狗解析器已重载，请重新登录"]
+    assert login._http is None
+
+
+def test_retirement_cancels_sleeping_login_and_closes_resources():
+    from types import SimpleNamespace
+
+    async def run():
+        login = KugouMusicLogin(SimpleNamespace(kugou_session=SimpleNamespace(
+            begin=lambda: (1, "snapshot"), stop=lambda: None,
+        )))
+        entered = asyncio.Event()
+        closed = []
+
+        class Http:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+                closed.append(True)
+
+        async def flow():
+            await login.begin_login()
+            login._http = Http()
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            finally:
+                await login.end_login()
+
+        task = asyncio.create_task(flow())
+        await entered.wait()
+        await login.close()
+        assert task.cancelled()
+        assert closed == [True]
+        assert not login._flow_lock.locked()
+        assert login._flow_task is None
+
+    asyncio.run(run())
+
+
+def test_production_api_login_validates_before_persisting(tmp_path):
+    import aiohttp
+    from types import SimpleNamespace
+    from yarl import URL
+    from core.parsers.kugou_session import KugouCookieJar, KugouSession
+    from core.parsers.music import KugouMusicParser
+
+    async def run():
+        jar = KugouCookieJar(SimpleNamespace(cookie_dir=tmp_path), SimpleNamespace(name="kugou", cookies="KugooID=123; t=old"))
+        parser = SimpleNamespace(cookiejar=jar, proxy=None,
+            _WEB_PLAY_URL=KugouMusicParser._WEB_PLAY_URL,
+            _kugou_account_credentials=KugouMusicParser._kugou_account_credentials,
+            _signed_params=KugouMusicParser._signed_params)
+        parser.kugou_session = KugouSession(parser)
+        seen = []
+
+        async def validate(cookie):
+            seen.append(cookie)
+            assert jar.get()["t"] == "old"
+            return True
+
+        parser.kugou_session._validate = validate
+        login = KugouMusicLogin(parser)
+        await login.begin_login()
+        session_jar = aiohttp.CookieJar()
+        cookies = SimpleCookie()
+        for name, value in {"KuGoo": "KugooID=456&t=new", "kg_mid": "mid", "kg_dfid": "dfid"}.items():
+            cookies[name] = value
+            cookies[name]["domain"] = ".kugou.com"
+            cookies[name]["path"] = "/"
+        session_jar.update_cookies(cookies, URL("https://loginservice.kugou.com/"))
+        fake = _Session(get_responses=[], post_response=_response("1", {}))
+        fake.cookie_jar = session_jar
+        fake.closed = True
+        # Keep the test double open during exchange and restore before cleanup.
+        fake.closed = False
+        login._http = fake
+        try:
+            await login._exchange_authorization("456", "qr-only")
+            assert seen and jar.get()["KuGoo"] == "KugooID=456&t=new"
+            assert all(c.domain == ".kugou.com" for c in jar.cookies)
+        finally:
+            login._http = None
+            await login.end_login()
+
+    asyncio.run(run())
 
 
 async def _collect_login_messages(generator, login):

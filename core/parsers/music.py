@@ -33,7 +33,7 @@ from urllib.parse import (
     urlunsplit,
 )
 
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
 from astrbot.api import logger
 
 from ..cookie import CookieJar
@@ -45,7 +45,9 @@ from ..music_quality import (
     normalize_qq_file_quality_priority,
 )
 from .base import BaseParser, handle
+from .kugou_identity import account_credentials as kugou_account_credentials
 from .kugou_login import KugouMusicLogin
+from .kugou_session import KugouCookieJar, KugouSession
 from .kugou_quality import (
     KugouQualityClient,
     quality_priority as kugou_quality_priority,
@@ -3677,11 +3679,31 @@ class KugouMusicParser(PlaylistParserBase):
         super().__init__(config, downloader)
         parser_config = self._music_parser_config()
         self.cookiejar = (
-            CookieJar(self.cfg, parser_config, domain="kugou.com")
+            KugouCookieJar(self.cfg, parser_config)
             if parser_config is not None
             else None
         )
+        self.kugou_session = KugouSession(self)
         self.login = KugouMusicLogin(self)
+
+    @property
+    def session(self) -> ClientSession:
+        """Playback uses only explicitly committed cookies, never Set-Cookie residue."""
+        if self._session is None or self._session.closed:
+            self._session = ClientSession(
+                cookie_jar=DummyCookieJar(), proxy=self.proxy,
+                timeout=ClientTimeout(total=self.cfg.common_timeout),
+            )
+        return self._session
+
+    async def close_session(self) -> None:
+        session = getattr(self, "kugou_session", None)
+        if session is not None:
+            session.stop()
+        login = getattr(self, "login", None)
+        if login is not None:
+            await login.close()
+        await super().close_session()
 
     def _kugou_cookie_header(self, url: str) -> str:
         cookiejar = getattr(self, "cookiejar", None)
@@ -3692,15 +3714,7 @@ class KugouMusicParser(PlaylistParserBase):
 
     @classmethod
     def _kugou_account_credentials(cls, cookie: str) -> tuple[str, str]:
-        cookies: dict[str, str] = {}
-        for item in cookie.split(";"):
-            name, separator, value = item.strip().partition("=")
-            if separator and name:
-                cookies.setdefault(name, value)
-        account = cls._kugou_nested_cookie_values(cookies.get("KuGoo", ""))
-        user_id = account.get("KugooID") or cookies.get("KugooID", "")
-        token = account.get("t") or cookies.get("t", "")
-        return user_id.strip(), token.strip()
+        return kugou_account_credentials(cookie)
 
     def has_cookie(self) -> bool:
         """Whether any Kugou Cookie was configured for the web player."""
@@ -3730,7 +3744,10 @@ class KugouMusicParser(PlaylistParserBase):
         error).
         """
 
-        cookie = self._kugou_cookie_header(self._WEB_PLAY_URL)
+        return await self.check_cookie_with(self._kugou_cookie_header(self._WEB_PLAY_URL))
+
+    async def check_cookie_with(self, cookie: str) -> bool | None:
+        """Validate a candidate without replacing the active CookieJar."""
         params = self._kugou_web_play_params(
             cookie,
             song_hash=self._COOKIE_CHECK_TRACK["hash"],

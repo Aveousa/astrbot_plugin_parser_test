@@ -21,6 +21,7 @@ from yarl import URL
 
 from ..cache import cache_dir_activity, get_active_cache_dir
 from ..exception import DownloadException, SizeLimitException
+from .kugou_identity import account_credentials, cookie_values
 
 # Wire contract: Mineradio-paused H5 /v5/url path and the matching Folia H5 signature.
 # Public client constants, not account credentials.
@@ -52,45 +53,22 @@ def _safe(value: str) -> bool:
 
 
 def session_fields(cookie: str) -> dict[str, str] | None:
-    values = {}
-    for entry in cookie.split(";"):
-        name, sep, value = entry.strip().partition("=")
-        if sep:
-            values.setdefault(name, value)
-    # Prefer a complete browser identity; do not mix a stale lite identity with it.
+    try:
+        values = cookie_values(cookie)
+    except ValueError:
+        return None
+    userid, token = account_credentials(cookie)
+    if not userid and not token and not any(values.get(k) for k in ("KuGoo", "KugooID", "t")):
+        userid = values.get("userid") or values.get("UserId", "")
+        token = values.get("token") or values.get("Token", "")
     fields = {
-        "userid": values.get("KugooID", ""),
-        "token": values.get("t", ""),
-        "mid": values.get("kg_mid") or values.get("mid", ""),
+        "userid": userid, "token": token,
+        "mid": values.get("kg_mid") or values.get("mid") or values.get("KUGOU_API_MID", ""),
         "dfid": values.get("kg_dfid") or values.get("dfid", ""),
     }
-    compound = values.get("KuGoo") or values.get("kugou") or values.get("Kugou") or ""
-    for _ in range(4):
-        from urllib.parse import unquote
-
-        decoded = unquote(compound)
-        if decoded == compound:
-            break
-        compound = decoded
-    nested = {}
-    for part in compound.split("&"):
-        name, sep, value = part.partition("=")
-        if sep:
-            nested.setdefault(name.strip(), value.strip())
-    fields["userid"] = (
-        fields["userid"]
-        or nested.get("KugooID")
-        or nested.get("userid")
-        or nested.get("uid", "")
-    )
-    fields["token"] = fields["token"] or nested.get("t") or nested.get("token", "")
-    if not fields["userid"] and not fields["token"]:
-        fields["userid"] = values.get("userid") or values.get("UserId", "")
-        fields["token"] = values.get("token") or values.get("Token", "")
-        fields["mid"] = values.get("KUGOU_API_MID") or fields["mid"]
     if not all(_safe(v) for v in fields.values()):
         return None
-    if not re.fullmatch(r"[0-9]{1,20}", fields["userid"]) or int(fields["userid"]) == 0:
+    if not re.fullmatch(r"[0-9]{1,20}", userid) or int(userid) == 0:
         return None
     return fields
 

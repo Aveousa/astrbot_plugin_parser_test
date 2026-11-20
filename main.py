@@ -377,6 +377,9 @@ class ParserPlugin(Star):
             music_session = getattr(parser, "music_session", None)
             if music_session is not None:
                 music_session.stop()
+            kugou_login = getattr(parser, "login", None)
+            if isinstance(parser, KugouMusicParser) and kugou_login is not None:
+                kugou_login.stop()
             for credentials in (getattr(parser, "cookiejar", None), getattr(parser, "login", None)):
                 if credentials is not None:
                     credentials.persistence_enabled = False
@@ -747,11 +750,45 @@ class ParserPlugin(Star):
         """扫码登录酷狗音乐"""
         self._ensure_parser_registration()
         parser: KugouMusicParser = self._get_parser_by_type(KugouMusicParser)  # type: ignore
-        qrcode = await parser.login.login_with_qrcode()
-        card_path = await self.renderer.render_kugou_login_card(qrcode)
-        if card_path is not None:
-            yield event.chain_result([Image.fromFileSystem(str(card_path))])
-        else:
-            yield event.chain_result([Image.fromBytes(qrcode)])
-        async for msg in parser.login.check_qr_state():
-            yield event.plain_result(msg)
+        try:
+            await parser.login.begin_login()
+        except RuntimeError:
+            yield event.plain_result("酷狗登录正在进行或解析器已重载，请稍后重试")
+            return
+        try:
+            qrcode = await parser.login.login_with_qrcode()
+            card_path = await self.renderer.render_kugou_login_card(qrcode)
+            if card_path is not None:
+                yield event.chain_result([Image.fromFileSystem(str(card_path))])
+            else:
+                yield event.chain_result([Image.fromBytes(qrcode)])
+            async for msg in parser.login.check_qr_state():
+                yield event.plain_result(msg)
+        except Exception:
+            yield event.plain_result("酷狗扫码登录未完成，现有会话已保留；可尝试 kugouweblogin 官网扫码")
+        finally:
+            await parser.login.end_login()
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("酷狗官网登录", alias={"kugouweblogin", "官网登录酷狗"})
+    async def login_kugou_web(self, event: AstrMessageEvent):
+        """Use an isolated official browser login, keeping the existing QR card."""
+        self._ensure_parser_registration()
+        parser = self._get_parser_by_type(KugouMusicParser)
+        try:
+            await parser.login.begin_login()
+        except RuntimeError:
+            yield event.plain_result("酷狗登录正在进行或解析器已重载，请稍后重试")
+            return
+        try:
+            qr = await parser.login.login_with_browser_qrcode()
+            card_path = await self.renderer.render_kugou_login_card(qr)
+            yield event.chain_result([
+                Image.fromFileSystem(str(card_path)) if card_path is not None else Image.fromBytes(qr)
+            ])
+            async for msg in parser.login.check_browser_qr_state():
+                yield event.plain_result(msg)
+        except Exception:
+            yield event.plain_result("酷狗官网登录未完成，现有 Cookie 已保留；请检查浏览器安装和登录网络")
+        finally:
+            await parser.login.end_login()

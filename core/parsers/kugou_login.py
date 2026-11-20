@@ -10,17 +10,19 @@ import re
 import secrets
 import time
 from collections.abc import AsyncGenerator, Mapping
+from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientSession, ClientTimeout
 from astrbot.api import logger
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from yarl import URL
 
-from ..cookie import CookieJar
+from ..cookie import Cookie, CookieJar
+from .kugou_browser import KugouBrowserLogin
 
 
 class KugouMusicLogin:
@@ -55,6 +57,100 @@ class KugouMusicLogin:
         self.parser = parser
         self._qrcode: str | None = None
         self._mid = hashlib.md5(uuid4().bytes).hexdigest()
+        self._http = None
+        self._browser = None
+        self._ticket = None
+        self._closed = False
+        self._flow_lock = asyncio.Lock()
+        self._flow_task = None
+        self._collected = {}
+
+    @property
+    def session(self):
+        # Actual parsers use a dedicated login jar so Set-Cookie from a
+        # failed candidate cannot silently change the active playback client.
+        if self._closed:
+            raise RuntimeError("酷狗登录流程已关闭")
+        if not hasattr(self.parser, "kugou_session"):
+            return self.parser.session
+        if self._http is None or self._http.closed:
+            self._http = ClientSession(
+                timeout=ClientTimeout(total=15), proxy=self.parser.proxy,
+            )
+        return self._http
+
+    def stop(self):
+        self._closed = True
+        task = self._flow_task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        guard = getattr(self.parser, "kugou_session", None)
+        if guard is not None:
+            guard.stop()
+        if self._browser is not None:
+            self._browser.stop()
+
+    async def close(self):
+        self.stop()
+        task = self._flow_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+        if self._browser is not None:
+            await self._browser.close()
+        if self._http is not None and not self._http.closed:
+            await self._http.close()
+
+    async def begin_login(self):
+        if self._closed or self._flow_lock.locked():
+            raise RuntimeError("酷狗登录已在进行或解析器已关闭")
+        await self._flow_lock.acquire()
+        try:
+            guard = getattr(self.parser, "kugou_session", None)
+            self._ticket = guard.begin() if guard is not None else None
+            self._collected = {}
+            # A new login never inherits a failed candidate's automatic jar.
+            if self._http is not None and not self._http.closed:
+                await self._http.close()
+            self._http = None
+            self._flow_task = asyncio.current_task()
+        except BaseException:
+            self._flow_lock.release()
+            raise
+
+    async def end_login(self):
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+                self._browser = None
+            if self._http is not None and not self._http.closed:
+                await self._http.close()
+        finally:
+            self._flow_task = None
+            if self._flow_lock.locked():
+                self._flow_lock.release()
+
+    async def login_with_browser_qrcode(self):
+        self._browser = KugouBrowserLogin(self.parser)
+        return await self._browser.create_qr()
+
+    async def check_browser_qr_state(self):
+        try:
+            for _ in range(90):
+                if self._closed:
+                    return
+                candidates = await self._browser.poll()
+                if candidates:
+                    await self.parser.kugou_session.commit(candidates, self._ticket)
+                    yield "酷狗官网登录成功，Cookie 已校验并安全保存"
+                    return
+                await asyncio.sleep(2)
+            yield "酷狗官网登录超时，请重新生成二维码"
+        finally:
+            if self._browser is not None:
+                await self._browser.close()
+
+    def _remember(self, response):
+        self._collected.update(self._response_cookies(response))
 
     def _signed_params(self, extra: Mapping[str, object]) -> dict[str, str]:
         now_ms = int(time.time() * 1000)
@@ -75,13 +171,21 @@ class KugouMusicLogin:
     @staticmethod
     def _ensure_success(response) -> None:
         status = getattr(response, "status", 200)
-        if isinstance(status, int) and status >= 400:
+        if isinstance(status, int) and not 200 <= status < 300:
             raise ClientError(f"酷狗登录接口返回 HTTP {status}")
 
     @staticmethod
     async def _response_json(response) -> Mapping[str, object]:
         try:
-            payload = json.loads(await response.text())
+            if hasattr(response, "content"):
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(8192):
+                    body.extend(chunk)
+                    if len(body) > 65536:
+                        raise RuntimeError("酷狗登录响应过大")
+                payload = json.loads(body)
+            else:
+                payload = json.loads(await response.text())
         except (json.JSONDecodeError, TypeError) as exc:
             raise RuntimeError("酷狗登录接口返回了无法识别的数据") from exc
         if not isinstance(payload, Mapping):
@@ -94,12 +198,14 @@ class KugouMusicLogin:
         self._qrcode = None
         qrcode_text = quote(f"{self._QR_CODE_URL}?appid={self._APP_ID}&", safe="-_.!~*'()")
         params = self._signed_params({"type": "1", "qrcode_txt": qrcode_text})
-        async with self.parser.session.get(
+        async with self.session.get(
             self._QR_URL,
             params=params,
             headers={"User-Agent": self._USER_AGENT, "Referer": self._LOGIN_REFERER},
+            allow_redirects=False,
         ) as response:
             self._ensure_success(response)
+            self._remember(response)
             payload = await self._response_json(response)
 
         data = payload.get("data")
@@ -118,9 +224,14 @@ class KugouMusicLogin:
             except (ValueError, binascii.Error) as exc:
                 raise RuntimeError("酷狗登录二维码图片格式无效") from exc
         elif image_data.startswith(("https://", "http://")):
-            async with self.parser.session.get(
+            target = urlsplit(image_data)
+            if (target.scheme != "https" or target.hostname != "login-user.kugou.com"
+                    or target.username or target.password or target.port not in (None, 443)):
+                raise RuntimeError("酷狗二维码图片地址不可信")
+            async with self.session.get(
                 image_data,
                 headers={"User-Agent": self._USER_AGENT, "Referer": self._LOGIN_REFERER},
+                allow_redirects=False,
             ) as response:
                 self._ensure_success(response)
                 image = await response.read()
@@ -166,12 +277,14 @@ class KugouMusicLogin:
         if not self._qrcode:
             raise RuntimeError("请先生成酷狗音乐登录二维码")
         params = self._signed_params({"qrcode": self._qrcode})
-        async with self.parser.session.get(
+        async with self.session.get(
             self._POLL_URL,
             params=params,
             headers={"User-Agent": self._USER_AGENT, "Referer": self._LOGIN_REFERER},
+            allow_redirects=False,
         ) as response:
             self._ensure_success(response)
+            self._remember(response)
             payload = await self._response_json(response)
 
         if str(payload.get("status")) != "1":
@@ -257,8 +370,8 @@ class KugouMusicLogin:
         return cookies
 
     def _collect_login_cookies(self, response) -> dict[str, str]:
-        cookies: dict[str, str] = {}
-        cookie_jar = getattr(self.parser.session, "cookie_jar", None)
+        cookies: dict[str, str] = dict(self._collected)
+        cookie_jar = getattr(self.session, "cookie_jar", None)
         filter_cookies = getattr(cookie_jar, "filter_cookies", None)
         if callable(filter_cookies):
             for host in (
@@ -296,7 +409,7 @@ class KugouMusicLogin:
                 "params": encrypted_token,
             }
         )
-        async with self.parser.session.post(
+        async with self.session.post(
             self._EXCHANGE_URL,
             params=params,
             headers={
@@ -305,6 +418,7 @@ class KugouMusicLogin:
                 "Origin": "https://login-user.kugou.com",
             },
             data=None,
+            allow_redirects=False,
         ) as response:
             self._ensure_success(response)
             result = await self._response_json(response)
@@ -319,9 +433,34 @@ class KugouMusicLogin:
         cookiejar: CookieJar | None = getattr(self.parser, "cookiejar", None)
         if cookiejar is None:
             raise RuntimeError("酷狗音乐 Cookie 存储未初始化")
-        cookiejar.replace_from_cookies_str(
-            "; ".join(f"{name}={value}" for name, value in cookies.items())
-        )
+        guard = getattr(self.parser, "kugou_session", None)
+        if guard is not None:
+            # Retain scopes/expiry from the isolated login jar, not another
+            # account's playback jar. Do not synthesize a web t from the QR token.
+            scoped = {}
+            for item in self.session.cookie_jar:
+                if item.key in {"KuGoo", "KugooID", "t", "kg_mid", "kg_dfid", "mid", "dfid", "vip_type", "vip_token", "a_id"}:
+                    domain = item["domain"]
+                    if domain and not item["domain"].startswith("."):
+                        host_only = getattr(self.session.cookie_jar, "_host_only_cookies", set())
+                        if (domain, item.key) not in host_only:
+                            domain = "." + domain
+                    path = item["path"] or "/"
+                    expires = 0
+                    if item["expires"]:
+                        try:
+                            expires = int(parsedate_to_datetime(item["expires"]).timestamp())
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                    c = Cookie(domain, path, item.key, item.value, bool(item["secure"]), expires)
+                    scoped[(domain, path, item.key)] = c
+            if self._ticket is None:
+                raise RuntimeError("请重新发起酷狗扫码登录")
+            await guard.commit(list(scoped.values()), self._ticket)
+        else:
+            cookiejar.replace_from_cookies_str(
+                "; ".join(f"{name}={value}" for name, value in cookies.items())
+            )
         return cookies
 
     async def _check_saved_cookie(self) -> bool | None:
@@ -344,10 +483,13 @@ class KugouMusicLogin:
 
         scanned_tip_pending = True
         for _ in range(90):
+            if self._closed:
+                yield "酷狗解析器已重载，请重新登录"
+                return
             try:
                 state, user_id, token, _data = await self._poll_qrcode()
             except (ClientError, TimeoutError, RuntimeError, TypeError, ValueError) as exc:
-                logger.warning(f"[酷狗音乐] 登录状态查询失败: {exc}")
+                logger.warning(f"[酷狗音乐] 登录状态查询失败 ({type(exc).__name__})")
                 yield "酷狗音乐登录状态查询失败，请重新生成二维码"
                 return
 
@@ -362,8 +504,8 @@ class KugouMusicLogin:
                     ValueError,
                     OSError,
                 ) as exc:
-                    logger.warning(f"[酷狗音乐] 登录凭据获取失败: {exc}")
-                    yield f"酷狗音乐登录失败：{exc}"
+                    logger.warning(f"[酷狗音乐] 登录凭据获取失败 ({type(exc).__name__})")
+                    yield "酷狗音乐候选登录态未能校验或保存，已保留当前 Cookie；可使用 kugouweblogin 官网扫码"
                     return
                 cookie_valid = await self._check_saved_cookie()
                 if cookie_valid is True:
