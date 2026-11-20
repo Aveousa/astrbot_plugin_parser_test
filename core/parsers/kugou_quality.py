@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp.abc import AbstractResolver
 from astrbot.api import logger
+from yarl import URL
 
 from ..cache import cache_dir_activity, get_active_cache_dir
 from ..exception import DownloadException, SizeLimitException
@@ -152,7 +153,7 @@ def audio_url(payload: Mapping) -> str | None:
                 try:
                     parsed = urlsplit(candidate)
                     if (
-                        parsed.scheme == "https"
+                        parsed.scheme in {"http", "https"}
                         and parsed.hostname
                         and parsed.hostname.lower().startswith("webfs.")
                         and parsed.hostname.lower().endswith(".kugou.com")
@@ -161,6 +162,10 @@ def audio_url(payload: Mapping) -> str | None:
                         and not parsed.username
                         and not parsed.password
                     ):
+                        # The H5 API also returns HTTP CDN URLs. Try the same
+                        # trusted resource over TLS without rewriting signed bytes.
+                        if parsed.scheme == "http":
+                            return "https" + candidate[candidate.index(":"):]
                         return candidate
                 except ValueError:
                     continue
@@ -201,8 +206,8 @@ def _url_diagnostic(data):
             if isinstance(entry, str) and entry.strip():
                 try:
                     parsed = urlsplit(entry.split(",", 1)[0].strip())
-                    if parsed.scheme != "https":
-                        return "non_https"
+                    if parsed.scheme not in {"http", "https"}:
+                        return "unsupported_scheme"
                     return "url_policy_rejected"
                 except ValueError:
                     return "malformed_url"
@@ -307,7 +312,7 @@ class KugouQualityClient:
                         timeout=aiohttp.ClientTimeout(total=timeout),
                     ) as session,
                     session.get(
-                        url,
+                        URL(url, encoded=True),
                         allow_redirects=False,
                         headers={"User-Agent": _H5_USER_AGENT},
                         proxy=getattr(self.parser, "proxy", None),

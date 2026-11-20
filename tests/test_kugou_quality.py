@@ -132,7 +132,7 @@ def test_h5_does_not_use_redirects_or_accept_injected_cookie_fields():
     )
     assert audio_url({"url": "https://user:secret@webfs.tx.kugou.com/song.mp3"}) is None
     assert audio_url({"url": "file:///private/song.mp3"}) is None
-    assert audio_url({"url": "http://webfs.tx.kugou.com/song.mp3"}) is None
+    assert audio_url({"url": "http://webfs.tx.kugou.com/song.mp3"}) == "https://webfs.tx.kugou.com/song.mp3"
     assert audio_url({"url": "https://example.com/song.mp3"}) is None
     assert audio_url({"url": "https://webfs.tx.kugou.com/song.mp3"})
 
@@ -156,7 +156,7 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
             "data": {
                 "url": sensitive_url
                 if outcome == "selected"
-                else sensitive_url.replace("https:", "http:"),
+                else sensitive_url.replace("webfs.tx.kugou.com", "untrusted.example"),
                 "bitrate": "secret-bitrate",
                 "filesize": 123,
             },
@@ -179,9 +179,38 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
     rows = [json.loads(message.removeprefix("[酷狗音质] ")) for message in messages]
     assert len({row["trace"] for row in rows}) == 1
     if outcome == "filtered":
-        assert any(row.get("reason") == "non_https" for row in rows)
+        assert any(row.get("reason") == "url_policy_rejected" for row in rows)
     if outcome == "timeout":
         assert any(row.get("reason") == "timeout" for row in rows)
+
+
+def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order():
+    source = "http://webfs.tx.kugou.com/path%2fsong.flac?sig=a%2Bb%2fC&x=1&x=2"
+    expected = "https" + source[4:]
+    assert audio_url({"url": source}) == expected
+    client = KugouQualityClient(SimpleNamespace(proxy=None))
+    calls = []
+
+    async def request(_session, params):
+        calls.append(params["quality"])
+        return {"status": 1, "data": {"url": source}}
+
+    client._request = request
+    result = asyncio.run(client.resolve(COOKIE, HASH, ("lossless", "high", "standard")))
+    assert calls == ["flac"]
+    assert result["url"] == expected
+    assert result["requested_audio_quality"] == "lossless"
+
+
+@pytest.mark.parametrize("url", [
+    "http://untrusted.example/a.flac",
+    "http://webfs.tx.kugou.com.evil.example/a.flac",
+    "http://webfs.tx.kugou.com:8080/a.flac",
+    "http://webfs.tx.kugou.com:80/a.flac",
+    "ftp://webfs.tx.kugou.com/a.flac",
+])
+def test_upgrade_does_not_expand_cdn_or_port_allowlist(url):
+    assert audio_url({"url": url}) is None
 
 
 def test_quality_chain_skips_explicit_preview_and_empty_results():
