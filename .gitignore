@@ -18,3 +18,5 @@ core/test/
 /tests/manual/new-card-qa/
 /.agents/
 /pages/parser_management/previews/
+/astrbot_plugin_parser-1.6.1/
+/folia-major-main/

@@ -957,6 +957,7 @@ def test_replaced_parser_finishes_active_message_before_closing(monkeypatch):
         plugin = _plugin(main, calls)
         previous = plugin.parser_map["163cn.tv"]
         previous.cookiejar = SimpleNamespace(persistence_enabled=True)
+        previous.music_session = SimpleNamespace(stop=lambda: calls.append("stop-renewal"))
         closed, started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
         async def close(): closed.set()
         previous.close_session = close
@@ -968,7 +969,8 @@ def test_replaced_parser_finishes_active_message_before_closing(monkeypatch):
         class Replacement:
             platform = SimpleNamespace(name="netease")
             _key_patterns = [("163cn.tv", main.re.compile(r"163cn\.tv/\w+"))]
-            def __init__(self, *args): pass
+            def __init__(self, *args):
+                self.music_session = SimpleNamespace(start=lambda: calls.append("start-renewal"))
             async def close_session(self): pass
         monkeypatch.setattr(main.BaseParser, "get_all_subclass", classmethod(lambda cls: [Replacement]))
         plugin.cfg.parser.enabled_platforms = lambda: ["netease"]
@@ -979,6 +981,7 @@ def test_replaced_parser_finishes_active_message_before_closing(monkeypatch):
         assert plugin.parser_map["163cn.tv"] is not previous
         assert previous in plugin._retired_parsers and not closed.is_set()
         assert previous.cookiejar.persistence_enabled is False
+        assert calls.index("stop-renewal") < calls.index("start-renewal")
         release.set()
         await task
         await asyncio.wait_for(closed.wait(), timeout=1)

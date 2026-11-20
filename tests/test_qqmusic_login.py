@@ -249,6 +249,65 @@ def test_qq_qr_login_treats_cookie_check_exception_as_unknown(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("capture_fails", [False, True])
+def test_login_passes_full_credential_to_optional_renewal_without_changing_cookies(
+    monkeypatch, capture_fails, retired
+):
+    data = {
+        "musicid": 12345,
+        "musickey": "playback-key",
+        "refresh_key": "refresh-key",
+        "musickeyCreateTime": 1_800_000_000,
+        "keyExpiresIn": 259200,
+    }
+
+    class Response:
+        status = 200
+
+        async def text(self):
+            return json.dumps({"req_0": {"code": 0, "data": data}})
+
+    class Request:
+        async def __aenter__(self):
+            return Response()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    saved = []
+    captured = []
+
+    def capture(value):
+        captured.append(value)
+        assert saved  # Playback persistence succeeds before optional capture.
+        if capture_fails:
+            raise OSError("do-not-log-credential-values")
+
+    parser = SimpleNamespace(
+        session=SimpleNamespace(post=lambda *_a, **_k: Request()),
+        cookiejar=SimpleNamespace(
+            replace_from_cookies_str=saved.append, persistence_enabled=not retired
+        ),
+        music_session=SimpleNamespace(capture_login=capture),
+    )
+    monkeypatch.setattr("core.parsers.qqmusic_login.logger.info", lambda *_args: None)
+    warnings = []
+    monkeypatch.setattr("core.parsers.qqmusic_login.logger.warning", warnings.append)
+
+    if retired:
+        with pytest.raises(RuntimeError, match="解析器已重载"):
+            asyncio.run(QQMusicLogin(parser)._get_music_credential("code"))
+        assert not saved and not captured
+        return
+    result = asyncio.run(QQMusicLogin(parser)._get_music_credential("code"))
+
+    assert captured == [data]
+    assert result["qqmusic_key"] == "playback-key"
+    assert "refresh-key" not in saved[0]
+    assert "do-not-log-credential-values" not in repr(warnings)
+
+
 async def _collect_messages(generator):
     return [message async for message in generator]
 

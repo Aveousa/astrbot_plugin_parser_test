@@ -375,9 +375,25 @@ class QQMusicLogin:
         cookiejar: CookieJar | None = getattr(self.parser, "cookiejar", None)
         if cookiejar is None:
             raise RuntimeError("QQ 音乐 Cookie 存储未初始化")
+        music_session = getattr(self.parser, "music_session", None)
+        if (
+            not getattr(cookiejar, "persistence_enabled", True)
+            or not getattr(self, "persistence_enabled", True)
+            or (music_session is not None and getattr(music_session, "_closed", False))
+        ):
+            raise RuntimeError("QQ 音乐解析器已重载，请重新发起登录")
         cookiejar.replace_from_cookies_str(
             "; ".join(f"{name}={value}" for name, value in cookie_values.items())
         )
+        music_session = getattr(self.parser, "music_session", None)
+        if music_session is not None:
+            try:
+                music_session.capture_login(data)
+            except Exception as exc:
+                # Renewal is optional: never turn a completed login into a failure.
+                logger.warning(
+                    f"[QQ 音乐] 续期材料保存失败，现有播放 Cookie 保留 ({type(exc).__name__})"
+                )
         return cookie_values
 
     async def _check_saved_cookie(self) -> bool | None:

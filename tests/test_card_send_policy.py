@@ -605,7 +605,14 @@ def test_qq_official_file_mode_uses_native_file_component(sender_module):
     assert event.sent[0][0].kwargs["name"] == f"{result.title}.m4a"
 
 
-def test_qq_official_mode_is_logged(sender_module):
+def test_kugou_file_mode_uses_song_title_as_sanitized_filename(sender_module):
+    filename = sender_module.MessageSender._audio_attachment_filename(
+        "歌曲:/会员版?", Path("downloaded-track.mp3"), "酷狗音乐"
+    )
+
+    assert filename == "歌曲__会员版_.mp3"
+
+
     infos = []
     sender_module.logger.info = infos.append
 

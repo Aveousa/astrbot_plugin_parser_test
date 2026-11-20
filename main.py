@@ -374,6 +374,9 @@ class ParserPlugin(Star):
         # enabling/disabling a parser takes effect without a plugin reload.
         current_parsers = set(self.parser_map.values())
         for parser in old_parsers - current_parsers:
+            music_session = getattr(parser, "music_session", None)
+            if music_session is not None:
+                music_session.stop()
             for credentials in (getattr(parser, "cookiejar", None), getattr(parser, "login", None)):
                 if credentials is not None:
                     credentials.persistence_enabled = False
@@ -383,6 +386,11 @@ class ParserPlugin(Star):
                 self._retired_parsers.add(parser)
             else:
                 self._close_retired_parser(parser)
+        # Only live QQ parsers own renewal tasks; no browser or extra backend is started.
+        for parser in current_parsers:
+            music_session = getattr(parser, "music_session", None)
+            if music_session is not None:
+                music_session.start()
 
     def _current_parser_config_signature(self) -> tuple[tuple[str, bool], ...]:
         parser_config = getattr(self.cfg, "parser", None)

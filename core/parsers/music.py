@@ -46,7 +46,9 @@ from ..music_quality import (
 )
 from .base import BaseParser, handle
 from .kugou_login import KugouMusicLogin
+from .qqmusic_cookie import QQMusicCookieJar
 from .qqmusic_login import QQMusicLogin
+from .qqmusic_session import QQMusicSession
 
 
 def _log_apple_lyrics(level: str, message: str, *args: object) -> None:
@@ -2731,11 +2733,19 @@ class QQMusicParser(PlaylistParserBase):
         super().__init__(config, downloader)
         parser_config = self._music_parser_config()
         self.cookiejar = (
-            CookieJar(self.cfg, parser_config, domain="y.qq.com")
+            QQMusicCookieJar(self.cfg, parser_config, domain="y.qq.com")
             if parser_config is not None
             else None
         )
+        self.music_session = QQMusicSession(self)
         self.login = QQMusicLogin(self)
+
+    async def close_session(self) -> None:
+        """Stop optional renewal before closing the parser's normal HTTP session."""
+        music_session = getattr(self, "music_session", None)
+        if music_session is not None:
+            await music_session.close()
+        await super().close_session()
 
     def _qq_cookie_header(self, url: str) -> str:
         cookiejar = getattr(self, "cookiejar", None)
