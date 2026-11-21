@@ -10,7 +10,10 @@ from core.parsers.music import KugouMusicParser
 HASH = "1F7E7659B9FFF4FB6F71562A61BBC25F"
 
 
-@pytest.mark.parametrize("host", ["webfs.tx.kugou.com", "fsandroid.tx.kugou.com"])
+@pytest.mark.parametrize("host", [
+    "webfs.tx.kugou.com", "fsandroid.tx.kugou.com", "fsandroid.kugou.com",
+    "new-cdn.line.kugou.com",
+])
 @pytest.mark.parametrize("kind", ["flac", "mp3", "html", "redirect", "oversize", "cancel"])
 def test_isolated_download_validates_audio_and_cleans_failures(tmp_path, monkeypatch, kind, host):
     from core.parsers import kugou_quality as module

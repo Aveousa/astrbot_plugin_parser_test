@@ -184,7 +184,10 @@ def test_quality_diagnostics_never_log_credentials_or_signed_urls(monkeypatch, o
         assert any(row.get("reason") == "timeout" for row in rows)
 
 
-@pytest.mark.parametrize("host", ["webfs.tx.kugou.com", "fsandroid.tx.kugou.com"])
+@pytest.mark.parametrize("host", [
+    "webfs.tx.kugou.com", "fsandroid.tx.kugou.com", "fsandroid.kugou.com",
+    "fsandroid.other.kugou.com", "other.kugou.com", "new-cdn.line.kugou.com",
+])
 def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order(host):
     source = f"http://{host}/path%2fsong.flac?sig=a%2Bb%2fC&x=1&x=2"
     expected = "https" + source[4:]
@@ -210,8 +213,14 @@ def test_http_cdn_upgrade_preserves_signed_bytes_and_quality_order(host):
     "https://webfs.tx.kugou.com:80/a.flac",
     "ftp://webfs.tx.kugou.com/a.flac",
     "http://fsandroid.tx.kugou.com.evil.example/a.flac",
-    "http://fsandroid.other.kugou.com/a.flac",
     "https://fsandroid.tx.kugou.com:8080/a.flac",
+    "http://fsandroid.kugou.com.evil.example/a.flac",
+    "http://evilfsandroid.kugou.com.evil.test/a.flac",
+    "https://notkugou.com/a.flac",
+    "https://cdn..kugou.com/a.flac",
+    "https://-cdn.kugou.com/a.flac",
+    "https://cdn.kugou.com./a.flac",
+    "https://fsandroid.kugou.com:8080/a.flac",
     "https://user:password@fsandroid.tx.kugou.com/a.flac",
 ])
 def test_upgrade_does_not_expand_cdn_or_port_allowlist(url):
@@ -226,7 +235,7 @@ def test_http_default_port_upgrade_and_precise_rejections():
     assert audio_url({"url": source}) == "https://webfs.tx.kugou.com" + suffix
     assert _url_diagnostic({"url": source})["reason"] == "http_upgraded"
     for url, reason in (
-        ("http://other.kugou.com/song.flac?sig=private", "cdn_host_not_allowed"),
+        ("http://other.kugou.com.evil.test/song.flac?sig=private", "cdn_host_not_allowed"),
         ("https://webfs.tx.kugou.com:80/song.flac", "cdn_port_not_allowed"),
         ("http://webfs.tx.kugou.com:bad/song.flac", "malformed_url"),
         ("file:///secret", "unsupported_scheme"),
@@ -235,6 +244,23 @@ def test_http_default_port_upgrade_and_precise_rejections():
         details = _url_diagnostic({"url": url})
         assert details["reason"] == reason
         assert "private" not in str(details) and "song.flac" not in str(details)
+
+
+@pytest.mark.parametrize("field", ["url", "play_url", "playUrl", "backupUrl", "backup_url", "play_backup_url"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_mineradio_primary_and_backup_shapes(field, nested):
+    source = r"http:\/\/media.line.kugou.com\/song.flac?sig=test%2Bvalue&x=1&x=2"
+    data = {field: [[], ["javascript:bad", source]]}
+    expected = "https://media.line.kugou.com/song.flac?sig=test%2Bvalue&x=1&x=2"
+    assert audio_url(data) == expected
+    client = KugouQualityClient(SimpleNamespace(proxy=None))
+
+    async def request(*_args):
+        return {"status": 1, "data": data} if nested else {"status": 1, **data, "data": {}}
+
+    client._request = request
+    result = asyncio.run(client.resolve(COOKIE, HASH, ("lossless", "high")))
+    assert result == {"url": expected, "requested_audio_quality": "lossless"}
 
 
 def test_quality_chain_skips_explicit_preview_and_empty_results():

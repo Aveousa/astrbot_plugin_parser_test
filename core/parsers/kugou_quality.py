@@ -120,14 +120,35 @@ def build_params(
 
 
 def _url_candidates(payload):
-    for field in ("play_url", "playUrl", "url"):
-        value = payload.get(field)
-        entries = value if isinstance(value, list) else [value]
-        for entry in entries:
-            if isinstance(entry, str):
-                for candidate in re.split(r",(?=https?://)", entry):
-                    if candidate.strip():
-                        yield candidate.strip()
+    """Read the primary and backup URL shapes used by Mineradio's resolver."""
+    def entries(value, depth=0):
+        if isinstance(value, list) and depth < 4:
+            for item in value:
+                yield from entries(item, depth + 1)
+        elif isinstance(value, str):
+            # Some upstream fields contain JSON-style escaped slashes.
+            value = value.replace("\\/", "/")
+            for candidate in re.split(r",\s*(?=https?://)", value):
+                if candidate.strip():
+                    yield candidate.strip()
+
+    for field in (
+        "play_url", "playUrl", "url", "backupUrl", "backup_url", "play_backup_url",
+    ):
+        yield from entries(payload.get(field))
+
+
+def _is_kugou_media_host(host: str) -> bool:
+    # Mineradio has no complete CDN list. Trust the provider-owned DNS boundary
+    # rather than a guessed CDN prefix; the connecting resolver still rejects
+    # private addresses and downloads never follow redirects or send cookies.
+    host = host.lower()
+    return (
+        len(host) <= 253
+        and host.endswith(".kugou.com")
+        and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                for label in host.split("."))
+    )
 
 
 def _inspect_audio_url(candidate):
@@ -148,12 +169,7 @@ def _inspect_audio_url(candidate):
         details["port"] = port
         if parsed.scheme not in {"http", "https"}:
             details["reason"] = "unsupported_scheme"
-        elif not (
-            (host.lower().startswith("webfs.") and host.lower().endswith(".kugou.com"))
-            # Observed in authenticated H5 /v5/url responses; not a wildcard
-            # for arbitrary Android endpoints or third-party CDN domains.
-            or host.lower() == "fsandroid.tx.kugou.com"
-        ):
+        elif not _is_kugou_media_host(host):
             details["reason"] = "cdn_host_not_allowed"
         elif port not in ((None, 80, 443) if parsed.scheme == "http" else (None, 443)):
             details["reason"] = "cdn_port_not_allowed"
@@ -448,7 +464,7 @@ class KugouQualityClient:
                             "quality_skipped", quality=quality, reason="preview"
                         )
                         continue
-                    url = audio_url(data)
+                    url = audio_url(data) or audio_url(response)
                     if url:
                         extension = Path(urlsplit(url).path).suffix.lower()
                         self.report(
