@@ -320,7 +320,7 @@ def test_web_only_cookie_makes_no_lite_request():
 
 
 @pytest.mark.parametrize(
-    "mode,lite_success", [("voice", True), ("file", True), ("file", False)]
+    "mode,lite_success", [("voice", True), ("voice", False), ("file", True), ("file", False)]
 )
 def test_parser_preserves_web_fallback_and_voice_behavior(
     monkeypatch, mode, lite_success
@@ -339,7 +339,7 @@ def test_parser_preserves_web_fallback_and_voice_behavior(
 
     async def lite(_self, cookie, song_hash, priorities, album_id, album_audio_id):
         calls.append("lite")
-        assert priorities == ("lossless", "high")
+        assert priorities == (("lossless", "high") if mode == "file" else ("standard",))
         return {"url": "https://webfs.tx.kugou.com/lite.flac"} if lite_success else {}
 
     async def web(*_args, **_kwargs):
@@ -355,10 +355,10 @@ def test_parser_preserves_web_fallback_and_voice_behavior(
     monkeypatch.setattr(KugouQualityClient, "resolve", lite)
     parser._fetch_kugou_web_song_info = web
     result = asyncio.run(parser._fetch_kugou_song_info(HASH))
-    if mode == "file" and lite_success:
+    if lite_success:
         assert calls == ["web", "lite"]
         assert result["url"].endswith("lite.flac")
         assert result["_local_audio_path"].name == "tested.flac"
     else:
-        assert calls == (["web", "lite"] if mode == "file" else ["web"])
+        assert calls == ["web", "lite"]
         assert result["url"].endswith("existing.mp3")

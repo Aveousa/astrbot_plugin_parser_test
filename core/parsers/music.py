@@ -3845,13 +3845,17 @@ class KugouMusicParser(PlaylistParserBase):
             referer=referer, use_web=use_web,
         )
         client = KugouQualityClient(self)
-        if not use_web or self._audio_send_format() != "file":
-            client.report("legacy_selected", reason="not_file_mode_or_audio_disabled")
+        if not use_web:
+            client.report("legacy_selected", reason="audio_disabled")
             return metadata
-        preferred = kugou_quality_priority(
-            getattr(self._music_parser_config(), "file_quality_priority", None)
+        file_mode = self._audio_send_format() == "file"
+        preferred = (
+            kugou_quality_priority(
+                getattr(self._music_parser_config(), "file_quality_priority", None)
+            )
+            if file_mode else ("standard",)
         )
-        client.report("file_mode", priority=list(preferred))
+        client.report("file_mode" if file_mode else "voice_mode", priority=list(preferred))
         candidate = await client.resolve(
             self._kugou_cookie_header("https://gateway.kugou.com/v5/url"),
             song_hash, preferred, album_id, album_audio_id,

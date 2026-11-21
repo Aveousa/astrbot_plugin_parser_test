@@ -414,7 +414,7 @@
           },
           "file_quality_priority": {
             "description": "酷狗文件音质优先级",
-            "hint": "文件模式按顺序尝试网页登录态 H5 取链：高音质 320 kbps、无损 FLAC、标准 128 kbps；不可用时回退当前取链。语音模式保持原行为。",
+            "hint": "文件模式按顺序尝试网页登录态 H5 取链：高音质 320 kbps、无损 FLAC、标准 128 kbps；不可用时回退当前取链。语音模式固定请求标准 128 kbps。",
             "type": "list",
             "options": ["high", "lossless", "standard"],
             "labels": ["高音质 320 kbps", "无损 FLAC", "标准 128 kbps"],

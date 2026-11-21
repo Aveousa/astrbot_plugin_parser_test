@@ -746,7 +746,7 @@
       const help = document.createElement("small");
       help.textContent = key === "qqmusic"
         ? "仅文件模式使用；语音固定高音质优先并回退标准。QQ 接口暂无独立 Hi-Res 档。"
-        : "仅文件模式尝试 H5 取链；依次尝试所选音质，失败回退原取链。";
+        : "仅文件模式使用所选顺序；语音固定请求标准 128 kbps。不可用时回退原取链。";
       title.append(strong, help);
       const add = document.createElement("button");
       add.type = "button";
