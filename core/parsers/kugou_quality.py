@@ -229,6 +229,27 @@ def _url_diagnostic(data):
     return {"reason": "empty_url"}
 
 
+def downloaded_quality(path: Path, duration_seconds: float | None = None) -> tuple[str | None, int | None]:
+    """Read FLAC magic or estimate MP3 average bitrate from complete bytes/duration.
+
+    The estimate is only a downgrade detector with tolerance, not a codec audit.
+    Missing duration/file facts remain unknown rather than inventing a bitrate.
+    """
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(4)
+        if prefix == b"fLaC":
+            return "lossless", None
+        if path.suffix.lower() != ".mp3":
+            return None, None
+        if duration_seconds and duration_seconds > 0:
+            kbps = round(path.stat().st_size * 8 / duration_seconds / 1000)
+            return ("high" if kbps >= 256 else "standard"), kbps
+        return None, None
+    except (OSError, ValueError, TypeError, OverflowError):
+        return None, None
+
+
 class KugouMediaError(DownloadException):
     def __init__(self, reason):
         super().__init__("酷狗高音质下载未完成")
@@ -464,7 +485,32 @@ class KugouQualityClient:
                             "quality_skipped", quality=quality, reason="preview"
                         )
                         continue
-                    url = audio_url(data) or audio_url(response)
+                    url = None
+                    mismatch = False
+                    bitrate = _number(data.get("bitrate"))
+                    if bitrate is None:
+                        bitrate = _number(data.get("bitRate"))
+                    kbps = bitrate / 1000 if bitrate and bitrate >= 10000 else bitrate
+                    for source in (data, response):
+                        for raw in _url_candidates(source):
+                            valid_url, _ = _inspect_audio_url(raw)
+                            if not valid_url:
+                                continue
+                            suffix = Path(urlsplit(valid_url).path).suffix.lower()
+                            if quality == "lossless" and suffix != ".flac":
+                                mismatch = True
+                                continue
+                            if quality == "high" and suffix == ".mp3" and kbps is not None and 0 < kbps < 256:
+                                mismatch = True
+                                continue
+                            url = valid_url
+                            break
+                        if url:
+                            break
+                    if not url and mismatch:
+                        self.report("quality_skipped", quality=quality, reason="returned_quality_mismatch",
+                                    reported_bitrate=bitrate)
+                        continue
                     if url:
                         extension = Path(urlsplit(url).path).suffix.lower()
                         self.report(

@@ -50,6 +50,7 @@ from .kugou_login import KugouMusicLogin
 from .kugou_session import KugouCookieJar, KugouSession
 from .kugou_quality import (
     KugouQualityClient,
+    downloaded_quality,
     quality_priority as kugou_quality_priority,
 )
 from .qqmusic_cookie import QQMusicCookieJar
@@ -3856,22 +3857,43 @@ class KugouMusicParser(PlaylistParserBase):
             if file_mode else ("standard",)
         )
         client.report("file_mode" if file_mode else "voice_mode", priority=list(preferred))
-        candidate = await client.resolve(
-            self._kugou_cookie_header("https://gateway.kugou.com/v5/url"),
-            song_hash, preferred, album_id, album_audio_id,
-        )
-        if not candidate:
-            client.report("legacy_selected", reason="resolve_failed")
-            return metadata
-        try:
-            local_path = await client.download(candidate["url"])
-        except DownloadException:
-            client.report("legacy_selected", reason="download_failed")
-            return metadata
-        client.report("h5_selected")
-        # Keep title, artist, cover and duration from the established metadata
-        # path; accept new playback only after a real audio download succeeds.
-        return {**metadata, **candidate, "_local_audio_path": local_path}
+        cookie = self._kugou_cookie_header("https://gateway.kugou.com/v5/url")
+        remaining = preferred
+        usable_fallback = None
+        while remaining:
+            candidate = await client.resolve(cookie, song_hash, remaining, album_id, album_audio_id)
+            if not candidate:
+                break
+            selected = candidate.get("requested_audio_quality", remaining[0])
+            if selected not in remaining:
+                break
+            try:
+                local_path = await client.download(candidate["url"])
+            except DownloadException:
+                client.report("legacy_selected", reason="download_failed")
+                return usable_fallback or metadata
+            measured, kbps = downloaded_quality(local_path, _duration_seconds(
+                metadata.get("timelength") or metadata.get("timeLength")
+            ))
+            client.report("download_quality", requested=selected, detected=measured,
+                          estimated_kbps=kbps)
+            prepared = {**metadata, **candidate, "_local_audio_path": local_path}
+            if (selected == "lossless" and measured is not None and measured != "lossless") or (
+                selected == "high" and measured == "standard"
+            ):
+                client.report("quality_skipped", quality=selected, reason="downloaded_quality_mismatch")
+                # Retain usable downgraded audio, but try the rest of the requested
+                # chain before falling back. Never relabel it as verified high quality.
+                usable_fallback = usable_fallback or prepared
+                remaining = remaining[remaining.index(selected) + 1:]
+                continue
+            client.report("h5_selected")
+            return prepared
+        if usable_fallback is not None:
+            client.report("h5_downgraded_selected", reason="no_matching_quality")
+            return usable_fallback
+        client.report("legacy_selected", reason="no_matching_quality")
+        return metadata
 
     async def _fetch_kugou_legacy_song_info(
         self,
